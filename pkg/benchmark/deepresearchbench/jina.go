@@ -75,7 +75,7 @@ func (j *jinaClient) fetchOnce(ctx context.Context, targetURL string) (string, e
 		return "", fmt.Errorf("build jina reader request: %w", err)
 	}
 	request.Header.Set("Accept", "application/json")
-	request.Header.Set("Authorization", string(j.apiKey))
+	request.Header.Set("Authorization", "Bearer "+string(j.apiKey))
 	request.Header.Set("X-Timeout", "60000")
 	request.Header.Set("X-With-Generated-Alt", "true")
 
@@ -89,11 +89,11 @@ func (j *jinaClient) fetchOnce(ctx context.Context, targetURL string) (string, e
 	if err != nil {
 		return "", fmt.Errorf("read jina reader response: %w", err)
 	}
-	if len(body) > maxJinaBytes {
-		return "", fmt.Errorf("jina reader response for %q is too large", targetURL)
-	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return "", fmt.Errorf("jina reader request for %q returned HTTP %d", targetURL, response.StatusCode)
+	}
+	if len(body) > maxJinaBytes {
+		return "", fmt.Errorf("jina reader response for %q is too large", targetURL)
 	}
 
 	var decoded jinaResponse

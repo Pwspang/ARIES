@@ -44,8 +44,8 @@ the RACE algorithm across four dimensions (comprehensiveness, insight,
 instruction following, readability). Judge artifacts land in
 `runs/<run>/<task_id>/evaluation/{report.md,judge_prompt.txt,judge_response.json}`;
 `run-result.json`'s `evaluation.score` is RACE's overall ratio
-(`target/(target+reference)`) scaled to `[0,1]`, and `evaluation.reward` is `1`
-only above the configured pass threshold (default 50). Every evaluated task
+(`target/(target+reference)`) scaled to `[0,100]`, and `evaluation.reward` is
+`1` at or above the configured pass threshold (default 50). Every evaluated task
 makes a paid LLM-judge API call in addition to the harness model call — using
 a cheaper judge model is recommended for large task counts.
 
