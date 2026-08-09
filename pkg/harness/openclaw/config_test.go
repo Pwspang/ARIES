@@ -23,7 +23,7 @@ func testModel() core.ModelConfig {
 }
 
 func TestRenderConfigLocksProviderSharedSSHAndPlaceholder(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint())
+	content, err := renderConfig(testModel(), testEndpoint(), false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestRenderConfigLocksProviderSharedSSHAndPlaceholder(t *testing.T) {
 	if sandbox.SSH.Target != "aries@172.22.0.1:39425" || sandbox.SSH.Command != "/opt/aries/bin/aries-ssh" || sandbox.SSH.WorkspaceRoot != workspaceRoot || !sandbox.SSH.StrictHostKeyChecking || sandbox.SSH.UpdateHostKeys {
 		t.Fatalf("SSH config = %#v", sandbox.SSH)
 	}
-	if got := strings.Join(configuration.Tools.Deny, ","); got != "read,write,edit,apply_patch" {
+	if got := strings.Join(configuration.Tools.Deny, ","); got != "read,write,edit,apply_patch,sessions_spawn,sessions_yield" {
 		t.Fatalf("tool deny list = %q", got)
 	}
 }
@@ -57,7 +57,7 @@ func TestRenderConfigSelectsSGLangProviderWithoutSerializingKey(t *testing.T) {
 	model := testModel()
 	model.Provider = "sglang"
 	model.APIKeyEnv = "SGLANG_API_KEY"
-	content, err := renderConfig(model, testEndpoint())
+	content, err := renderConfig(model, testEndpoint(), false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestRenderConfigNormalizesAndStrictlyValidatesSGLangBaseURL(t *testing.T) {
 	model := testModel()
 	model.Provider = "sglang"
 	model.BaseURL += "/"
-	content, err := renderConfig(model, testEndpoint())
+	content, err := renderConfig(model, testEndpoint(), false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestRenderConfigNormalizesAndStrictlyValidatesSGLangBaseURL(t *testing.T) {
 	}
 	for _, invalid := range []string{"http://host/v1/v1", "http://host/v1?", "http://host/v%31"} {
 		model.BaseURL = invalid
-		if _, err := renderConfig(model, testEndpoint()); err == nil {
+		if _, err := renderConfig(model, testEndpoint(), false, false); err == nil {
 			t.Fatalf("accepted SGLang base URL %q", invalid)
 		}
 	}
@@ -111,7 +111,7 @@ func TestRenderConfigRejectsInvalidInputs(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			model, endpoint := testModel(), testEndpoint()
 			mutate(&model, &endpoint)
-			if _, err := renderConfig(model, endpoint); err == nil {
+			if _, err := renderConfig(model, endpoint, false, false); err == nil {
 				t.Fatal("invalid input was accepted")
 			}
 		})
@@ -121,8 +121,70 @@ func TestRenderConfigRejectsInvalidInputs(t *testing.T) {
 func TestRenderConfigAcceptsLowercaseEnvironmentName(t *testing.T) {
 	model := testModel()
 	model.APIKeyEnv = "aries_fake_api_key"
-	if _, err := renderConfig(model, testEndpoint()); err != nil {
+	if _, err := renderConfig(model, testEndpoint(), false, false); err != nil {
 		t.Fatalf("renderConfig() rejected a valid environment name: %v", err)
+	}
+}
+
+func TestRenderConfigOmitsWebSearchWhenDisabled(t *testing.T) {
+	content, err := renderConfig(testModel(), testEndpoint(), false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Note: "sandbox" is not checked here as a raw substring — it's also the
+	// key for the unrelated, always-present agents.defaults.sandbox (SSH)
+	// block. tools.Sandbox is checked below via the parsed struct instead.
+	if bytes.Contains(content, []byte(`"web"`)) || bytes.Contains(content, []byte(`"plugins"`)) {
+		t.Fatalf("disabled web search leaked into rendered config: %s", content)
+	}
+	var configuration openClawConfig
+	if err := json.Unmarshal(content, &configuration); err != nil {
+		t.Fatal(err)
+	}
+	if configuration.Tools.Web != nil || configuration.Plugins != nil || configuration.Tools.Sandbox != nil {
+		t.Fatalf("configuration = %#v", configuration)
+	}
+}
+
+func TestRenderConfigEnablesSearXNGWebSearch(t *testing.T) {
+	content, err := renderConfig(testModel(), testEndpoint(), true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var configuration openClawConfig
+	if err := json.Unmarshal(content, &configuration); err != nil {
+		t.Fatal(err)
+	}
+	if configuration.Tools.Web == nil || configuration.Tools.Web.Search == nil || configuration.Tools.Web.Search.Provider != "searxng" {
+		t.Fatalf("tools.web.search = %#v", configuration.Tools.Web)
+	}
+	if configuration.Plugins == nil {
+		t.Fatal("plugins block missing")
+	}
+	entry, ok := configuration.Plugins.Entries["searxng"]
+	if !ok || entry.Config.WebSearch.BaseURL != searxngBaseURL {
+		t.Fatalf("plugins.entries.searxng = %#v", configuration.Plugins.Entries)
+	}
+	if configuration.Tools.Sandbox == nil {
+		t.Fatal("tools.sandbox gate missing: web_search/web_fetch would be invisible to a sandboxed session")
+	}
+	alsoAllow := configuration.Tools.Sandbox.Tools.AlsoAllow
+	if len(alsoAllow) != 2 || alsoAllow[0] != "web_search" || alsoAllow[1] != "web_fetch" {
+		t.Fatalf("tools.sandbox.tools.alsoAllow = %#v", alsoAllow)
+	}
+}
+
+func TestRenderConfigAllowsSubagentsWhenEnabled(t *testing.T) {
+	content, err := renderConfig(testModel(), testEndpoint(), false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var configuration openClawConfig
+	if err := json.Unmarshal(content, &configuration); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(configuration.Tools.Deny, ","); got != "read,write,edit,apply_patch" {
+		t.Fatalf("tool deny list = %q, want sessions_spawn/sessions_yield omitted", got)
 	}
 }
 

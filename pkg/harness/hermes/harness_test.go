@@ -406,6 +406,90 @@ func TestStartKeepsCredentialOutOfDockerMetadataAndArtifacts(t *testing.T) {
 	}
 }
 
+// When extract is configured, the Tavily key must be staged in its own file,
+// exported under Hermes's fixed name by the wrapper, rendered into
+// config.yaml's extract_backend, and kept out of Docker metadata and the
+// retained config — the same guarantees the model key already has.
+func TestStartStagesExtractKeyWhenConfigured(t *testing.T) {
+	modelSecret := []byte("model-secret")
+	extractSecret := []byte("tvly-super-secret")
+	fake := newFakeDocker()
+	manager, err := New(Options{
+		Image: testHermesImage, OutputDir: t.TempDir(), StartTimeout: 2 * time.Second, AgentTimeout: 2 * time.Second,
+		WebSearchEnabled: true, ExtractAPIKeyEnv: "TAVILY_API_KEY",
+		APIKeyLookup: func(name string) ([]byte, bool) {
+			if name == "TAVILY_API_KEY" {
+				return bytes.Clone(extractSecret), true
+			}
+			return bytes.Clone(modelSecret), true
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.client = fake
+	manager.newID = func() (string, error) { return "attempt", nil }
+
+	request := testRequest(t)
+	if err := manager.Start(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(context.Background())
+
+	entries := archiveEntries(t, fake.archive)
+	extractEntry, ok := entries[strings.TrimPrefix(extractKeyPath, "/")]
+	if !ok {
+		t.Fatal("staged archive is missing the extract key file")
+	}
+	if extractEntry.Mode != 0o600 || extractEntry.Size != int64(len(extractSecret)) {
+		t.Fatalf("extract key entry = %+v", extractEntry)
+	}
+
+	config := fake.created.Config
+	for _, value := range append(append([]string(nil), config.Env...), append(config.Cmd, config.Entrypoint...)...) {
+		if strings.Contains(value, string(extractSecret)) {
+			t.Fatalf("extract secret leaked into Docker configuration: %q", value)
+		}
+	}
+	retained, err := os.ReadFile(filepath.Join(manager.outputDir, request.TaskID, "harness", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(retained, extractSecret) {
+		t.Fatalf("extract secret leaked into the retained config:\n%s", retained)
+	}
+	if !bytes.Contains(retained, []byte(`extract_backend: "tavily"`)) {
+		t.Fatalf("retained config is missing extract_backend:\n%s", retained)
+	}
+}
+
+// Missing extract credentials must fail Start and leave no partial container,
+// the same contract the model key already has.
+func TestStartRequiresPresentExtractCredential(t *testing.T) {
+	fake := newFakeDocker()
+	manager, err := New(Options{
+		Image: testHermesImage, OutputDir: t.TempDir(), StartTimeout: 2 * time.Second, AgentTimeout: 2 * time.Second,
+		WebSearchEnabled: true, ExtractAPIKeyEnv: "TAVILY_API_KEY",
+		APIKeyLookup: func(name string) ([]byte, bool) {
+			if name == "TAVILY_API_KEY" {
+				return nil, false
+			}
+			return []byte("model-secret"), true
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.client = fake
+	manager.newID = func() (string, error) { return "attempt", nil }
+	if err := manager.Start(context.Background(), testRequest(t)); err == nil {
+		t.Fatal("missing extract credential was accepted")
+	}
+	if fake.createCalls != 0 {
+		t.Fatalf("container was created despite the missing extract credential: %d calls", fake.createCalls)
+	}
+}
+
 func TestRunReturnsFinalResponseAndArtifacts(t *testing.T) {
 	fake := newFakeDocker()
 	manager := newTestManager(t, fake, []byte("model-secret"))

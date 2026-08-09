@@ -99,7 +99,11 @@ func TestAPIKeySourceIsExactClonedClearedAndDoesNotChangeEnvironment(t *testing.
 		t.Fatal(err)
 	}
 	if value, ok := source.Lookup("OTHER_KEY"); ok || value != nil {
-		t.Fatalf("lookup answered an unexpected name: %q, %v", value, ok)
+		t.Fatalf("unset other name = %q, %v, want absent", value, ok)
+	}
+	t.Setenv("OTHER_KEY", "other-environment-value")
+	if value, ok := source.Lookup("OTHER_KEY"); !ok || string(value) != "other-environment-value" {
+		t.Fatalf("other name = %q, %v, want fallback to the environment", value, ok)
 	}
 	first, ok := source.Lookup(deepSeekAPIKey)
 	if !ok {

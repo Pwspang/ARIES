@@ -114,7 +114,7 @@ func validateKeyFile(info os.FileInfo) error {
 
 func (source *apiKeySource) Lookup(name string) ([]byte, bool) {
 	if source == nil || name != deepSeekAPIKey {
-		return nil, false
+		return environmentAPIKeyLookup(name)
 	}
 	source.mu.Lock()
 	defer source.mu.Unlock()

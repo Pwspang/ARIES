@@ -21,7 +21,7 @@ func validEndpoint() core.ToolEndpoint {
 // The credential must reach the container as a ${NAME} reference that Hermes
 // expands at run time, never as a value written into the rendered config.
 func TestRenderConfigReferencesCredentialByName(t *testing.T) {
-	rendered, err := renderConfig(validModel(), 90)
+	rendered, err := renderConfig(validModel(), 90, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestRenderConfigNormalizesSGLangAndRejectsBadInput(t *testing.T) {
 	model := validModel()
 	model.Provider = "sglang"
 	model.BaseURL = "http://host:30000/v1/"
-	rendered, err := renderConfig(model, 10)
+	rendered, err := renderConfig(model, 10, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,11 +60,11 @@ func TestRenderConfigNormalizesSGLangAndRejectsBadInput(t *testing.T) {
 	for name, mutate := range bad {
 		model := validModel()
 		mutate(&model)
-		if _, err := renderConfig(model, 10); err == nil {
+		if _, err := renderConfig(model, 10, false, false); err == nil {
 			t.Fatalf("%s: invalid model was accepted", name)
 		}
 	}
-	if _, err := renderConfig(validModel(), 0); err == nil {
+	if _, err := renderConfig(validModel(), 0, false, false); err == nil {
 		t.Fatal("non-positive max turns was accepted")
 	}
 }
@@ -73,7 +73,7 @@ func TestRenderConfigNormalizesSGLangAndRejectsBadInput(t *testing.T) {
 func TestRenderConfigQuotesInjectionAttempts(t *testing.T) {
 	model := validModel()
 	model.Model = `x" \nevil: true`
-	rendered, err := renderConfig(model, 10)
+	rendered, err := renderConfig(model, 10, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestValidateModelRejectsControlCharactersInModelID(t *testing.T) {
 // Hermes selects its SSH backend purely from the environment, so this is the
 // contract that replaces Agent_Bench's exec-bridge patch.
 func TestContainerEnvironmentSelectsNativeSSHBackend(t *testing.T) {
-	environment, err := containerEnvironment(validEndpoint(), "/aries/workspace", 180)
+	environment, err := containerEnvironment(validEndpoint(), "/aries/workspace", 180, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,24 +171,115 @@ func TestContainerEnvironmentRejectsUnusableEndpoints(t *testing.T) {
 	for name, mutate := range cases {
 		endpoint := validEndpoint()
 		mutate(&endpoint)
-		if _, err := containerEnvironment(endpoint, "/aries/workspace", 180); err == nil {
+		if _, err := containerEnvironment(endpoint, "/aries/workspace", 180, false); err == nil {
 			t.Fatalf("%s: invalid endpoint was accepted", name)
 		}
 	}
 	for _, workdir := range []string{"", "relative", "/has space", "/trailing/", "/a/../b"} {
-		if _, err := containerEnvironment(validEndpoint(), workdir, 180); err == nil {
+		if _, err := containerEnvironment(validEndpoint(), workdir, 180, false); err == nil {
 			t.Fatalf("workdir %q was accepted", workdir)
 		}
 	}
-	if _, err := containerEnvironment(validEndpoint(), "/aries/workspace", 0); err == nil {
+	if _, err := containerEnvironment(validEndpoint(), "/aries/workspace", 0, false); err == nil {
 		t.Fatal("non-positive terminal timeout was accepted")
+	}
+}
+
+// Disabled web search must leave today's toolset list and environment
+// unchanged — a regression guard for callers that never opt in.
+func TestRenderConfigOmitsWebToolsetWhenDisabled(t *testing.T) {
+	rendered, err := renderConfig(validModel(), 90, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(rendered)
+	if strings.Contains(text, "- web") || strings.Contains(text, "\nweb:") {
+		t.Fatalf("config unexpectedly enables the web toolset:\n%s", text)
+	}
+}
+
+func TestRenderConfigAddsWebToolsetWhenEnabled(t *testing.T) {
+	rendered, err := renderConfig(validModel(), 90, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(rendered)
+	for _, want := range []string{"    - web\n", "\nweb:\n  search_backend: \"searxng\"\n"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("config is missing %q:\n%s", want, text)
+		}
+	}
+}
+
+// extract_backend must only appear when a Tavily key is actually staged —
+// otherwise a web_extract call would hit Hermes with no explicit backend
+// rather than the clear "search-only backend" error SearXNG-only gives.
+func TestRenderConfigOmitsExtractBackendWithoutExtractKey(t *testing.T) {
+	rendered, err := renderConfig(validModel(), 90, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(rendered), "extract_backend") {
+		t.Fatalf("config unexpectedly sets extract_backend:\n%s", rendered)
+	}
+}
+
+func TestRenderConfigAddsExtractBackendWhenEnabled(t *testing.T) {
+	rendered, err := renderConfig(validModel(), 90, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(rendered)
+	for _, want := range []string{"    - web\n", "  search_backend: \"searxng\"\n", "  extract_backend: \"tavily\"\n"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("config is missing %q:\n%s", want, text)
+		}
+	}
+}
+
+// extract_backend must never be rendered when web search itself is off, even
+// if a caller passes extractEnabled=true by mistake.
+func TestRenderConfigOmitsExtractBackendWhenWebSearchDisabled(t *testing.T) {
+	rendered, err := renderConfig(validModel(), 90, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(rendered)
+	if strings.Contains(text, "- web") || strings.Contains(text, "\nweb:") || strings.Contains(text, "extract_backend") {
+		t.Fatalf("config unexpectedly enables web/extract while web search is disabled:\n%s", text)
+	}
+}
+
+func TestContainerEnvironmentSetsSearXNGURLWhenWebSearchEnabled(t *testing.T) {
+	disabled, err := containerEnvironment(validEndpoint(), "/aries/workspace", 180, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range disabled {
+		if strings.HasPrefix(entry, "SEARXNG_URL=") {
+			t.Fatalf("SEARXNG_URL set despite web search being disabled: %v", disabled)
+		}
+	}
+	enabled, err := containerEnvironment(validEndpoint(), "/aries/workspace", 180, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "SEARXNG_URL=" + searxngBaseURL
+	found := false
+	for _, entry := range enabled {
+		if entry == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("environment=%v, want entry %q", enabled, want)
 	}
 }
 
 // --toolsets is unusable on the pinned Hermes build, so the wrapper must not
 // pass it; toolsets come from the rendered config instead.
 func TestAgentWrapperExportsKeyAndAvoidsToolsetsFlag(t *testing.T) {
-	script := string(agentWrapperScript("DEEPSEEK_API_KEY"))
+	script := string(agentWrapperScript("DEEPSEEK_API_KEY", false))
 	for _, want := range []string{
 		"DEEPSEEK_API_KEY=\"$(cat " + modelKeyPath + ")\"",
 		"export DEEPSEEK_API_KEY",
@@ -200,5 +291,22 @@ func TestAgentWrapperExportsKeyAndAvoidsToolsetsFlag(t *testing.T) {
 	}
 	if strings.Contains(script, "--toolsets") {
 		t.Fatalf("wrapper passes --toolsets:\n%s", script)
+	}
+	if strings.Contains(script, tavilyAPIKeyEnv) || strings.Contains(script, extractKeyPath) {
+		t.Fatalf("wrapper exports the extract key despite extract being disabled:\n%s", script)
+	}
+}
+
+func TestAgentWrapperExportsExtractKeyWhenEnabled(t *testing.T) {
+	script := string(agentWrapperScript("DEEPSEEK_API_KEY", true))
+	for _, want := range []string{
+		"DEEPSEEK_API_KEY=\"$(cat " + modelKeyPath + ")\"",
+		"export DEEPSEEK_API_KEY",
+		tavilyAPIKeyEnv + "=\"$(cat " + extractKeyPath + ")\"",
+		"export " + tavilyAPIKeyEnv,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("wrapper is missing %q:\n%s", want, script)
+		}
 	}
 }
