@@ -1,0 +1,59 @@
+{
+  "name": "openclaw-drb-deepseek",
+  "versions_file": "../configs/versions.json",
+  "overrides_file": "",
+  "execution": {
+    "concurrency": 3
+  },
+  "benchmark": {
+    "type": "deepresearchbench",
+    "root": ".cache/deep-research-bench",
+    "tasks": [
+      "1",
+      "51",
+      "75"
+    ],
+    "environment": {
+      "image": "ihasfarm/aries-deepresearchbench:latest",
+      "workdir": "/workspace"
+    }
+  },
+  "harness": {
+    "type": "openclaw",
+    "web_search": {
+      "enabled": true
+    },
+    "subagents": {
+      "enabled": false
+    }
+  },
+  "sandbox": {
+    "type": "docker"
+  },
+  "bridge": {
+    "type": "openclaw-ssh"
+  },
+  "runtime": {
+    "backend": "deepseek",
+    "mode": "external"
+  },
+  "model": {
+    "base_url": "https://api.deepseek.com",
+    "api_key_env": "DEEPSEEK_API_KEY",
+    "id": "deepseek-v4-flash"
+  },
+  "judge": {
+    "provider": "deepseek",
+    "base_url": "https://api.deepseek.com",
+    "api_key_env": "DEEPSEEK_API_KEY",
+    "model": "deepseek-v4-flash"
+  },
+  "fact": {
+    "provider": "deepseek",
+    "base_url": "https://api.deepseek.com",
+    "api_key_env": "DEEPSEEK_API_KEY",
+    "model": "deepseek-v4-flash",
+    "jina_api_key_env": "JINA_API_KEY"
+  },
+  "output_dir": "runs"
+}

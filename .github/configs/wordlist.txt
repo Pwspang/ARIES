@@ -18,9 +18,11 @@ controlmaster
 cpu
 csv
 ctrf
+deduplicates
 deepseek
 docker
 dockerfile
+drb
 durations
 edu
 entrypoint
@@ -35,6 +37,7 @@ html
 http
 idempotently
 integrations
+jina
 jooyoung
 json
 jsonl
@@ -67,6 +70,7 @@ preflight
 preload
 prewarm
 Realtime
+reimplement
 replayable
 roadmap
 runnable
@@ -77,6 +81,7 @@ sandboxes
 sanitization
 scp
 sdk
+searxng
 sg
 sglang
 ssh
@@ -84,8 +89,11 @@ stateful
 stderr
 stdin
 stdout
+subagent
+subagents
 substitutable
 symlink
+tavily
 tbd
 tcp
 teardown
@@ -100,6 +108,7 @@ ttft
 tts
 tty
 upstream's
+url's
 utf
 uuid
 validator
@@ -107,4 +116,5 @@ verifier
 websocket
 workdir
 workdirs
+xfs
 yaml

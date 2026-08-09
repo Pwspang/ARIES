@@ -22,19 +22,25 @@ const defaultOutputDir = "runs"
 // Config is one explicit experiment profile. It has no inheritance, templates,
 // merging, or secret values.
 type Config struct {
-	Name          string           `json:"name"`
-	VersionsFile  string           `json:"versions_file"`
-	OverridesFile string           `json:"overrides_file,omitempty"`
-	Benchmark     BenchmarkConfig  `json:"benchmark"`
-	Harness       HarnessConfig    `json:"harness"`
-	Sandbox       SandboxConfig    `json:"sandbox"`
-	Bridge        BridgeConfig     `json:"bridge"`
-	Runtime       RuntimeConfig    `json:"runtime"`
-	Model         ProfileModel     `json:"model"`
-	Execution     ExecutionConfig  `json:"execution,omitempty"`
-	OutputDir     string           `json:"output_dir"`
-	Versions      Versions         `json:"-"`
-	Overrides     RuntimeOverrides `json:"-"`
+	Name          string          `json:"name"`
+	VersionsFile  string          `json:"versions_file"`
+	OverridesFile string          `json:"overrides_file,omitempty"`
+	Benchmark     BenchmarkConfig `json:"benchmark"`
+	Harness       HarnessConfig   `json:"harness"`
+	Sandbox       SandboxConfig   `json:"sandbox"`
+	Bridge        BridgeConfig    `json:"bridge"`
+	Runtime       RuntimeConfig   `json:"runtime"`
+	Model         ProfileModel    `json:"model"`
+	Judge         *JudgeConfig    `json:"judge,omitempty"`
+	// Fact configures the optional Deep Research Bench FACT citation-
+	// trustworthiness metric. FACT is entirely opt-in: a nil Fact disables
+	// it, and no FACT artifacts or extra LLM/Jina calls occur for runs
+	// that omit it.
+	Fact      *FactConfig      `json:"fact,omitempty"`
+	Execution ExecutionConfig  `json:"execution,omitempty"`
+	OutputDir string           `json:"output_dir"`
+	Versions  Versions         `json:"-"`
+	Overrides RuntimeOverrides `json:"-"`
 }
 
 // ExecutionConfig controls bounded occurrence scheduling above the Runner.
@@ -82,15 +88,90 @@ type ProfileModel struct {
 }
 
 type BenchmarkConfig struct {
-	Type  string   `json:"type"`
-	Root  string   `json:"root"`
-	Tasks []string `json:"tasks"`
+	Type        string                `json:"type"`
+	Root        string                `json:"root"`
+	Tasks       []string              `json:"tasks"`
+	Environment *BenchmarkEnvironment `json:"environment,omitempty"`
+}
+
+// BenchmarkEnvironment describes the task sandbox for benchmarks (currently
+// only Deep Research Bench) that have no per-task environment source of
+// their own, unlike Terminal-Bench 2's task.toml. AllowNetwork is
+// deliberately not configurable here: Deep Research Bench forces it on
+// unconditionally because its tasks are open-ended web research.
+type BenchmarkEnvironment struct {
+	Image     string            `json:"image"`
+	Workdir   string            `json:"workdir,omitempty"`
+	CPU       float64           `json:"cpu,omitempty"`
+	MemoryMB  int               `json:"memory_mb,omitempty"`
+	StorageMB int               `json:"storage_mb,omitempty"`
+	Env       map[string]string `json:"env,omitempty"`
+}
+
+// JudgeConfig identifies the LLM used to grade Deep Research Bench reports.
+// It is intentionally a distinct type from ProfileModel so judge-specific
+// fields can be added later without colliding with the harness model's shape.
+type JudgeConfig struct {
+	Provider  string `json:"provider"`
+	BaseURL   string `json:"base_url"`
+	ID        string `json:"model"`
+	APIKeyEnv string `json:"api_key_env"`
+}
+
+func (j JudgeConfig) CoreModel() core.ModelConfig {
+	return core.ModelConfig{Provider: j.Provider, BaseURL: j.BaseURL, Model: j.ID, APIKeyEnv: j.APIKeyEnv}
+}
+
+// FactConfig identifies the (typically cheaper) LLM used for the FACT
+// citation-extraction/deduplication/validation pipeline, plus the Jina AI
+// Reader API key used to scrape cited URLs. Both the model and the Jina key
+// are required together; FACT has no partial-enable state.
+type FactConfig struct {
+	Provider      string `json:"provider"`
+	BaseURL       string `json:"base_url"`
+	ID            string `json:"model"`
+	APIKeyEnv     string `json:"api_key_env"`
+	JinaAPIKeyEnv string `json:"jina_api_key_env"`
+}
+
+func (f FactConfig) CoreModel() core.ModelConfig {
+	return core.ModelConfig{Provider: f.Provider, BaseURL: f.BaseURL, Model: f.ID, APIKeyEnv: f.APIKeyEnv}
 }
 
 type HarnessConfig struct {
-	Type     string                `json:"type"`
-	Mode     string                `json:"mode,omitempty"`
-	Realtime HarnessRealtimeConfig `json:"realtime,omitempty"`
+	Type      string                 `json:"type"`
+	Mode      string                 `json:"mode,omitempty"`
+	Realtime  HarnessRealtimeConfig  `json:"realtime,omitempty"`
+	WebSearch HarnessWebSearchConfig `json:"web_search,omitempty"`
+	Subagents HarnessSubagentsConfig `json:"subagents,omitempty"`
+}
+
+// HarnessWebSearchConfig is an OpenClaw/Hermes-only concept (see
+// (*HarnessConfig).validate), same as Realtime above: it lives on the shared
+// struct rather than a type-specific sub-block, gated by an explicit type
+// check instead of a nested namespace.
+//
+// ExtractAPIKeyEnv is Hermes-only: it names the host-side environment
+// variable holding a Tavily API key, used as web_extract's backend (SearXNG,
+// Hermes's only search backend, cannot extract page content). Hermes itself
+// always expects the in-container variable named literally TAVILY_API_KEY —
+// this field only controls where the harness looks up the value on the host,
+// mirroring FactConfig.JinaAPIKeyEnv's lookup-name-vs-consumption split.
+type HarnessWebSearchConfig struct {
+	Enabled          bool   `json:"enabled,omitempty"`
+	ExtractAPIKeyEnv string `json:"extract_api_key_env,omitempty"`
+}
+
+// HarnessSubagentsConfig is an OpenClaw-only concept (see
+// (*HarnessConfig).validate), same as WebSearch above. OpenClaw's
+// sessions_spawn/sessions_yield tools are denied when this resolves to
+// disabled, because ARIES's harness protocol has no continuation mechanism
+// to relay async sub-agent completions back to a single-turn request.
+// Enabled is a pointer so "unset" (defaults to enabled under OpenClaw) is
+// distinguishable from an explicit "false" (e.g. Deep Research Bench, which
+// pins its harness protocol's single-turn assumption and opts out).
+type HarnessSubagentsConfig struct {
+	Enabled *bool `json:"enabled,omitempty"`
 }
 
 type HarnessRealtimeConfig struct {
@@ -151,12 +232,18 @@ func (c Config) CoreModel() core.ModelConfig {
 
 // Versions contains the upstream version selections shared by profiles.
 type Versions struct {
-	TerminalBench2 TerminalBench2Versions `json:"terminalbench2"`
-	OpenClaw       OpenClawVersions       `json:"openclaw"`
-	Hermes         HermesVersions         `json:"hermes"`
+	TerminalBench2    TerminalBench2Versions    `json:"terminalbench2"`
+	DeepResearchBench DeepResearchBenchVersions `json:"deepresearchbench"`
+	OpenClaw          OpenClawVersions          `json:"openclaw"`
+	Hermes            HermesVersions            `json:"hermes"`
 }
 
 type TerminalBench2Versions struct {
+	RepositoryURL string `json:"repository_url"`
+	Revision      string `json:"revision"`
+}
+
+type DeepResearchBenchVersions struct {
 	RepositoryURL string `json:"repository_url"`
 	Revision      string `json:"revision"`
 }
@@ -385,24 +472,116 @@ func (c *Config) validate() error {
 			return fmt.Errorf("model.base_url for sglang: %w", err)
 		}
 		c.Model.BaseURL = normalized
-	} else {
-		baseURL, err := url.Parse(c.Model.BaseURL)
-		if err != nil || (baseURL.Scheme != "http" && baseURL.Scheme != "https") || baseURL.Host == "" {
-			return fmt.Errorf("model.base_url must be an absolute HTTP(S) URL")
-		}
-		if baseURL.User != nil || baseURL.RawQuery != "" || baseURL.Fragment != "" {
-			return errors.New("model.base_url must not contain credentials, a query, or a fragment")
-		}
+	} else if err := validateHTTPBaseURL("model.base_url", c.Model.BaseURL); err != nil {
+		return err
 	}
 	if !validEnvName(c.Model.APIKeyEnv) {
 		return errors.New("model.api_key_env must be an environment variable name")
 	}
+	if err := c.validateBenchmarkType(); err != nil {
+		return err
+	}
 	return nil
+}
+
+// validateHTTPBaseURL rejects anything but a credential-free, query-free,
+// fragment-free absolute HTTP(S) URL.
+func validateHTTPBaseURL(name, value string) error {
+	parsed, err := url.Parse(value)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return fmt.Errorf("%s must be an absolute HTTP(S) URL", name)
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("%s must not contain credentials, a query, or a fragment", name)
+	}
+	return nil
+}
+
+// validateBenchmarkType enforces which optional profile blocks a given
+// benchmark type requires versus forbids. Fields that don't apply to the
+// active benchmark type are rejected outright rather than silently ignored.
+// An unrecognized benchmark type is intentionally not rejected here: that is
+// the wiring layer's ValidateComponents responsibility, so unknown types
+// still decode into a Config for that check to inspect and reject.
+func (c *Config) validateBenchmarkType() error {
+	switch c.Benchmark.Type {
+	case "deepresearchbench":
+		if c.Benchmark.Environment == nil || strings.TrimSpace(c.Benchmark.Environment.Image) == "" {
+			return errors.New("benchmark.environment.image is required for deepresearchbench")
+		}
+		if c.Judge == nil {
+			return errors.New("judge is required for deepresearchbench")
+		}
+		if strings.TrimSpace(c.Judge.Provider) == "" {
+			return errors.New("judge.provider is required")
+		}
+		if err := validateHTTPBaseURL("judge.base_url", c.Judge.BaseURL); err != nil {
+			return err
+		}
+		if strings.TrimSpace(c.Judge.ID) == "" {
+			return errors.New("judge.model is required")
+		}
+		if !validEnvName(c.Judge.APIKeyEnv) {
+			return errors.New("judge.api_key_env must be an environment variable name")
+		}
+		if c.Fact != nil {
+			if strings.TrimSpace(c.Fact.Provider) == "" {
+				return errors.New("fact.provider is required")
+			}
+			if err := validateHTTPBaseURL("fact.base_url", c.Fact.BaseURL); err != nil {
+				return err
+			}
+			if strings.TrimSpace(c.Fact.ID) == "" {
+				return errors.New("fact.model is required")
+			}
+			if !validEnvName(c.Fact.APIKeyEnv) {
+				return errors.New("fact.api_key_env must be an environment variable name")
+			}
+			if !validEnvName(c.Fact.JinaAPIKeyEnv) {
+				return errors.New("fact.jina_api_key_env must be an environment variable name")
+			}
+		}
+		return nil
+	case "terminalbench2":
+		if c.Benchmark.Environment != nil {
+			return errors.New("benchmark.environment must not be set for terminalbench2")
+		}
+		if c.Judge != nil {
+			return errors.New("judge must not be set for terminalbench2")
+		}
+		if c.Fact != nil {
+			return errors.New("fact must not be set for terminalbench2")
+		}
+		return nil
+	default:
+		return nil
+	}
 }
 
 func (h *HarnessConfig) validate() error {
 	if h.Mode == "" {
 		h.Mode = "agent"
+	}
+	if h.WebSearch.Enabled && h.Type != "openclaw" && h.Type != "hermes" {
+		return errors.New("harness.web_search requires OpenClaw or Hermes")
+	}
+	if h.WebSearch.ExtractAPIKeyEnv != "" {
+		if h.Type != "hermes" {
+			return errors.New("harness.web_search.extract_api_key_env requires Hermes")
+		}
+		if !h.WebSearch.Enabled {
+			return errors.New("harness.web_search.extract_api_key_env requires harness.web_search.enabled")
+		}
+		if !validEnvName(h.WebSearch.ExtractAPIKeyEnv) {
+			return errors.New("harness.web_search.extract_api_key_env must be an environment variable name")
+		}
+	}
+	if h.Subagents.Enabled != nil && *h.Subagents.Enabled && h.Type != "openclaw" {
+		return errors.New("harness.subagents requires OpenClaw")
+	}
+	if h.Subagents.Enabled == nil && h.Type == "openclaw" {
+		enabled := true
+		h.Subagents.Enabled = &enabled
 	}
 	switch h.Mode {
 	case "agent":
@@ -559,28 +738,14 @@ func validateExperimentName(name string) error {
 }
 
 func (c Versions) validate() error {
-	checks := []struct {
-		name  string
-		value string
-	}{
-		{"terminalbench2.repository_url", c.TerminalBench2.RepositoryURL},
-		{"terminalbench2.revision", c.TerminalBench2.Revision},
-		{"openclaw.image", c.OpenClaw.Image},
+	if strings.TrimSpace(c.OpenClaw.Image) == "" {
+		return errors.New("openclaw.image is required")
 	}
-	for _, check := range checks {
-		if strings.TrimSpace(check.value) == "" {
-			return fmt.Errorf("%s is required", check.name)
-		}
+	if err := validateRepositoryPin("terminalbench2", c.TerminalBench2.RepositoryURL, c.TerminalBench2.Revision); err != nil {
+		return err
 	}
-	repository, err := url.Parse(c.TerminalBench2.RepositoryURL)
-	if err != nil || repository.Scheme != "https" || repository.Host == "" {
-		return errors.New("terminalbench2.repository_url must be an absolute HTTPS URL")
-	}
-	if repository.User != nil || repository.RawQuery != "" || repository.Fragment != "" {
-		return errors.New("terminalbench2.repository_url must not contain credentials, a query, or a fragment")
-	}
-	if !isHex(c.TerminalBench2.Revision, 40) {
-		return errors.New("terminalbench2.revision must be a 40-character Git revision")
+	if err := validateRepositoryPin("deepresearchbench", c.DeepResearchBench.RepositoryURL, c.DeepResearchBench.Revision); err != nil {
+		return err
 	}
 	if err := containerimage.ValidatePinnedTagOnly(c.OpenClaw.Image); err != nil {
 		return fmt.Errorf("openclaw.image: %w", err)
@@ -614,6 +779,26 @@ func (c Versions) HarnessImage(harnessType string) (string, error) {
 		return "", fmt.Errorf("%s is required for harness type %q", field, harnessType)
 	}
 	return image, nil
+}
+
+func validateRepositoryPin(name, repositoryURL, revision string) error {
+	if strings.TrimSpace(repositoryURL) == "" {
+		return fmt.Errorf("%s.repository_url is required", name)
+	}
+	if strings.TrimSpace(revision) == "" {
+		return fmt.Errorf("%s.revision is required", name)
+	}
+	repository, err := url.Parse(repositoryURL)
+	if err != nil || repository.Scheme != "https" || repository.Host == "" {
+		return fmt.Errorf("%s.repository_url must be an absolute HTTPS URL", name)
+	}
+	if repository.User != nil || repository.RawQuery != "" || repository.Fragment != "" {
+		return fmt.Errorf("%s.repository_url must not contain credentials, a query, or a fragment", name)
+	}
+	if !isHex(revision, 40) {
+		return fmt.Errorf("%s.revision must be a 40-character Git revision", name)
+	}
+	return nil
 }
 
 func isHex(value string, characters int) bool {

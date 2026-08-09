@@ -46,3 +46,6 @@ DEEPSEEK_API.key
 .codex/skills/.system/**
 !.codex/prompts/
 !.codex/prompts/**
+
+# Deep Research Sandbox Dockerfile
+images/**
