@@ -54,6 +54,11 @@ func TestStripCitationMarkers(t *testing.T) {
 			want:  "a plain sentence with no markers",
 		},
 		{
+			name:  "citation at end of paragraph keeps the block break",
+			input: "a claim[1]\n\n## Next section",
+			want:  "a claim\n\n## Next section",
+		},
+		{
 			name:  "empty string",
 			input: "",
 			want:  "",

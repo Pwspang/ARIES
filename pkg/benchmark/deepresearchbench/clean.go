@@ -23,7 +23,7 @@ var citationMarkerPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\[\d+†[^\]]*\]`),
 	// Runs of one or more bracketed numeric citations, e.g. "[12]" or
 	// "[1][2][3]" or "[1, 2]".
-	regexp.MustCompile(`(?:\[\d+(?:,\s*\d+)*\]\s*)+`),
+	regexp.MustCompile(`(?:\[\d+(?:,[^\S\r\n]*\d+)*\][^\S\r\n]*)+`),
 }
 
 // stripCitationMarkers removes in-text bracketed citation-marker noise from

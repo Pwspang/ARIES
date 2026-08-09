@@ -576,7 +576,7 @@ func (h *HarnessConfig) validate() error {
 			return errors.New("harness.web_search.extract_api_key_env must be an environment variable name")
 		}
 	}
-	if h.Subagents.Enabled != nil && *h.Subagents.Enabled && h.Type != "openclaw" {
+	if h.Subagents.Enabled != nil && h.Type != "openclaw" {
 		return errors.New("harness.subagents requires OpenClaw")
 	}
 	if h.Subagents.Enabled == nil && h.Type == "openclaw" {

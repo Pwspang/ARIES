@@ -211,6 +211,22 @@ func TestFactPipelineDeduplicateKeepsAllFactsAndWarnsOnOutOfRangeIndex(t *testin
 	}
 }
 
+func TestFactPipelineDeduplicateKeepsAllFactsAndWarnsOnDuplicateIndex(t *testing.T) {
+	chat := &fakeChatter{dedupResponse: "[1,1]"}
+	pipeline := &factPipeline{chat: chat, jina: &fakeJina{}}
+	citations := []factCitation{
+		{Fact: "claim A", URL: "https://a.example"},
+		{Fact: "claim B", URL: "https://a.example"},
+	}
+	groups, warnings := pipeline.deduplicate(context.Background(), citations)
+	if got := groups["https://a.example"].Facts; len(got) != 2 {
+		t.Fatalf("facts = %v, want both facts kept when the dedup response repeats an index", got)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %v, want one warning", warnings)
+	}
+}
+
 func TestAggregateFactReportCountsSupportedAndExcludesUnknown(t *testing.T) {
 	results := map[string][]factCitationResult{
 		"a": {factSupported, factUnsupported, factUnknown},

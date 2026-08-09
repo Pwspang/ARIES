@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/hyscale-lab/aries/pkg/core"
 )
@@ -12,6 +13,10 @@ import (
 // maxRaceRetries mirrors upstream's retry budget for a judge response that
 // fails to parse as JSON or is missing an expected dimension key.
 const maxRaceRetries = 10
+
+// raceRetryDelay is the pause between retries, matching jina.go's
+// jinaRetryDelay convention.
+const raceRetryDelay = time.Second
 
 // raceDimension enumerates the four RACE dimensions in a fixed, stable
 // order used for prompt construction and metric key naming.
@@ -114,6 +119,10 @@ type raceScorer interface {
 // upstream RACE merged-score prompt and weighted-criteria algorithm.
 type raceClient struct {
 	chat chatter
+	// retryDelay is the pause between retries. Left at its zero value, a
+	// directly-constructed raceClient (as in tests) retries with no delay;
+	// newRaceClient sets it to raceRetryDelay for real judge calls.
+	retryDelay time.Duration
 }
 
 var _ raceScorer = (*raceClient)(nil)
@@ -123,7 +132,7 @@ func newRaceClient(model core.ModelConfig, apiKeyLookup func(string) ([]byte, bo
 	if err != nil {
 		return nil, err
 	}
-	return &raceClient{chat: client}, nil
+	return &raceClient{chat: client, retryDelay: raceRetryDelay}, nil
 }
 
 const raceSystemPrompt = "You are a strict, meticulous, and objective research article evaluation expert. " +
@@ -240,6 +249,13 @@ func (c *raceClient) Score(ctx context.Context, prompt, targetArticle, reference
 
 	var lastErr error
 	for attempt := 0; attempt < maxRaceRetries; attempt++ {
+		if attempt > 0 && c.retryDelay > 0 {
+			select {
+			case <-ctx.Done():
+				return raceResult{}, ctx.Err()
+			case <-time.After(c.retryDelay):
+			}
+		}
 		content, err := c.chat.chat(ctx, system, user)
 		if err != nil {
 			lastErr = err
@@ -276,6 +292,9 @@ func matchCriterionWeight(name string, criteria []criterion) (weight float64, wa
 	}
 	for _, c := range criteria {
 		criterionLower := strings.ToLower(c.Criterion)
+		if criterionLower == "" || lower == "" {
+			continue
+		}
 		if strings.Contains(lower, criterionLower) || strings.Contains(criterionLower, lower) {
 			return c.Weight, ""
 		}
@@ -330,9 +349,11 @@ func calculateWeightedScores(output raceJudgeOutput, criteria taskCriteria) race
 		dimCriteria := criteria.Criterions.criteriaFor(dimension)
 
 		targetAvg, targetWarnings := weightedDimensionAverage(scores, dimCriteria, true)
-		referenceAvg, referenceWarnings := weightedDimensionAverage(scores, dimCriteria, false)
+		// The reference pass runs matchCriterionWeight over the same scores
+		// and criteria as the target pass, so its warnings are identical;
+		// only the target-side warnings are kept to avoid duplicates.
+		referenceAvg, _ := weightedDimensionAverage(scores, dimCriteria, false)
 		result.Warnings = append(result.Warnings, targetWarnings...)
-		result.Warnings = append(result.Warnings, referenceWarnings...)
 
 		dimensionTarget[dimension] = targetAvg
 		dimensionReference[dimension] = referenceAvg

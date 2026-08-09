@@ -7,11 +7,16 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/hyscale-lab/aries/pkg/core"
 )
 
 const factMaxRetries = 3
+
+// factRetryDelay is the pause between validateGroup retries, matching
+// jina.go's jinaRetryDelay convention.
+const factRetryDelay = time.Second
 
 // factCitation is one extracted (fact, ref_idx, url) triplet before dedup.
 // ref_idx is intentionally not decoded: the judge returns it inconsistently
@@ -65,6 +70,10 @@ type factRunner interface {
 type factPipeline struct {
 	chat chatter
 	jina jinaScraper
+	// validateRetryDelay is the pause between validateGroup retries. Left at
+	// its zero value, a directly-constructed factPipeline (as in tests)
+	// retries with no delay; newFactPipeline sets it to factRetryDelay.
+	validateRetryDelay time.Duration
 }
 
 var _ factRunner = (*factPipeline)(nil)
@@ -74,7 +83,7 @@ func newFactPipeline(model core.ModelConfig, apiKeyLookup func(string) ([]byte, 
 	if err != nil {
 		return nil, err
 	}
-	return &factPipeline{chat: chat, jina: newJinaClient(jinaAPIKey)}, nil
+	return &factPipeline{chat: chat, jina: newJinaClient(jinaAPIKey), validateRetryDelay: factRetryDelay}, nil
 }
 
 // Run executes the full FACT pipeline against one raw candidate article.
@@ -241,11 +250,16 @@ func (p *factPipeline) deduplicateFacts(ctx context.Context, facts []string) ([]
 	if len(indices) == 0 || len(indices) > len(facts) {
 		return facts, fmt.Sprintf("dedup response had %d indices for %d facts, keeping all facts", len(indices), len(facts))
 	}
+	seen := make(map[int]struct{}, len(indices))
 	kept := make([]string, 0, len(indices))
 	for _, index := range indices {
 		if index < 1 || index > len(facts) {
 			return facts, fmt.Sprintf("dedup response referenced out-of-range index %d, keeping all facts", index)
 		}
+		if _, duplicate := seen[index]; duplicate {
+			return facts, fmt.Sprintf("dedup response referenced index %d more than once, keeping all facts", index)
+		}
+		seen[index] = struct{}{}
 		kept = append(kept, facts[index-1])
 	}
 	return kept, ""
@@ -350,6 +364,13 @@ func (p *factPipeline) validateGroup(ctx context.Context, reference string, fact
 
 	var lastErr error
 	for attempt := 0; attempt < factMaxRetries; attempt++ {
+		if attempt > 0 && p.validateRetryDelay > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(p.validateRetryDelay):
+			}
+		}
 		content, err := p.chat.chat(ctx, "", prompt)
 		if err != nil {
 			lastErr = err
