@@ -78,6 +78,25 @@ func TestCalculateWeightedScoresMatchesHandComputedExample(t *testing.T) {
 	}
 }
 
+func TestCalculateWeightedScoresDoesNotDuplicateFallbackWarnings(t *testing.T) {
+	criteria := exampleCriteria()
+	output := exampleJudgeOutput()
+	output.Comprehensiveness[0].Criterion = "totally unmatched criterion name"
+
+	result := calculateWeightedScores(output, criteria)
+	if len(result.Warnings) != 1 {
+		t.Fatalf("Warnings = %v, want exactly one warning for the one unmatched criterion", result.Warnings)
+	}
+}
+
+func TestMatchCriterionWeightIgnoresEmptyVendoredCriterionName(t *testing.T) {
+	criteria := []criterion{{Criterion: "", Weight: 0.6}, {Criterion: "depth", Weight: 0.4}}
+	weight, warning := matchCriterionWeight("coverage", criteria)
+	if warning == "" {
+		t.Fatalf("matchCriterionWeight() = (%v, %q), want a fallback warning rather than a spurious empty-name match", weight, warning)
+	}
+}
+
 func TestMatchCriterionWeightExactMatch(t *testing.T) {
 	criteria := []criterion{{Criterion: "coverage", Weight: 0.6}, {Criterion: "depth", Weight: 0.4}}
 	weight, warning := matchCriterionWeight("coverage", criteria)

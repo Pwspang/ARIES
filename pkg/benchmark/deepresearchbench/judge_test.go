@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/hyscale-lab/aries/pkg/core"
@@ -18,10 +19,14 @@ func chatCompletionServer(t *testing.T, content string, statusCode int) *httptes
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/chat/completions" {
-			t.Fatalf("unexpected path %q", r.URL.Path)
+			t.Errorf("unexpected path %q", r.URL.Path)
+			http.Error(w, "unexpected path", http.StatusBadRequest)
+			return
 		}
 		if r.Header.Get("Authorization") != "Bearer fake-key" {
-			t.Fatalf("unexpected Authorization header %q", r.Header.Get("Authorization"))
+			t.Errorf("unexpected Authorization header %q", r.Header.Get("Authorization"))
+			http.Error(w, "unexpected authorization", http.StatusUnauthorized)
+			return
 		}
 		w.WriteHeader(statusCode)
 		response := map[string]any{
@@ -63,6 +68,22 @@ func TestJudgeClientChatRejectsHTTPError(t *testing.T) {
 	client := newTestJudgeClient(t, server.URL+"/v1")
 	if _, err := client.chat(context.Background(), "system", "user"); err == nil {
 		t.Fatal("chat() accepted an HTTP error response")
+	}
+}
+
+func TestJudgeClientChatRedactsAPIKeyFromErrorBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"echoed request Authorization: Bearer fake-key"}`))
+	}))
+	defer server.Close()
+	client := newTestJudgeClient(t, server.URL+"/v1")
+	_, err := client.chat(context.Background(), "system", "user")
+	if err == nil {
+		t.Fatal("chat() accepted an HTTP error response")
+	}
+	if strings.Contains(err.Error(), "fake-key") {
+		t.Fatalf("chat() error leaked the API key: %v", err)
 	}
 }
 

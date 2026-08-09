@@ -95,7 +95,7 @@ const taskPromptTemplate = "" +
 	"   pages yourself; that duplicates what the tool already does.\n" +
 	"4. Synthesize the evidence into a coherent long-form markdown report at\n" +
 	"   `" + reportPath + "`, with **inline citations** to the source URLs.\n" +
-	". When the report is complete, reply with a single line: `DONE`.\n" +
+	"5. When the report is complete, reply with a single line: `DONE`.\n" +
 	"\n" +
 	"## Output format\n" +
 	"\n" +

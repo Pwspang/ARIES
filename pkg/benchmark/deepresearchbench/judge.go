@@ -104,7 +104,8 @@ func (client *judgeClient) chat(ctx context.Context, systemPrompt, userPrompt st
 		return "", errors.New("judge response is too large")
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return "", fmt.Errorf("judge request returned HTTP %d: %s", response.StatusCode, truncate(responseBody, 500))
+		snippet := strings.ReplaceAll(truncate(responseBody, 500), string(client.apiKey), "[REDACTED]")
+		return "", fmt.Errorf("judge request returned HTTP %d: %s", response.StatusCode, snippet)
 	}
 
 	return extractChatContent(responseBody)
