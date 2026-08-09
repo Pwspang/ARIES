@@ -31,9 +31,26 @@ flowchart TB
     A --> HO --> O
 ```
 
-The current implementation is Terminal-Bench 2 from an exact pinned checkout.
-Task environment images and workdirs are derived from the selected task data.
-Setup verifies the pinned checkout and selected task inputs before a run.
+The current implementations are Terminal-Bench 2 and Deep Research Bench, both
+from an exact pinned checkout. Terminal-Bench 2's task environment images and
+workdirs are derived from the selected task data; setup verifies the pinned
+checkout and selected task inputs before a run.
+
+Deep Research Bench has no sandbox-resident private verifier tree. Its private
+material is a reference report and RACE-dimension rubric compared by an
+LLM judge entirely host-side; that material is never uploaded into the
+sandbox. `PrepareSandbox` instead confirms the agent's designated report-output
+path starts absent, and `Evaluate` downloads the agent's report from that path
+after both isolation gates before invoking the judge. The agent's research
+work itself still runs entirely inside the sandbox, exactly like Terminal-Bench
+2 — only grading moves host-side.
+
+An optional FACT pass layers citation-trustworthiness checking on top of RACE:
+it extracts claim/citation pairs from the same downloaded report, fetches each
+cited URL host-side through the Jina AI Reader API, and validates the claim
+against the fetched content with its own judge model. FACT is strictly
+additive — configuring it (or not) never changes the RACE-derived score,
+reward, or status.
 
 ## Customization & Contribution Guide
 

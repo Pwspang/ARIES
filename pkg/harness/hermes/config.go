@@ -18,9 +18,24 @@ const (
 	stateContainerPath  = stagedRoot + "/hermes"
 	configContainerPath = stateContainerPath + "/config.yaml"
 	modelKeyPath        = stateContainerPath + "/model.key"
+	extractKeyPath      = stateContainerPath + "/tavily.key"
 	identityContainerFS = stagedRoot + "/ssh/id_ed25519"
 	agentWrapperPath    = stagedRoot + "/run-agent"
 	workspaceRoot       = stagedRoot + "/workspace"
+
+	// tavilyAPIKeyEnv is the in-container environment variable name Hermes's
+	// Tavily plugin reads. It is fixed by Hermes itself, unlike the profile's
+	// (host-side) HarnessWebSearchConfig.ExtractAPIKeyEnv lookup name.
+	tavilyAPIKeyEnv = "TAVILY_API_KEY"
+
+	// searxngBaseURL matches the fixed network alias
+	// (pkg/sandbox/docker/docker.go's `networkAlias = "task-sandbox"`) and
+	// port (images/deep-research-bench/Dockerfile) that the DRB task
+	// sandbox's built-in SearXNG instance is always reachable at from the
+	// Hermes harness container, which joins the same per-task Docker
+	// network. Mirrors pkg/harness/openclaw/config.go's constant of the same
+	// name and value.
+	searxngBaseURL = "http://task-sandbox:8888"
 )
 
 // renderConfig produces the Hermes `config.yaml`. The credential is written as
@@ -32,7 +47,7 @@ const (
 // Terminal settings are deliberately absent. Hermes resolves its backend from
 // environment variables only (tools/terminal_tool.py::_get_env_config), so the
 // SSH target is supplied through containerEnvironment below.
-func renderConfig(model core.ModelConfig, maxTurns int) ([]byte, error) {
+func renderConfig(model core.ModelConfig, maxTurns int, webSearchEnabled, extractEnabled bool) ([]byte, error) {
 	if err := validateModel(model); err != nil {
 		return nil, err
 	}
@@ -67,6 +82,19 @@ func renderConfig(model core.ModelConfig, maxTurns int) ([]byte, error) {
 	output.WriteString("    - terminal\n")
 	output.WriteString("    - file\n")
 	output.WriteString("    - code_execution\n")
+	if webSearchEnabled {
+		output.WriteString("    - web\n")
+		// search_backend (not backend) is deliberate: the DRB task sandbox's
+		// SearXNG instance is search-only. extract_backend is only added when
+		// a Tavily key is staged (extractEnabled); otherwise a web_extract
+		// call fails with Hermes's own explicit "no extract backend" error
+		// rather than an ambiguous one.
+		output.WriteString("\nweb:\n")
+		output.WriteString("  search_backend: \"searxng\"\n")
+		if extractEnabled {
+			output.WriteString("  extract_backend: \"tavily\"\n")
+		}
+	}
 	return output.Bytes(), nil
 }
 
@@ -79,7 +107,7 @@ func renderConfig(model core.ModelConfig, maxTurns int) ([]byte, error) {
 // `cd <TERMINAL_CWD> 2>/dev/null || true` followed by `pwd -P`, so a path it
 // cannot enter makes it adopt the workdir the bridge chose. Naming a real
 // sandbox path here is impossible in any case — the harness never learns it.
-func containerEnvironment(endpoint core.ToolEndpoint, workdir string, terminalTimeout int) ([]string, error) {
+func containerEnvironment(endpoint core.ToolEndpoint, workdir string, terminalTimeout int, webSearchEnabled bool) ([]string, error) {
 	if err := validateEndpoint(endpoint); err != nil {
 		return nil, err
 	}
@@ -96,7 +124,7 @@ func containerEnvironment(endpoint core.ToolEndpoint, workdir string, terminalTi
 	if _, err := strconv.Atoi(port); err != nil {
 		return nil, errors.New("Hermes SSH endpoint port is invalid")
 	}
-	return []string{
+	environment := []string{
 		"HERMES_HOME=" + stateContainerPath,
 		"TERMINAL_ENV=ssh",
 		"TERMINAL_SSH_HOST=" + host,
@@ -105,14 +133,20 @@ func containerEnvironment(endpoint core.ToolEndpoint, workdir string, terminalTi
 		"TERMINAL_SSH_KEY=" + identityContainerFS,
 		"TERMINAL_CWD=" + workdir,
 		"TERMINAL_TIMEOUT=" + strconv.Itoa(terminalTimeout),
-	}, nil
+	}
+	if webSearchEnabled {
+		environment = append(environment, "SEARXNG_URL="+searxngBaseURL)
+	}
+	return environment, nil
 }
 
-// agentWrapperScript exports the staged credential under the configured name
-// and replaces itself with the Hermes one-shot. Keeping the export inside the
-// container means the value never appears in Docker's exec or container config.
-func agentWrapperScript(apiKeyEnv string) []byte {
-	return []byte(`#!/bin/sh
+// agentWrapperScript exports the staged credential(s) under their required
+// names and replaces itself with the Hermes one-shot. Keeping the exports
+// inside the container means no value ever appears in Docker's exec or
+// container config. extractEnabled additionally exports the Tavily key
+// staged at extractKeyPath, under Hermes's fixed tavilyAPIKeyEnv name.
+func agentWrapperScript(apiKeyEnv string, extractEnabled bool) []byte {
+	script := `#!/bin/sh
 set -eu
 if [ ! -f ` + modelKeyPath + ` ]; then
   echo "ARIES: Hermes model key is missing" >&2
@@ -120,8 +154,19 @@ if [ ! -f ` + modelKeyPath + ` ]; then
 fi
 ` + apiKeyEnv + `="$(cat ` + modelKeyPath + `)"
 export ` + apiKeyEnv + `
-exec hermes --ignore-rules --yolo --model "$1" --provider "$2" -z "$3"
-`)
+`
+	if extractEnabled {
+		script += `if [ ! -f ` + extractKeyPath + ` ]; then
+  echo "ARIES: Hermes extract API key is missing" >&2
+  exit 1
+fi
+` + tavilyAPIKeyEnv + `="$(cat ` + extractKeyPath + `)"
+export ` + tavilyAPIKeyEnv + `
+`
+	}
+	script += `exec hermes --ignore-rules --yolo --model "$1" --provider "$2" -z "$3"
+`
+	return []byte(script)
 }
 
 func validateModel(model core.ModelConfig) error {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/hyscale-lab/aries/internal/app"
 	runtimesglang "github.com/hyscale-lab/aries/internal/modelruntime/sglang"
+	"github.com/hyscale-lab/aries/pkg/benchmark/deepresearchbench"
 	"github.com/hyscale-lab/aries/pkg/benchmark/terminalbench"
 	"github.com/hyscale-lab/aries/pkg/bridge/hermesssh"
 	"github.com/hyscale-lab/aries/pkg/bridge/openclawssh"
@@ -22,6 +23,17 @@ import (
 	dockersandbox "github.com/hyscale-lab/aries/pkg/sandbox/docker"
 	"github.com/sirupsen/logrus"
 )
+
+// environmentAPIKeyLookup resolves the Deep Research Bench judge's API key
+// from the process environment, mirroring internal/app's default lookup for
+// the harness's own model.
+func environmentAPIKeyLookup(name string) ([]byte, bool) {
+	value, ok := os.LookupEnv(name)
+	if !ok {
+		return nil, false
+	}
+	return []byte(value), true
+}
 
 func commandWiring() app.Wiring {
 	return app.Wiring{
@@ -39,7 +51,7 @@ func commandWiring() app.Wiring {
 
 func validateComponents(cfg config.Config) error {
 	switch cfg.Benchmark.Type {
-	case "terminalbench2":
+	case "terminalbench2", "deepresearchbench":
 	default:
 		return fmt.Errorf("unsupported benchmark type %q", cfg.Benchmark.Type)
 	}
@@ -114,8 +126,54 @@ func newBenchmark(cfg config.Config, outputRoot, logicalID, occurrenceID string)
 			return nil, fmt.Errorf("construct terminalbench2 benchmark: %w", err)
 		}
 		return benchmark, nil
+	case "deepresearchbench":
+		if cfg.Judge == nil {
+			return nil, errors.New("deepresearchbench requires judge config")
+		}
+		var executionIDs []string
+		if occurrenceID != logicalID {
+			executionIDs = []string{occurrenceID}
+		}
+		var factCfg config.FactConfig
+		if cfg.Fact != nil {
+			factCfg = *cfg.Fact
+		}
+		benchmark, err := deepresearchbench.New(deepresearchbench.Options{
+			Root: cfg.Benchmark.Root, TaskIDs: []string{logicalID}, ExecutionTaskIDs: executionIDs, OutputDir: outputRoot,
+			Revision:      cfg.Versions.DeepResearchBench.Revision,
+			Environment:   environmentFromConfig(cfg.Benchmark.Environment),
+			Judge:         cfg.Judge.CoreModel(),
+			FactJudge:     factCfg.CoreModel(),
+			JinaAPIKeyEnv: factCfg.JinaAPIKeyEnv,
+			APIKeyLookup:  environmentAPIKeyLookup,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("construct deepresearchbench benchmark: %w", err)
+		}
+		if reason := benchmark.FactSkipReason(); reason != "" {
+			fmt.Fprintf(os.Stderr, "warning: %s\n", reason)
+		}
+		return benchmark, nil
 	default:
 		return nil, fmt.Errorf("unsupported benchmark type %q", cfg.Benchmark.Type)
+	}
+}
+
+// environmentFromConfig converts a profile's benchmark.environment block into
+// the runner-neutral core.Environment. cfg is nil only when Config.validate
+// hasn't run (e.g. ad-hoc construction); callers of newBenchmark and
+// loadPreparationTasks always pass an already-validated config.
+func environmentFromConfig(cfg *config.BenchmarkEnvironment) core.Environment {
+	if cfg == nil {
+		return core.Environment{}
+	}
+	return core.Environment{
+		Image:     cfg.Image,
+		Workdir:   cfg.Workdir,
+		CPU:       cfg.CPU,
+		MemoryMB:  cfg.MemoryMB,
+		StorageMB: cfg.StorageMB,
+		Env:       cfg.Env,
 	}
 }
 
@@ -142,13 +200,20 @@ func newHarness(cfg config.Config, outputRoot string, lookup func(string) ([]byt
 			ReasoningEffort:       cfg.Harness.Realtime.ReasoningEffort,
 			IncludeEvents:         cfg.Harness.Realtime.IncludeEvents,
 		}
-		manager, err := openclawharness.New(openclawharness.Options{Image: cfg.Versions.OpenClaw.Image, OutputDir: outputRoot, APIKeyLookup: lookup, Logger: logger, Mode: cfg.Harness.Mode, Realtime: realtime})
+		manager, err := openclawharness.New(openclawharness.Options{
+			Image: cfg.Versions.OpenClaw.Image, OutputDir: outputRoot, APIKeyLookup: lookup, Logger: logger,
+			Mode: cfg.Harness.Mode, Realtime: realtime, WebSearchEnabled: cfg.Harness.WebSearch.Enabled,
+			SubagentsEnabled: cfg.Harness.Subagents.Enabled != nil && *cfg.Harness.Subagents.Enabled,
+		})
 		if err != nil {
 			return app.HarnessInstance{}, fmt.Errorf("construct OpenClaw harness: %w", err)
 		}
 		return app.HarnessInstance{Harness: manager, Close: manager.Close}, nil
 	case "hermes":
-		manager, err := hermesharness.New(hermesharness.Options{Image: cfg.Versions.Hermes.Image, OutputDir: outputRoot, APIKeyLookup: lookup, Logger: logger})
+		manager, err := hermesharness.New(hermesharness.Options{
+			Image: cfg.Versions.Hermes.Image, OutputDir: outputRoot, APIKeyLookup: lookup, Logger: logger,
+			WebSearchEnabled: cfg.Harness.WebSearch.Enabled, ExtractAPIKeyEnv: cfg.Harness.WebSearch.ExtractAPIKeyEnv,
+		})
 		if err != nil {
 			return app.HarnessInstance{}, fmt.Errorf("construct Hermes harness: %w", err)
 		}
@@ -230,17 +295,53 @@ func newBridge(cfg config.Config, outputRoot string, logger *logrus.Logger) (run
 }
 
 func setupBenchmark(ctx context.Context, cfg config.Config) error {
-	return terminalbench.Setup(ctx, cfg.Benchmark.Root, cfg.Versions.TerminalBench2.RepositoryURL, cfg.Versions.TerminalBench2.Revision)
+	switch cfg.Benchmark.Type {
+	case "deepresearchbench":
+		return deepresearchbench.Setup(ctx, cfg.Benchmark.Root, cfg.Versions.DeepResearchBench.RepositoryURL, cfg.Versions.DeepResearchBench.Revision)
+	default:
+		return terminalbench.Setup(ctx, cfg.Benchmark.Root, cfg.Versions.TerminalBench2.RepositoryURL, cfg.Versions.TerminalBench2.Revision)
+	}
 }
 
 func loadPreparationTasks(ctx context.Context, cfg config.Config, taskIDs []string) ([]core.Task, error) {
-	benchmark, err := terminalbench.New(terminalbench.Options{Root: cfg.Benchmark.Root, TaskIDs: taskIDs, OutputDir: cfg.OutputDir, Revision: cfg.Versions.TerminalBench2.Revision})
-	if err != nil {
-		return nil, fmt.Errorf("validate terminalbench2 profile: %w", err)
+	switch cfg.Benchmark.Type {
+	case "deepresearchbench":
+		if cfg.Judge == nil {
+			return nil, errors.New("deepresearchbench requires judge config")
+		}
+		var factCfg config.FactConfig
+		if cfg.Fact != nil {
+			factCfg = *cfg.Fact
+		}
+		benchmark, err := deepresearchbench.New(deepresearchbench.Options{
+			Root: cfg.Benchmark.Root, TaskIDs: taskIDs, OutputDir: cfg.OutputDir,
+			Revision:      cfg.Versions.DeepResearchBench.Revision,
+			Environment:   environmentFromConfig(cfg.Benchmark.Environment),
+			Judge:         cfg.Judge.CoreModel(),
+			FactJudge:     factCfg.CoreModel(),
+			JinaAPIKeyEnv: factCfg.JinaAPIKeyEnv,
+			APIKeyLookup:  environmentAPIKeyLookup,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("validate deepresearchbench profile: %w", err)
+		}
+		if reason := benchmark.FactSkipReason(); reason != "" {
+			fmt.Fprintf(os.Stderr, "warning: %s\n", reason)
+		}
+		tasks, err := benchmark.Tasks(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("load deepresearchbench tasks: %w", err)
+		}
+		return tasks, nil
+	default:
+		benchmark, err := terminalbench.New(terminalbench.Options{Root: cfg.Benchmark.Root, TaskIDs: taskIDs, OutputDir: cfg.OutputDir, Revision: cfg.Versions.TerminalBench2.Revision})
+		if err != nil {
+			return nil, fmt.Errorf("validate terminalbench2 profile: %w", err)
+		}
+		tasks, err := benchmark.Tasks(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("load terminalbench2 tasks: %w", err)
+		}
+		return tasks, nil
 	}
-	tasks, err := benchmark.Tasks(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("load terminalbench2 tasks: %w", err)
-	}
-	return tasks, nil
 }

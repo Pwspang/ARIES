@@ -19,7 +19,7 @@ const validConfig = `{
   "model":{"id":"fake","base_url":"http://127.0.0.1:8080","api_key_env":"DEEPSEEK_API_KEY"}
 }`
 
-const validVersions = `{"terminalbench2":{"repository_url":"https://example.invalid/terminal-bench-2.git","revision":"0123456789abcdef0123456789abcdef01234567"},"openclaw":{"image":"ghcr.io/openclaw/openclaw:2026.7.1"},"hermes":{"image":"docker.io/nousresearch/hermes-agent:v2026.5.29.2"}}`
+const validVersions = `{"terminalbench2":{"repository_url":"https://example.invalid/terminal-bench-2.git","revision":"0123456789abcdef0123456789abcdef01234567"},"deepresearchbench":{"repository_url":"https://example.invalid/deep-research-bench.git","revision":"fedcba9876543210fedcba9876543210fedcba98"},"openclaw":{"image":"ghcr.io/openclaw/openclaw:2026.7.1"},"hermes":{"image":"docker.io/nousresearch/hermes-agent:v2026.5.29.2"}}`
 
 func TestNormalizedRuntimeSchema(t *testing.T) {
 	cfg, err := Decode(strings.NewReader(validConfig))
@@ -70,6 +70,104 @@ func TestRealtimeHarnessConfigValidationAndResolution(t *testing.T) {
 				t.Fatal("expected rejection")
 			}
 		})
+	}
+}
+
+func TestWebSearchHarnessConfigValidation(t *testing.T) {
+	enabled := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","web_search":{"enabled":true}}`, 1)
+	cfg, err := Decode(strings.NewReader(enabled))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Harness.WebSearch.Enabled {
+		t.Fatalf("harness web_search = %#v, want enabled", cfg.Harness.WebSearch)
+	}
+
+	disabled := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","web_search":{"enabled":false}}`, 1)
+	cfg, err = Decode(strings.NewReader(disabled))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Harness.WebSearch.Enabled {
+		t.Fatalf("harness web_search = %#v, want disabled", cfg.Harness.WebSearch)
+	}
+
+	nonOpenClaw := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"other","web_search":{"enabled":true}}`, 1)
+	if _, err := Decode(strings.NewReader(nonOpenClaw)); err == nil {
+		t.Fatal("expected rejection of harness.web_search under a non-OpenClaw/Hermes harness type")
+	}
+
+	hermes := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"hermes","web_search":{"enabled":true}}`, 1)
+	hermes = strings.Replace(hermes, `"bridge":{"type":"openclaw-ssh"}`, `"bridge":{"type":"hermes-ssh"}`, 1)
+	cfg, err = Decode(strings.NewReader(hermes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Harness.WebSearch.Enabled {
+		t.Fatalf("hermes harness web_search = %#v, want enabled", cfg.Harness.WebSearch)
+	}
+}
+
+func TestHermesExtractAPIKeyEnvValidation(t *testing.T) {
+	hermesBase := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"hermes","web_search":{"enabled":true,"extract_api_key_env":"TAVILY_API_KEY"}}`, 1)
+	hermesBase = strings.Replace(hermesBase, `"bridge":{"type":"openclaw-ssh"}`, `"bridge":{"type":"hermes-ssh"}`, 1)
+	cfg, err := Decode(strings.NewReader(hermesBase))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Harness.WebSearch.ExtractAPIKeyEnv != "TAVILY_API_KEY" {
+		t.Fatalf("harness web_search = %#v, want extract_api_key_env set", cfg.Harness.WebSearch)
+	}
+
+	notEnabled := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"hermes","web_search":{"enabled":false,"extract_api_key_env":"TAVILY_API_KEY"}}`, 1)
+	notEnabled = strings.Replace(notEnabled, `"bridge":{"type":"openclaw-ssh"}`, `"bridge":{"type":"hermes-ssh"}`, 1)
+	if _, err := Decode(strings.NewReader(notEnabled)); err == nil {
+		t.Fatal("expected rejection of extract_api_key_env without web_search.enabled")
+	}
+
+	nonHermes := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","web_search":{"enabled":true,"extract_api_key_env":"TAVILY_API_KEY"}}`, 1)
+	if _, err := Decode(strings.NewReader(nonHermes)); err == nil {
+		t.Fatal("expected rejection of extract_api_key_env under a non-Hermes harness type")
+	}
+
+	badName := strings.Replace(hermesBase, `"extract_api_key_env":"TAVILY_API_KEY"`, `"extract_api_key_env":"1BAD"`, 1)
+	if _, err := Decode(strings.NewReader(badName)); err == nil {
+		t.Fatal("expected rejection of an invalid extract_api_key_env name")
+	}
+}
+
+func TestSubagentsHarnessConfigValidation(t *testing.T) {
+	// validConfig's harness is already {"type":"openclaw"} with no subagents
+	// block, so leaving it untouched exercises the default.
+	cfg, err := Decode(strings.NewReader(validConfig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Harness.Subagents.Enabled == nil || !*cfg.Harness.Subagents.Enabled {
+		t.Fatalf("harness subagents = %#v, want defaulted to enabled", cfg.Harness.Subagents)
+	}
+
+	enabled := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","subagents":{"enabled":true}}`, 1)
+	cfg, err = Decode(strings.NewReader(enabled))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Harness.Subagents.Enabled == nil || !*cfg.Harness.Subagents.Enabled {
+		t.Fatalf("harness subagents = %#v, want enabled", cfg.Harness.Subagents)
+	}
+
+	disabled := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","subagents":{"enabled":false}}`, 1)
+	cfg, err = Decode(strings.NewReader(disabled))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Harness.Subagents.Enabled == nil || *cfg.Harness.Subagents.Enabled {
+		t.Fatalf("harness subagents = %#v, want disabled", cfg.Harness.Subagents)
+	}
+
+	nonOpenClaw := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"other","subagents":{"enabled":true}}`, 1)
+	if _, err := Decode(strings.NewReader(nonOpenClaw)); err == nil {
+		t.Fatal("expected rejection of harness.subagents under a non-OpenClaw harness type")
 	}
 }
 
@@ -127,6 +225,94 @@ func TestDecodeExecutionAndURLValidation(t *testing.T) {
 	}
 }
 
+const validDeepResearchBenchConfig = `{
+  "name":"test-run","versions_file":"../configs/versions.json",
+  "benchmark":{"type":"deepresearchbench","root":".cache/drb","tasks":["1"],"environment":{"image":"aries/drb:latest","workdir":"/workspace"}},
+  "harness":{"type":"openclaw"},"sandbox":{"type":"docker"},"bridge":{"type":"openclaw-ssh"},
+  "runtime":{"backend":"deepseek","mode":"external"},
+  "model":{"id":"fake","base_url":"http://127.0.0.1:8080","api_key_env":"DEEPSEEK_API_KEY"},
+  "judge":{"provider":"openai","base_url":"https://api.openai.com/v1","model":"gpt-4.1","api_key_env":"OPENAI_API_KEY"}
+}`
+
+const noJudgeDeepResearchBenchConfig = `{
+  "name":"test-run","versions_file":"../configs/versions.json",
+  "benchmark":{"type":"deepresearchbench","root":".cache/drb","tasks":["1"],"environment":{"image":"aries/drb:latest","workdir":"/workspace"}},
+  "harness":{"type":"openclaw"},"sandbox":{"type":"docker"},"bridge":{"type":"openclaw-ssh"},
+  "runtime":{"backend":"deepseek","mode":"external"},
+  "model":{"id":"fake","base_url":"http://127.0.0.1:8080","api_key_env":"DEEPSEEK_API_KEY"}
+}`
+
+const validDeepResearchBenchWithFactConfig = `{
+  "name":"test-run","versions_file":"../configs/versions.json",
+  "benchmark":{"type":"deepresearchbench","root":".cache/drb","tasks":["1"],"environment":{"image":"aries/drb:latest","workdir":"/workspace"}},
+  "harness":{"type":"openclaw"},"sandbox":{"type":"docker"},"bridge":{"type":"openclaw-ssh"},
+  "runtime":{"backend":"deepseek","mode":"external"},
+  "model":{"id":"fake","base_url":"http://127.0.0.1:8080","api_key_env":"DEEPSEEK_API_KEY"},
+  "judge":{"provider":"openai","base_url":"https://api.openai.com/v1","model":"gpt-4.1","api_key_env":"OPENAI_API_KEY"},
+  "fact":{"provider":"openai","base_url":"https://api.openai.com/v1","model":"gpt-4.1-mini","api_key_env":"OPENAI_API_KEY","jina_api_key_env":"JINA_API_KEY"}
+}`
+
+func TestDeepResearchBenchRequiresEnvironmentAndJudge(t *testing.T) {
+	if _, err := Decode(strings.NewReader(validDeepResearchBenchConfig)); err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]string{
+		"no environment":       strings.Replace(validDeepResearchBenchConfig, `,"environment":{"image":"aries/drb:latest","workdir":"/workspace"}`, ``, 1),
+		"empty image":          strings.Replace(validDeepResearchBenchConfig, `"image":"aries/drb:latest"`, `"image":""`, 1),
+		"no judge":             noJudgeDeepResearchBenchConfig,
+		"empty judge provider": strings.Replace(validDeepResearchBenchConfig, `"provider":"openai"`, `"provider":""`, 1),
+		"bad judge base_url":   strings.Replace(validDeepResearchBenchConfig, `"base_url":"https://api.openai.com/v1"`, `"base_url":"not-a-url"`, 1),
+		"empty judge model":    strings.Replace(validDeepResearchBenchConfig, `"model":"gpt-4.1"`, `"model":""`, 1),
+		"bad judge env name":   strings.Replace(validDeepResearchBenchConfig, `"api_key_env":"OPENAI_API_KEY"`, `"api_key_env":"lower-case"`, 1),
+	}
+	for name, input := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Decode(strings.NewReader(input)); err == nil {
+				t.Fatal("expected rejection")
+			}
+		})
+	}
+}
+
+func TestTerminalBench2RejectsEnvironmentAndJudge(t *testing.T) {
+	cases := map[string]string{
+		"environment set": strings.Replace(validConfig, `"benchmark":{"type":"terminalbench2","root":".cache/tb2","tasks":["fix-git"]}`, `"benchmark":{"type":"terminalbench2","root":".cache/tb2","tasks":["fix-git"],"environment":{"image":"x"}}`, 1),
+		"judge set":       strings.Replace(validConfig, `"model":{"id":"fake","base_url":"http://127.0.0.1:8080","api_key_env":"DEEPSEEK_API_KEY"}`, `"model":{"id":"fake","base_url":"http://127.0.0.1:8080","api_key_env":"DEEPSEEK_API_KEY"},"judge":{"provider":"openai","base_url":"https://api.openai.com/v1","model":"gpt-4.1","api_key_env":"OPENAI_API_KEY"}`, 1),
+		"fact set":        strings.Replace(validConfig, `"model":{"id":"fake","base_url":"http://127.0.0.1:8080","api_key_env":"DEEPSEEK_API_KEY"}`, `"model":{"id":"fake","base_url":"http://127.0.0.1:8080","api_key_env":"DEEPSEEK_API_KEY"},"fact":{"provider":"openai","base_url":"https://api.openai.com/v1","model":"gpt-4.1-mini","api_key_env":"OPENAI_API_KEY","jina_api_key_env":"JINA_API_KEY"}}`, 1),
+	}
+	for name, input := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Decode(strings.NewReader(input)); err == nil {
+				t.Fatal("expected rejection")
+			}
+		})
+	}
+}
+
+func TestDeepResearchBenchFactIsOptionalButValidatedWhenPresent(t *testing.T) {
+	if _, err := Decode(strings.NewReader(validDeepResearchBenchWithFactConfig)); err != nil {
+		t.Fatalf("valid fact config rejected: %v", err)
+	}
+	// Omitting fact entirely (validDeepResearchBenchConfig) must still decode.
+	if _, err := Decode(strings.NewReader(validDeepResearchBenchConfig)); err != nil {
+		t.Fatalf("config without fact rejected: %v", err)
+	}
+	cases := map[string]string{
+		"empty fact provider": strings.Replace(validDeepResearchBenchWithFactConfig, `"fact":{"provider":"openai"`, `"fact":{"provider":""`, 1),
+		"bad fact base_url":   strings.Replace(validDeepResearchBenchWithFactConfig, `"fact":{"provider":"openai","base_url":"https://api.openai.com/v1"`, `"fact":{"provider":"openai","base_url":"not-a-url"`, 1),
+		"empty fact model":    strings.Replace(validDeepResearchBenchWithFactConfig, `"model":"gpt-4.1-mini"`, `"model":""`, 1),
+		"bad fact env name":   strings.Replace(validDeepResearchBenchWithFactConfig, `"api_key_env":"OPENAI_API_KEY","jina_api_key_env"`, `"api_key_env":"lower-case","jina_api_key_env"`, 1),
+		"bad jina env name":   strings.Replace(validDeepResearchBenchWithFactConfig, `"jina_api_key_env":"JINA_API_KEY"`, `"jina_api_key_env":"lower-case"`, 1),
+	}
+	for name, input := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Decode(strings.NewReader(input)); err == nil {
+				t.Fatal("expected rejection")
+			}
+		})
+	}
+}
+
 func TestLoadResolvesRuntimeConfigAndVersions(t *testing.T) {
 	root := t.TempDir()
 	profiles := filepath.Join(root, "profiles")
@@ -160,7 +346,7 @@ func TestCheckedInProfilesLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 6 {
+	if len(paths) != 9 {
 		t.Fatalf("profiles=%v", paths)
 	}
 	for _, path := range paths {
@@ -222,7 +408,7 @@ func TestDecodeVersionsValidation(t *testing.T) {
 // image is only an error for the harness that actually needs it. An image that
 // is present is still pin-validated.
 func TestVersionsRequireOnlyTheSelectedHarnessImage(t *testing.T) {
-	withoutHermes := `{"terminalbench2":{"repository_url":"https://example.invalid/terminal-bench-2.git","revision":"0123456789abcdef0123456789abcdef01234567"},"openclaw":{"image":"ghcr.io/openclaw/openclaw:2026.7.1"}}`
+	withoutHermes := `{"terminalbench2":{"repository_url":"https://example.invalid/terminal-bench-2.git","revision":"0123456789abcdef0123456789abcdef01234567"},"deepresearchbench":{"repository_url":"https://example.invalid/deep-research-bench.git","revision":"fedcba9876543210fedcba9876543210fedcba98"},"openclaw":{"image":"ghcr.io/openclaw/openclaw:2026.7.1"}}`
 	versions, err := DecodeVersions(strings.NewReader(withoutHermes))
 	if err != nil {
 		t.Fatalf("catalog without hermes.image was rejected: %v", err)

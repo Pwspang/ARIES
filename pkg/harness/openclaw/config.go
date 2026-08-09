@@ -23,17 +23,69 @@ const (
 	agentWrapperPath    = "/run/aries/run-agent"
 	stateContainerPath  = "/home/node/.openclaw"
 	workspaceRoot       = "/aries/openclaw"
+
+	// searxngBaseURL matches the fixed network alias
+	// (pkg/sandbox/docker/docker.go's `networkAlias = "task-sandbox"`) and
+	// port (images/deep-research-bench/Dockerfile) that the DRB task
+	// sandbox's built-in SearXNG instance is always reachable at from the
+	// OpenClaw harness container, which joins the same per-task Docker
+	// network. Not profile-configurable: it's an internal wiring detail, not
+	// something a user should need to know or vary.
+	searxngBaseURL = "http://task-sandbox:8888"
 )
 
 type openClawConfig struct {
-	Gateway gatewayConfig `json:"gateway"`
-	Models  modelsConfig  `json:"models"`
-	Agents  agentsConfig  `json:"agents"`
-	Tools   toolPolicy    `json:"tools"`
+	Gateway gatewayConfig  `json:"gateway"`
+	Models  modelsConfig   `json:"models"`
+	Agents  agentsConfig   `json:"agents"`
+	Tools   toolPolicy     `json:"tools"`
+	Plugins *pluginsConfig `json:"plugins,omitempty"`
 }
 
 type toolPolicy struct {
-	Deny []string `json:"deny"`
+	Deny    []string          `json:"deny"`
+	Web     *webToolsConfig   `json:"web,omitempty"`
+	Sandbox *sandboxToolsGate `json:"sandbox,omitempty"`
+}
+
+// sandboxToolsGate is a second, independent tool-visibility gate OpenClaw
+// applies specifically to sandboxed sessions (agents.defaults.sandbox.mode
+// "all", which ARIES always sets): plugin-owned tools like web_search are
+// invisible to the agent even when tools.web/plugins configure them, unless
+// also explicitly allowed here. `alsoAllow` (not `allow`) is required:
+// `allow` replaces the sandbox's default tool set entirely, which would drop
+// `exec` — the only way the agent can act at all under ARIES's harness
+// protocol.
+type sandboxToolsGate struct {
+	Tools sandboxToolsAllowList `json:"tools"`
+}
+
+type sandboxToolsAllowList struct {
+	AlsoAllow []string `json:"alsoAllow,omitempty"`
+}
+
+type webToolsConfig struct {
+	Search *webSearchToolConfig `json:"search,omitempty"`
+}
+
+type webSearchToolConfig struct {
+	Provider string `json:"provider"`
+}
+
+type pluginsConfig struct {
+	Entries map[string]pluginEntry `json:"entries"`
+}
+
+type pluginEntry struct {
+	Config pluginConfigBlock `json:"config"`
+}
+
+type pluginConfigBlock struct {
+	WebSearch webSearchPluginConfig `json:"webSearch"`
+}
+
+type webSearchPluginConfig struct {
+	BaseURL string `json:"baseUrl"`
 }
 
 type gatewayConfig struct {
@@ -99,7 +151,7 @@ type sshConfig struct {
 	KnownHostsFile        string `json:"knownHostsFile"`
 }
 
-func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint) ([]byte, error) {
+func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchEnabled, subagentsEnabled bool) ([]byte, error) {
 	if err := validateModel(model); err != nil {
 		return nil, err
 	}
@@ -144,7 +196,25 @@ func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint) ([]byte, e
 		// OpenClaw's native SSH filesystem helpers require python3 inside the
 		// remote image. Terminal-Bench images do not promise it, while the exec
 		// tool has the same sandbox access without changing task images.
-		Tools: toolPolicy{Deny: []string{"read", "write", "edit", "apply_patch"}},
+		//
+		// sessions_spawn/sessions_yield let the agent defer its final answer
+		// to async sub-agents and pause for their completion events, but
+		// ARIES's harness protocol sends exactly one agent request and treats
+		// the first terminal response as final (docs/design/harness.md) — it
+		// has no continuation mechanism to relay those events back. A yield
+		// ends the run immediately, stranding any spawned sub-agents
+		// mid-task. Denying both (the default) forces the agent to complete
+		// its work within the single turn ARIES can actually observe.
+		// subagentsEnabled opts back into both tools for callers who accept
+		// that a spawned sub-agent's completion may go unobserved.
+		Tools: toolPolicy{Deny: denyToolList(subagentsEnabled)},
+	}
+	if webSearchEnabled {
+		configuration.Tools.Web = &webToolsConfig{Search: &webSearchToolConfig{Provider: "searxng"}}
+		configuration.Tools.Sandbox = &sandboxToolsGate{Tools: sandboxToolsAllowList{AlsoAllow: []string{"web_search", "web_fetch"}}}
+		configuration.Plugins = &pluginsConfig{Entries: map[string]pluginEntry{
+			"searxng": {Config: pluginConfigBlock{WebSearch: webSearchPluginConfig{BaseURL: searxngBaseURL}}},
+		}}
 	}
 	var output bytes.Buffer
 	encoder := json.NewEncoder(&output)
@@ -154,6 +224,14 @@ func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint) ([]byte, e
 		return nil, fmt.Errorf("encode OpenClaw config: %w", err)
 	}
 	return output.Bytes(), nil
+}
+
+func denyToolList(subagentsEnabled bool) []string {
+	deny := []string{"read", "write", "edit", "apply_patch"}
+	if !subagentsEnabled {
+		deny = append(deny, "sessions_spawn", "sessions_yield")
+	}
+	return deny
 }
 
 func validateModel(model core.ModelConfig) error {

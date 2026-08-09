@@ -86,14 +86,20 @@ type Options struct {
 	// APIKeyLookup returns the model API key for one environment name. The
 	// harness takes ownership of the returned slice: it clones the bytes it
 	// needs and then clears the returned buffer in place, so a caller must
-	// not retain or reuse it after the call.
-	APIKeyLookup    func(string) ([]byte, bool)
-	MaxTurns        int
-	TerminalTimeout int
-	CleanupTimeout  time.Duration
-	StartTimeout    time.Duration
-	AgentTimeout    time.Duration
-	Logger          *logrus.Logger
+	// not retain or reuse it after the call. It is also used to look up
+	// ExtractAPIKeyEnv, if set.
+	APIKeyLookup     func(string) ([]byte, bool)
+	MaxTurns         int
+	TerminalTimeout  int
+	CleanupTimeout   time.Duration
+	StartTimeout     time.Duration
+	AgentTimeout     time.Duration
+	WebSearchEnabled bool
+	// ExtractAPIKeyEnv names the host-side environment variable holding a
+	// Tavily API key, used as web_extract's backend. Empty disables extract
+	// (web_search still works via SearXNG). Ignored unless WebSearchEnabled.
+	ExtractAPIKeyEnv string
+	Logger           *logrus.Logger
 }
 
 // dockerClient is the small official Engine SDK surface used by the harness.
@@ -114,17 +120,19 @@ type dockerClient interface {
 }
 
 type Manager struct {
-	client          dockerClient
-	image           string
-	outputDir       string
-	cleanupTimeout  time.Duration
-	startTimeout    time.Duration
-	agentTimeout    time.Duration
-	maxTurns        int
-	terminalTimeout int
-	logger          *logrus.Logger
-	apiKeyLookup    func(string) ([]byte, bool)
-	newID           func() (string, error)
+	client           dockerClient
+	image            string
+	outputDir        string
+	cleanupTimeout   time.Duration
+	startTimeout     time.Duration
+	agentTimeout     time.Duration
+	maxTurns         int
+	terminalTimeout  int
+	webSearchEnabled bool
+	extractAPIKeyEnv string
+	logger           *logrus.Logger
+	apiKeyLookup     func(string) ([]byte, bool)
+	newID            func() (string, error)
 
 	mu        sync.Mutex
 	active    *session
@@ -146,6 +154,7 @@ type session struct {
 	model         core.ModelConfig
 	agentTimeout  time.Duration
 	apiKey        []byte
+	extractAPIKey []byte
 	runAttempted  bool
 	logPaths      []string
 }
@@ -216,7 +225,8 @@ func New(options Options) (*Manager, error) {
 		client: api, image: options.Image, outputDir: outputDir,
 		cleanupTimeout: options.CleanupTimeout, startTimeout: options.StartTimeout,
 		agentTimeout: options.AgentTimeout, maxTurns: options.MaxTurns,
-		terminalTimeout: options.TerminalTimeout, logger: options.Logger,
+		terminalTimeout: options.TerminalTimeout, webSearchEnabled: options.WebSearchEnabled,
+		extractAPIKeyEnv: options.ExtractAPIKeyEnv, logger: options.Logger,
 		apiKeyLookup: options.APIKeyLookup, newID: randomID,
 	}, nil
 }
@@ -244,11 +254,12 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 	if agentTimeout == 0 {
 		agentTimeout = manager.agentTimeout
 	}
-	configuration, err := renderConfig(request.Model, manager.maxTurns)
+	extractEnabled := manager.webSearchEnabled && manager.extractAPIKeyEnv != ""
+	configuration, err := renderConfig(request.Model, manager.maxTurns, manager.webSearchEnabled, extractEnabled)
 	if err != nil {
 		return err
 	}
-	environment, err := containerEnvironment(request.Endpoint, workspaceRoot, manager.terminalTimeout)
+	environment, err := containerEnvironment(request.Endpoint, workspaceRoot, manager.terminalTimeout, manager.webSearchEnabled)
 	if err != nil {
 		return err
 	}
@@ -267,9 +278,31 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(apiKey)
 		return errors.New("rendered Hermes config contains the API-key value")
 	}
+	var extractAPIKey []byte
+	if extractEnabled {
+		extractSource, ok := manager.apiKeyLookup(manager.extractAPIKeyEnv)
+		if !ok {
+			clear(extractSource)
+			clear(apiKey)
+			return fmt.Errorf("Hermes extract API-key environment %q is not set", manager.extractAPIKeyEnv)
+		}
+		extractAPIKey = bytes.Clone(extractSource)
+		clear(extractSource)
+		if err := validateAPIKey(extractAPIKey); err != nil {
+			clear(extractAPIKey)
+			clear(apiKey)
+			return err
+		}
+		if bytes.Contains(configuration, extractAPIKey) {
+			clear(extractAPIKey)
+			clear(apiKey)
+			return errors.New("rendered Hermes config contains the extract API-key value")
+		}
+	}
 	id, err := manager.newID()
 	if err != nil {
 		clear(apiKey)
+		clear(extractAPIKey)
 		return fmt.Errorf("generate Hermes harness ID: %w", err)
 	}
 	containerConfig := &container.Config{
@@ -290,7 +323,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		containerName: "aries-hermes-" + id,
 		artifactDir:   filepath.Join(manager.outputDir, request.TaskID, "harness"),
 		endpoint:      request.Endpoint, model: request.Model,
-		agentTimeout: agentTimeout, apiKey: apiKey,
+		agentTimeout: agentTimeout, apiKey: apiKey, extractAPIKey: extractAPIKey,
 	}
 	fail := func(primary error) error {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), manager.cleanupTimeout)
@@ -742,12 +775,12 @@ func (manager *Manager) validateContainer(ctx context.Context, active *session) 
 		return errors.New("Hermes container labels do not match the task")
 	}
 	for _, value := range append(append([]string(nil), configuration.Env...), configuration.Cmd...) {
-		if containsSecret(value, active.apiKey) {
+		if containsSecret(value, active.apiKey, active.extractAPIKey) {
 			return errors.New("Hermes secret entered Docker configuration")
 		}
 	}
 	for _, value := range configuration.Labels {
-		if containsSecret(value, active.apiKey) {
+		if containsSecret(value, active.apiKey, active.extractAPIKey) {
 			return errors.New("Hermes secret entered Docker labels")
 		}
 	}
@@ -776,11 +809,15 @@ func (manager *Manager) runtimeArchive(active *session, configuration []byte) ([
 		return nil, fmt.Errorf("read Hermes SSH identity: %w", err)
 	}
 	defer clear(identity)
+	extractEnabled := len(active.extractAPIKey) != 0
 	files := map[string]stagedFile{
 		strings.TrimPrefix(configContainerPath, "/"): {content: configuration, mode: 0o600},
 		strings.TrimPrefix(modelKeyPath, "/"):        {content: active.apiKey, mode: 0o600},
 		strings.TrimPrefix(identityContainerFS, "/"): {content: identity, mode: 0o600},
-		strings.TrimPrefix(agentWrapperPath, "/"):    {content: agentWrapperScript(active.model.APIKeyEnv), mode: 0o555},
+		strings.TrimPrefix(agentWrapperPath, "/"):    {content: agentWrapperScript(active.model.APIKeyEnv, extractEnabled), mode: 0o555},
+	}
+	if extractEnabled {
+		files[strings.TrimPrefix(extractKeyPath, "/")] = stagedFile{content: active.extractAPIKey, mode: 0o600}
 	}
 	return stageArchive(files)
 }
@@ -962,7 +999,7 @@ func (manager *Manager) collectArtifacts(ctx context.Context, active *session, s
 		if copyErr != nil || closeErr != nil || boundErr != nil {
 			errs = append(errs, errors.Join(copyErr, closeErr, boundErr))
 		} else {
-			content := allowContainerLogs(append(out.Bytes(), errBuffer.Bytes()...), active.apiKey)
+			content := allowContainerLogs(append(out.Bytes(), errBuffer.Bytes()...), active.apiKey, active.extractAPIKey)
 			path := filepath.Join(active.artifactDir, "container.log")
 			if err := writeArtifact(path, content); err != nil {
 				errs = append(errs, err)
@@ -1204,10 +1241,12 @@ func randomID() (string, error) {
 func clearSessionSecrets(active *session) {
 	clear(active.apiKey)
 	active.apiKey = nil
+	clear(active.extractAPIKey)
+	active.extractAPIKey = nil
 }
 
 func redactSession(content []byte, active *session) []byte {
-	return redactSecrets(content, active.apiKey)
+	return redactSecrets(content, active.apiKey, active.extractAPIKey)
 }
 
 type sessionRedactedError struct {
