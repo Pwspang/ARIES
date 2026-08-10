@@ -54,6 +54,7 @@ moe
 NCSpeech
 nousresearch
 ntu
+OAuth
 nvidia
 oci
 openai
@@ -68,6 +69,7 @@ pre
 prefill
 preflight
 preload
+Qwen
 prewarm
 Realtime
 reimplement
