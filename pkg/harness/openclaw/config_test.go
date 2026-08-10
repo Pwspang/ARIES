@@ -23,7 +23,7 @@ func testModel() core.ModelConfig {
 }
 
 func TestRenderConfigLocksProviderSharedSSHAndPlaceholder(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, false)
+	content, err := renderConfig(testModel(), testEndpoint(), false, false, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func TestRenderConfigSelectsSGLangProviderWithoutSerializingKey(t *testing.T) {
 	model := testModel()
 	model.Provider = "sglang"
 	model.APIKeyEnv = "SGLANG_API_KEY"
-	content, err := renderConfig(model, testEndpoint(), false, false)
+	content, err := renderConfig(model, testEndpoint(), false, false, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestRenderConfigNormalizesAndStrictlyValidatesSGLangBaseURL(t *testing.T) {
 	model := testModel()
 	model.Provider = "sglang"
 	model.BaseURL += "/"
-	content, err := renderConfig(model, testEndpoint(), false, false)
+	content, err := renderConfig(model, testEndpoint(), false, false, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestRenderConfigNormalizesAndStrictlyValidatesSGLangBaseURL(t *testing.T) {
 	}
 	for _, invalid := range []string{"http://host/v1/v1", "http://host/v1?", "http://host/v%31"} {
 		model.BaseURL = invalid
-		if _, err := renderConfig(model, testEndpoint(), false, false); err == nil {
+		if _, err := renderConfig(model, testEndpoint(), false, false, 0); err == nil {
 			t.Fatalf("accepted SGLang base URL %q", invalid)
 		}
 	}
@@ -111,7 +111,7 @@ func TestRenderConfigRejectsInvalidInputs(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			model, endpoint := testModel(), testEndpoint()
 			mutate(&model, &endpoint)
-			if _, err := renderConfig(model, endpoint, false, false); err == nil {
+			if _, err := renderConfig(model, endpoint, false, false, 0); err == nil {
 				t.Fatal("invalid input was accepted")
 			}
 		})
@@ -121,13 +121,13 @@ func TestRenderConfigRejectsInvalidInputs(t *testing.T) {
 func TestRenderConfigAcceptsLowercaseEnvironmentName(t *testing.T) {
 	model := testModel()
 	model.APIKeyEnv = "aries_fake_api_key"
-	if _, err := renderConfig(model, testEndpoint(), false, false); err != nil {
+	if _, err := renderConfig(model, testEndpoint(), false, false, 0); err != nil {
 		t.Fatalf("renderConfig() rejected a valid environment name: %v", err)
 	}
 }
 
 func TestRenderConfigOmitsWebSearchWhenDisabled(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, false)
+	content, err := renderConfig(testModel(), testEndpoint(), false, false, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestRenderConfigOmitsWebSearchWhenDisabled(t *testing.T) {
 }
 
 func TestRenderConfigEnablesSearXNGWebSearch(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), true, false)
+	content, err := renderConfig(testModel(), testEndpoint(), true, false, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +175,7 @@ func TestRenderConfigEnablesSearXNGWebSearch(t *testing.T) {
 }
 
 func TestRenderConfigAllowsSubagentsWhenEnabled(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, true)
+	content, err := renderConfig(testModel(), testEndpoint(), false, true, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,6 +185,48 @@ func TestRenderConfigAllowsSubagentsWhenEnabled(t *testing.T) {
 	}
 	if got := strings.Join(configuration.Tools.Deny, ","); got != "read,write,edit,apply_patch" {
 		t.Fatalf("tool deny list = %q, want sessions_spawn/sessions_yield omitted", got)
+	}
+}
+
+func TestRenderConfigSetsMaxConcurrentSubagentsWhenEnabled(t *testing.T) {
+	content, err := renderConfig(testModel(), testEndpoint(), false, true, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var configuration openClawConfig
+	if err := json.Unmarshal(content, &configuration); err != nil {
+		t.Fatal(err)
+	}
+	if configuration.Agents.Defaults.Subagents == nil || configuration.Agents.Defaults.Subagents.MaxConcurrent != 2 {
+		t.Fatalf("agents.defaults.subagents = %#v, want maxConcurrent 2", configuration.Agents.Defaults.Subagents)
+	}
+}
+
+func TestRenderConfigOmitsSubagentsBlockWhenNoLimitSet(t *testing.T) {
+	content, err := renderConfig(testModel(), testEndpoint(), false, true, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var configuration openClawConfig
+	if err := json.Unmarshal(content, &configuration); err != nil {
+		t.Fatal(err)
+	}
+	if configuration.Agents.Defaults.Subagents != nil {
+		t.Fatalf("agents.defaults.subagents = %#v, want omitted", configuration.Agents.Defaults.Subagents)
+	}
+}
+
+func TestRenderConfigIgnoresMaxConcurrentWhenSubagentsDisabled(t *testing.T) {
+	content, err := renderConfig(testModel(), testEndpoint(), false, false, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var configuration openClawConfig
+	if err := json.Unmarshal(content, &configuration); err != nil {
+		t.Fatal(err)
+	}
+	if configuration.Agents.Defaults.Subagents != nil {
+		t.Fatalf("agents.defaults.subagents = %#v, want omitted when subagents disabled", configuration.Agents.Defaults.Subagents)
 	}
 }
 

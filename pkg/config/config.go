@@ -22,25 +22,19 @@ const defaultOutputDir = "runs"
 // Config is one explicit experiment profile. It has no inheritance, templates,
 // merging, or secret values.
 type Config struct {
-	Name          string          `json:"name"`
-	VersionsFile  string          `json:"versions_file"`
-	OverridesFile string          `json:"overrides_file,omitempty"`
-	Benchmark     BenchmarkConfig `json:"benchmark"`
-	Harness       HarnessConfig   `json:"harness"`
-	Sandbox       SandboxConfig   `json:"sandbox"`
-	Bridge        BridgeConfig    `json:"bridge"`
-	Runtime       RuntimeConfig   `json:"runtime"`
-	Model         ProfileModel    `json:"model"`
-	Judge         *JudgeConfig    `json:"judge,omitempty"`
-	// Fact configures the optional Deep Research Bench FACT citation-
-	// trustworthiness metric. FACT is entirely opt-in: a nil Fact disables
-	// it, and no FACT artifacts or extra LLM/Jina calls occur for runs
-	// that omit it.
-	Fact      *FactConfig      `json:"fact,omitempty"`
-	Execution ExecutionConfig  `json:"execution,omitempty"`
-	OutputDir string           `json:"output_dir"`
-	Versions  Versions         `json:"-"`
-	Overrides RuntimeOverrides `json:"-"`
+	Name          string           `json:"name"`
+	VersionsFile  string           `json:"versions_file"`
+	OverridesFile string           `json:"overrides_file,omitempty"`
+	Benchmark     BenchmarkConfig  `json:"benchmark"`
+	Harness       HarnessConfig    `json:"harness"`
+	Sandbox       SandboxConfig    `json:"sandbox"`
+	Bridge        BridgeConfig     `json:"bridge"`
+	Runtime       RuntimeConfig    `json:"runtime"`
+	Model         ProfileModel     `json:"model"`
+	Execution     ExecutionConfig  `json:"execution,omitempty"`
+	OutputDir     string           `json:"output_dir"`
+	Versions      Versions         `json:"-"`
+	Overrides     RuntimeOverrides `json:"-"`
 }
 
 // ExecutionConfig controls bounded occurrence scheduling above the Runner.
@@ -92,6 +86,8 @@ type BenchmarkConfig struct {
 	Root        string                `json:"root"`
 	Tasks       []string              `json:"tasks"`
 	Environment *BenchmarkEnvironment `json:"environment,omitempty"`
+	Judge       *JudgeConfig          `json:"judge,omitempty"`
+	Fact        *FactConfig           `json:"fact,omitempty"`
 }
 
 // BenchmarkEnvironment describes the task sandbox for benchmarks (currently
@@ -108,9 +104,10 @@ type BenchmarkEnvironment struct {
 	Env       map[string]string `json:"env,omitempty"`
 }
 
-// JudgeConfig identifies the LLM used to grade Deep Research Bench reports.
-// It is intentionally a distinct type from ProfileModel so judge-specific
-// fields can be added later without colliding with the harness model's shape.
+// JudgeConfig identifies the LLM used to grade Deep Research Bench reports
+// (see BenchmarkConfig.Judge). It is intentionally a distinct type from
+// ProfileModel so judge-specific fields can be added later without colliding
+// with the harness model's shape.
 type JudgeConfig struct {
 	Provider  string `json:"provider"`
 	BaseURL   string `json:"base_url"`
@@ -122,10 +119,12 @@ func (j JudgeConfig) CoreModel() core.ModelConfig {
 	return core.ModelConfig{Provider: j.Provider, BaseURL: j.BaseURL, Model: j.ID, APIKeyEnv: j.APIKeyEnv}
 }
 
-// FactConfig identifies the (typically cheaper) LLM used for the FACT
-// citation-extraction/deduplication/validation pipeline, plus the Jina AI
-// Reader API key used to scrape cited URLs. Both the model and the Jina key
-// are required together; FACT has no partial-enable state.
+// FactConfig identifies the LLM used for the FACT citation-extraction/
+// deduplication/validation pipeline, plus the Jina AI Reader API key used to
+// scrape cited URLs (see BenchmarkConfig.Fact). The model fields
+// (Provider/BaseURL/ID/APIKeyEnv) are optional as a group and default to the
+// profile's main model config when all left empty; JinaAPIKeyEnv is always
+// required to enable FACT at all.
 type FactConfig struct {
 	Provider      string `json:"provider"`
 	BaseURL       string `json:"base_url"`
@@ -162,16 +161,26 @@ type HarnessWebSearchConfig struct {
 	ExtractAPIKeyEnv string `json:"extract_api_key_env,omitempty"`
 }
 
-// HarnessSubagentsConfig is an OpenClaw-only concept (see
-// (*HarnessConfig).validate), same as WebSearch above. OpenClaw's
-// sessions_spawn/sessions_yield tools are denied when this resolves to
-// disabled, because ARIES's harness protocol has no continuation mechanism
-// to relay async sub-agent completions back to a single-turn request.
-// Enabled is a pointer so "unset" (defaults to enabled under OpenClaw) is
-// distinguishable from an explicit "false" (e.g. Deep Research Bench, which
-// pins its harness protocol's single-turn assumption and opts out).
+// HarnessSubagentsConfig is an OpenClaw/Hermes-only concept (see
+// (*HarnessConfig).validate), same as WebSearch above. Under OpenClaw,
+// disabling denies its sessions_spawn/sessions_yield tools, because ARIES's
+// harness protocol has no continuation mechanism to relay async sub-agent
+// completions back to a single-turn request. Under Hermes, disabling removes
+// its delegate_task tool via disabled_toolsets; Hermes's delegation blocks
+// and returns within the same tool call, so it has no equivalent protocol
+// hazard — disabling it there is purely a cost/determinism control.
+// Enabled is a pointer so "unset" (defaults to enabled, matching both
+// harnesses' own defaults) is distinguishable from an explicit "false" (e.g.
+// Deep Research Bench, which opts out since subagent spawning isn't useful
+// for its single-report task shape and adds uncontrolled cost).
+//
+// MaxConcurrent bounds how many subagents may run at once without disabling
+// subagents outright: OpenClaw's agents.defaults.subagents.maxConcurrent, or
+// Hermes's delegation.max_concurrent_children. Zero leaves each harness's own
+// built-in default in place.
 type HarnessSubagentsConfig struct {
-	Enabled *bool `json:"enabled,omitempty"`
+	Enabled       *bool `json:"enabled,omitempty"`
+	MaxConcurrent int   `json:"max_concurrent,omitempty"`
 }
 
 type HarnessRealtimeConfig struct {
@@ -509,35 +518,38 @@ func (c *Config) validateBenchmarkType() error {
 		if c.Benchmark.Environment == nil || strings.TrimSpace(c.Benchmark.Environment.Image) == "" {
 			return errors.New("benchmark.environment.image is required for deepresearchbench")
 		}
-		if c.Judge == nil {
-			return errors.New("judge is required for deepresearchbench")
-		}
-		if strings.TrimSpace(c.Judge.Provider) == "" {
-			return errors.New("judge.provider is required")
-		}
-		if err := validateHTTPBaseURL("judge.base_url", c.Judge.BaseURL); err != nil {
-			return err
-		}
-		if strings.TrimSpace(c.Judge.ID) == "" {
-			return errors.New("judge.model is required")
-		}
-		if !validEnvName(c.Judge.APIKeyEnv) {
-			return errors.New("judge.api_key_env must be an environment variable name")
-		}
-		if c.Fact != nil {
-			if strings.TrimSpace(c.Fact.Provider) == "" {
-				return errors.New("fact.provider is required")
+		if judge := c.Benchmark.Judge; judge != nil {
+			if strings.TrimSpace(judge.Provider) == "" {
+				return errors.New("judge.provider is required")
 			}
-			if err := validateHTTPBaseURL("fact.base_url", c.Fact.BaseURL); err != nil {
+			if err := validateHTTPBaseURL("judge.base_url", judge.BaseURL); err != nil {
 				return err
 			}
-			if strings.TrimSpace(c.Fact.ID) == "" {
-				return errors.New("fact.model is required")
+			if strings.TrimSpace(judge.ID) == "" {
+				return errors.New("judge.model is required")
 			}
-			if !validEnvName(c.Fact.APIKeyEnv) {
-				return errors.New("fact.api_key_env must be an environment variable name")
+			if !validEnvName(judge.APIKeyEnv) {
+				return errors.New("judge.api_key_env must be an environment variable name")
 			}
-			if !validEnvName(c.Fact.JinaAPIKeyEnv) {
+		}
+		if fact := c.Benchmark.Fact; fact != nil {
+			factModelSpecified := strings.TrimSpace(fact.Provider) != "" || strings.TrimSpace(fact.BaseURL) != "" ||
+				strings.TrimSpace(fact.ID) != "" || strings.TrimSpace(fact.APIKeyEnv) != ""
+			if factModelSpecified {
+				if strings.TrimSpace(fact.Provider) == "" {
+					return errors.New("fact.provider is required")
+				}
+				if err := validateHTTPBaseURL("fact.base_url", fact.BaseURL); err != nil {
+					return err
+				}
+				if strings.TrimSpace(fact.ID) == "" {
+					return errors.New("fact.model is required")
+				}
+				if !validEnvName(fact.APIKeyEnv) {
+					return errors.New("fact.api_key_env must be an environment variable name")
+				}
+			}
+			if !validEnvName(fact.JinaAPIKeyEnv) {
 				return errors.New("fact.jina_api_key_env must be an environment variable name")
 			}
 		}
@@ -546,10 +558,10 @@ func (c *Config) validateBenchmarkType() error {
 		if c.Benchmark.Environment != nil {
 			return errors.New("benchmark.environment must not be set for terminalbench2")
 		}
-		if c.Judge != nil {
+		if c.Benchmark.Judge != nil {
 			return errors.New("judge must not be set for terminalbench2")
 		}
-		if c.Fact != nil {
+		if c.Benchmark.Fact != nil {
 			return errors.New("fact must not be set for terminalbench2")
 		}
 		return nil
@@ -576,10 +588,18 @@ func (h *HarnessConfig) validate() error {
 			return errors.New("harness.web_search.extract_api_key_env must be an environment variable name")
 		}
 	}
-	if h.Subagents.Enabled != nil && h.Type != "openclaw" {
-		return errors.New("harness.subagents requires OpenClaw")
+	if h.Subagents.Enabled != nil && h.Type != "openclaw" && h.Type != "hermes" {
+		return errors.New("harness.subagents requires OpenClaw or Hermes")
 	}
-	if h.Subagents.Enabled == nil && h.Type == "openclaw" {
+	if h.Subagents.MaxConcurrent != 0 {
+		if h.Type != "openclaw" && h.Type != "hermes" {
+			return errors.New("harness.subagents.max_concurrent requires OpenClaw or Hermes")
+		}
+		if h.Subagents.MaxConcurrent < 0 {
+			return errors.New("harness.subagents.max_concurrent must be positive")
+		}
+	}
+	if h.Subagents.Enabled == nil && (h.Type == "openclaw" || h.Type == "hermes") {
 		enabled := true
 		h.Subagents.Enabled = &enabled
 	}

@@ -47,7 +47,7 @@ const (
 // Terminal settings are deliberately absent. Hermes resolves its backend from
 // environment variables only (tools/terminal_tool.py::_get_env_config), so the
 // SSH target is supplied through containerEnvironment below.
-func renderConfig(model core.ModelConfig, maxTurns int, webSearchEnabled, extractEnabled bool) ([]byte, error) {
+func renderConfig(model core.ModelConfig, maxTurns int, webSearchEnabled, extractEnabled, subagentsEnabled bool, maxConcurrentSubagents int) ([]byte, error) {
 	if err := validateModel(model); err != nil {
 		return nil, err
 	}
@@ -70,6 +70,17 @@ func renderConfig(model core.ModelConfig, maxTurns int, webSearchEnabled, extrac
 	output.WriteString("  api_mode: \"chat_completions\"\n")
 	output.WriteString("\nagent:\n")
 	output.WriteString("  max_turns: " + strconv.Itoa(maxTurns) + "\n")
+	if !subagentsEnabled {
+		// delegation is Hermes's delegate_task toolset. Unlike
+		// platform_toolsets (an allowlist of toolset categories), delegation
+		// isn't gated by it and is on by default, so disabling it requires
+		// this separate top-level key.
+		output.WriteString("\ndisabled_toolsets:\n")
+		output.WriteString("  - delegation\n")
+	} else if maxConcurrentSubagents > 0 {
+		output.WriteString("\ndelegation:\n")
+		output.WriteString("  max_concurrent_children: " + strconv.Itoa(maxConcurrentSubagents) + "\n")
+	}
 	output.WriteString("\ndisplay:\n")
 	output.WriteString("  streaming: false\n")
 	output.WriteString("  compact: true\n")

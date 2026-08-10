@@ -21,7 +21,7 @@ func validEndpoint() core.ToolEndpoint {
 // The credential must reach the container as a ${NAME} reference that Hermes
 // expands at run time, never as a value written into the rendered config.
 func TestRenderConfigReferencesCredentialByName(t *testing.T) {
-	rendered, err := renderConfig(validModel(), 90, false, false)
+	rendered, err := renderConfig(validModel(), 90, false, false, true, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestRenderConfigNormalizesSGLangAndRejectsBadInput(t *testing.T) {
 	model := validModel()
 	model.Provider = "sglang"
 	model.BaseURL = "http://host:30000/v1/"
-	rendered, err := renderConfig(model, 10, false, false)
+	rendered, err := renderConfig(model, 10, false, false, true, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,11 +60,11 @@ func TestRenderConfigNormalizesSGLangAndRejectsBadInput(t *testing.T) {
 	for name, mutate := range bad {
 		model := validModel()
 		mutate(&model)
-		if _, err := renderConfig(model, 10, false, false); err == nil {
+		if _, err := renderConfig(model, 10, false, false, true, 0); err == nil {
 			t.Fatalf("%s: invalid model was accepted", name)
 		}
 	}
-	if _, err := renderConfig(validModel(), 0, false, false); err == nil {
+	if _, err := renderConfig(validModel(), 0, false, false, true, 0); err == nil {
 		t.Fatal("non-positive max turns was accepted")
 	}
 }
@@ -73,7 +73,7 @@ func TestRenderConfigNormalizesSGLangAndRejectsBadInput(t *testing.T) {
 func TestRenderConfigQuotesInjectionAttempts(t *testing.T) {
 	model := validModel()
 	model.Model = `x" \nevil: true`
-	rendered, err := renderConfig(model, 10, false, false)
+	rendered, err := renderConfig(model, 10, false, false, true, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +188,7 @@ func TestContainerEnvironmentRejectsUnusableEndpoints(t *testing.T) {
 // Disabled web search must leave today's toolset list and environment
 // unchanged — a regression guard for callers that never opt in.
 func TestRenderConfigOmitsWebToolsetWhenDisabled(t *testing.T) {
-	rendered, err := renderConfig(validModel(), 90, false, false)
+	rendered, err := renderConfig(validModel(), 90, false, false, true, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +199,7 @@ func TestRenderConfigOmitsWebToolsetWhenDisabled(t *testing.T) {
 }
 
 func TestRenderConfigAddsWebToolsetWhenEnabled(t *testing.T) {
-	rendered, err := renderConfig(validModel(), 90, true, false)
+	rendered, err := renderConfig(validModel(), 90, true, false, true, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +215,7 @@ func TestRenderConfigAddsWebToolsetWhenEnabled(t *testing.T) {
 // otherwise a web_extract call would hit Hermes with no explicit backend
 // rather than the clear "search-only backend" error SearXNG-only gives.
 func TestRenderConfigOmitsExtractBackendWithoutExtractKey(t *testing.T) {
-	rendered, err := renderConfig(validModel(), 90, true, false)
+	rendered, err := renderConfig(validModel(), 90, true, false, true, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +225,7 @@ func TestRenderConfigOmitsExtractBackendWithoutExtractKey(t *testing.T) {
 }
 
 func TestRenderConfigAddsExtractBackendWhenEnabled(t *testing.T) {
-	rendered, err := renderConfig(validModel(), 90, true, true)
+	rendered, err := renderConfig(validModel(), 90, true, true, true, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,13 +240,68 @@ func TestRenderConfigAddsExtractBackendWhenEnabled(t *testing.T) {
 // extract_backend must never be rendered when web search itself is off, even
 // if a caller passes extractEnabled=true by mistake.
 func TestRenderConfigOmitsExtractBackendWhenWebSearchDisabled(t *testing.T) {
-	rendered, err := renderConfig(validModel(), 90, false, true)
+	rendered, err := renderConfig(validModel(), 90, false, true, true, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(rendered)
 	if strings.Contains(text, "- web") || strings.Contains(text, "\nweb:") || strings.Contains(text, "extract_backend") {
 		t.Fatalf("config unexpectedly enables web/extract while web search is disabled:\n%s", text)
+	}
+}
+
+func TestRenderConfigDisablesDelegationToolsetWhenSubagentsDisabled(t *testing.T) {
+	rendered, err := renderConfig(validModel(), 90, false, false, false, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(rendered)
+	if !strings.Contains(text, "\ndisabled_toolsets:\n  - delegation\n") {
+		t.Fatalf("config is missing disabled_toolsets: [delegation]:\n%s", text)
+	}
+}
+
+func TestRenderConfigOmitsDisabledToolsetsWhenSubagentsEnabled(t *testing.T) {
+	rendered, err := renderConfig(validModel(), 90, false, false, true, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(rendered)
+	if strings.Contains(text, "disabled_toolsets") {
+		t.Fatalf("config unexpectedly disables toolsets while subagents are enabled:\n%s", text)
+	}
+}
+
+func TestRenderConfigSetsMaxConcurrentChildrenWhenLimited(t *testing.T) {
+	rendered, err := renderConfig(validModel(), 90, false, false, true, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(rendered)
+	if !strings.Contains(text, "\ndelegation:\n  max_concurrent_children: 2\n") {
+		t.Fatalf("config is missing delegation.max_concurrent_children:\n%s", text)
+	}
+}
+
+func TestRenderConfigOmitsDelegationBlockWhenNoLimitSet(t *testing.T) {
+	rendered, err := renderConfig(validModel(), 90, false, false, true, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(rendered)
+	if strings.Contains(text, "\ndelegation:\n") {
+		t.Fatalf("config unexpectedly sets a delegation block with no limit configured:\n%s", text)
+	}
+}
+
+func TestRenderConfigIgnoresMaxConcurrentChildrenWhenSubagentsDisabled(t *testing.T) {
+	rendered, err := renderConfig(validModel(), 90, false, false, false, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(rendered)
+	if strings.Contains(text, "\ndelegation:\n") {
+		t.Fatalf("config unexpectedly sets a delegation block while subagents are disabled:\n%s", text)
 	}
 }
 

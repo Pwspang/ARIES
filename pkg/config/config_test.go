@@ -172,7 +172,55 @@ func TestSubagentsHarnessConfigValidation(t *testing.T) {
 
 	nonOpenClawDisabled := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"other","subagents":{"enabled":false}}`, 1)
 	if _, err := Decode(strings.NewReader(nonOpenClawDisabled)); err == nil {
-		t.Fatal("expected rejection of an explicit harness.subagents.enabled:false under a non-OpenClaw harness type")
+		t.Fatal("expected rejection of an explicit harness.subagents.enabled:false under a non-OpenClaw/Hermes harness type")
+	}
+
+	hermesDisabled := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"hermes","subagents":{"enabled":false}}`, 1)
+	cfg, err = Decode(strings.NewReader(hermesDisabled))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Harness.Subagents.Enabled == nil || *cfg.Harness.Subagents.Enabled {
+		t.Fatalf("harness subagents = %#v, want disabled", cfg.Harness.Subagents)
+	}
+
+	hermesDefault := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"hermes"}`, 1)
+	cfg, err = Decode(strings.NewReader(hermesDefault))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Harness.Subagents.Enabled == nil || !*cfg.Harness.Subagents.Enabled {
+		t.Fatalf("harness subagents = %#v, want defaulted to enabled under Hermes", cfg.Harness.Subagents)
+	}
+}
+
+func TestSubagentsMaxConcurrentValidation(t *testing.T) {
+	openclawLimited := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","subagents":{"max_concurrent":2}}`, 1)
+	cfg, err := Decode(strings.NewReader(openclawLimited))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Harness.Subagents.MaxConcurrent != 2 {
+		t.Fatalf("harness.subagents.max_concurrent = %d, want 2", cfg.Harness.Subagents.MaxConcurrent)
+	}
+
+	hermesLimited := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"hermes","subagents":{"max_concurrent":4}}`, 1)
+	cfg, err = Decode(strings.NewReader(hermesLimited))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Harness.Subagents.MaxConcurrent != 4 {
+		t.Fatalf("harness.subagents.max_concurrent = %d, want 4", cfg.Harness.Subagents.MaxConcurrent)
+	}
+
+	nonOpenClawLimited := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"other","subagents":{"max_concurrent":2}}`, 1)
+	if _, err := Decode(strings.NewReader(nonOpenClawLimited)); err == nil {
+		t.Fatal("expected rejection of harness.subagents.max_concurrent under a non-OpenClaw/Hermes harness type")
+	}
+
+	negative := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","subagents":{"max_concurrent":-1}}`, 1)
+	if _, err := Decode(strings.NewReader(negative)); err == nil {
+		t.Fatal("expected rejection of a negative harness.subagents.max_concurrent")
 	}
 }
 
@@ -232,11 +280,11 @@ func TestDecodeExecutionAndURLValidation(t *testing.T) {
 
 const validDeepResearchBenchConfig = `{
   "name":"test-run","versions_file":"../configs/versions.json",
-  "benchmark":{"type":"deepresearchbench","root":".cache/drb","tasks":["1"],"environment":{"image":"aries/drb:latest","workdir":"/workspace"}},
+  "benchmark":{"type":"deepresearchbench","root":".cache/drb","tasks":["1"],"environment":{"image":"aries/drb:latest","workdir":"/workspace"},
+    "judge":{"provider":"openai","base_url":"https://api.openai.com/v1","model":"gpt-4.1","api_key_env":"OPENAI_API_KEY"}},
   "harness":{"type":"openclaw"},"sandbox":{"type":"docker"},"bridge":{"type":"openclaw-ssh"},
   "runtime":{"backend":"deepseek","mode":"external"},
-  "model":{"id":"fake","base_url":"http://127.0.0.1:8080","api_key_env":"DEEPSEEK_API_KEY"},
-  "judge":{"provider":"openai","base_url":"https://api.openai.com/v1","model":"gpt-4.1","api_key_env":"OPENAI_API_KEY"}
+  "model":{"id":"fake","base_url":"http://127.0.0.1:8080","api_key_env":"DEEPSEEK_API_KEY"}
 }`
 
 const noJudgeDeepResearchBenchConfig = `{
@@ -249,22 +297,33 @@ const noJudgeDeepResearchBenchConfig = `{
 
 const validDeepResearchBenchWithFactConfig = `{
   "name":"test-run","versions_file":"../configs/versions.json",
-  "benchmark":{"type":"deepresearchbench","root":".cache/drb","tasks":["1"],"environment":{"image":"aries/drb:latest","workdir":"/workspace"}},
+  "benchmark":{"type":"deepresearchbench","root":".cache/drb","tasks":["1"],"environment":{"image":"aries/drb:latest","workdir":"/workspace"},
+    "judge":{"provider":"openai","base_url":"https://api.openai.com/v1","model":"gpt-4.1","api_key_env":"OPENAI_API_KEY"},
+    "fact":{"provider":"openai","base_url":"https://api.openai.com/v1","model":"gpt-4.1-mini","api_key_env":"OPENAI_API_KEY","jina_api_key_env":"JINA_API_KEY"}},
   "harness":{"type":"openclaw"},"sandbox":{"type":"docker"},"bridge":{"type":"openclaw-ssh"},
   "runtime":{"backend":"deepseek","mode":"external"},
-  "model":{"id":"fake","base_url":"http://127.0.0.1:8080","api_key_env":"DEEPSEEK_API_KEY"},
-  "judge":{"provider":"openai","base_url":"https://api.openai.com/v1","model":"gpt-4.1","api_key_env":"OPENAI_API_KEY"},
-  "fact":{"provider":"openai","base_url":"https://api.openai.com/v1","model":"gpt-4.1-mini","api_key_env":"OPENAI_API_KEY","jina_api_key_env":"JINA_API_KEY"}
+  "model":{"id":"fake","base_url":"http://127.0.0.1:8080","api_key_env":"DEEPSEEK_API_KEY"}
 }`
 
-func TestDeepResearchBenchRequiresEnvironmentAndJudge(t *testing.T) {
+const factOnlyJinaKeyDeepResearchBenchConfig = `{
+  "name":"test-run","versions_file":"../configs/versions.json",
+  "benchmark":{"type":"deepresearchbench","root":".cache/drb","tasks":["1"],"environment":{"image":"aries/drb:latest","workdir":"/workspace"},
+    "fact":{"jina_api_key_env":"JINA_API_KEY"}},
+  "harness":{"type":"openclaw"},"sandbox":{"type":"docker"},"bridge":{"type":"openclaw-ssh"},
+  "runtime":{"backend":"deepseek","mode":"external"},
+  "model":{"id":"fake","base_url":"http://127.0.0.1:8080","api_key_env":"DEEPSEEK_API_KEY"}
+}`
+
+func TestDeepResearchBenchRequiresEnvironmentAndValidatesJudgeWhenPresent(t *testing.T) {
 	if _, err := Decode(strings.NewReader(validDeepResearchBenchConfig)); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := Decode(strings.NewReader(noJudgeDeepResearchBenchConfig)); err != nil {
+		t.Fatalf("config without judge (defaults to model) rejected: %v", err)
 	}
 	cases := map[string]string{
 		"no environment":       strings.Replace(validDeepResearchBenchConfig, `,"environment":{"image":"aries/drb:latest","workdir":"/workspace"}`, ``, 1),
 		"empty image":          strings.Replace(validDeepResearchBenchConfig, `"image":"aries/drb:latest"`, `"image":""`, 1),
-		"no judge":             noJudgeDeepResearchBenchConfig,
 		"empty judge provider": strings.Replace(validDeepResearchBenchConfig, `"provider":"openai"`, `"provider":""`, 1),
 		"bad judge base_url":   strings.Replace(validDeepResearchBenchConfig, `"base_url":"https://api.openai.com/v1"`, `"base_url":"not-a-url"`, 1),
 		"empty judge model":    strings.Replace(validDeepResearchBenchConfig, `"model":"gpt-4.1"`, `"model":""`, 1),
@@ -289,11 +348,11 @@ func TestTerminalBench2RejectsEnvironmentAndJudge(t *testing.T) {
 			wantErr: "environment",
 		},
 		"judge set": {
-			input:   strings.Replace(validConfig, `"model":{"id":"fake","base_url":"http://127.0.0.1:8080","api_key_env":"DEEPSEEK_API_KEY"}`, `"model":{"id":"fake","base_url":"http://127.0.0.1:8080","api_key_env":"DEEPSEEK_API_KEY"},"judge":{"provider":"openai","base_url":"https://api.openai.com/v1","model":"gpt-4.1","api_key_env":"OPENAI_API_KEY"}`, 1),
+			input:   strings.Replace(validConfig, `"benchmark":{"type":"terminalbench2","root":".cache/tb2","tasks":["fix-git"]}`, `"benchmark":{"type":"terminalbench2","root":".cache/tb2","tasks":["fix-git"],"judge":{"provider":"openai","base_url":"https://api.openai.com/v1","model":"gpt-4.1","api_key_env":"OPENAI_API_KEY"}}`, 1),
 			wantErr: "judge must not be set for terminalbench2",
 		},
 		"fact set": {
-			input:   strings.Replace(validConfig, `"model":{"id":"fake","base_url":"http://127.0.0.1:8080","api_key_env":"DEEPSEEK_API_KEY"}`, `"model":{"id":"fake","base_url":"http://127.0.0.1:8080","api_key_env":"DEEPSEEK_API_KEY"},"fact":{"provider":"openai","base_url":"https://api.openai.com/v1","model":"gpt-4.1-mini","api_key_env":"OPENAI_API_KEY","jina_api_key_env":"JINA_API_KEY"}`, 1),
+			input:   strings.Replace(validConfig, `"benchmark":{"type":"terminalbench2","root":".cache/tb2","tasks":["fix-git"]}`, `"benchmark":{"type":"terminalbench2","root":".cache/tb2","tasks":["fix-git"],"fact":{"provider":"openai","base_url":"https://api.openai.com/v1","model":"gpt-4.1-mini","api_key_env":"OPENAI_API_KEY","jina_api_key_env":"JINA_API_KEY"}}`, 1),
 			wantErr: "fact must not be set for terminalbench2",
 		},
 	}
@@ -318,12 +377,18 @@ func TestDeepResearchBenchFactIsOptionalButValidatedWhenPresent(t *testing.T) {
 	if _, err := Decode(strings.NewReader(validDeepResearchBenchConfig)); err != nil {
 		t.Fatalf("config without fact rejected: %v", err)
 	}
+	// A fact block with only jina_api_key_env (model fields all omitted,
+	// defaulting to the profile's main model) must also decode.
+	if _, err := Decode(strings.NewReader(factOnlyJinaKeyDeepResearchBenchConfig)); err != nil {
+		t.Fatalf("fact config with only jina key rejected: %v", err)
+	}
 	cases := map[string]string{
-		"empty fact provider": strings.Replace(validDeepResearchBenchWithFactConfig, `"fact":{"provider":"openai"`, `"fact":{"provider":""`, 1),
-		"bad fact base_url":   strings.Replace(validDeepResearchBenchWithFactConfig, `"fact":{"provider":"openai","base_url":"https://api.openai.com/v1"`, `"fact":{"provider":"openai","base_url":"not-a-url"`, 1),
-		"empty fact model":    strings.Replace(validDeepResearchBenchWithFactConfig, `"model":"gpt-4.1-mini"`, `"model":""`, 1),
-		"bad fact env name":   strings.Replace(validDeepResearchBenchWithFactConfig, `"api_key_env":"OPENAI_API_KEY","jina_api_key_env"`, `"api_key_env":"lower-case","jina_api_key_env"`, 1),
-		"bad jina env name":   strings.Replace(validDeepResearchBenchWithFactConfig, `"jina_api_key_env":"JINA_API_KEY"`, `"jina_api_key_env":"lower-case"`, 1),
+		"empty fact provider":                strings.Replace(validDeepResearchBenchWithFactConfig, `"fact":{"provider":"openai"`, `"fact":{"provider":""`, 1),
+		"bad fact base_url":                  strings.Replace(validDeepResearchBenchWithFactConfig, `"fact":{"provider":"openai","base_url":"https://api.openai.com/v1"`, `"fact":{"provider":"openai","base_url":"not-a-url"`, 1),
+		"empty fact model":                   strings.Replace(validDeepResearchBenchWithFactConfig, `"model":"gpt-4.1-mini"`, `"model":""`, 1),
+		"bad fact env name":                  strings.Replace(validDeepResearchBenchWithFactConfig, `"api_key_env":"OPENAI_API_KEY","jina_api_key_env"`, `"api_key_env":"lower-case","jina_api_key_env"`, 1),
+		"bad jina env name":                  strings.Replace(validDeepResearchBenchWithFactConfig, `"jina_api_key_env":"JINA_API_KEY"`, `"jina_api_key_env":"lower-case"`, 1),
+		"partial fact model (provider only)": strings.Replace(factOnlyJinaKeyDeepResearchBenchConfig, `"fact":{"jina_api_key_env":"JINA_API_KEY"}`, `"fact":{"provider":"openai","jina_api_key_env":"JINA_API_KEY"}`, 1),
 	}
 	for name, input := range cases {
 		t.Run(name, func(t *testing.T) {
