@@ -28,6 +28,8 @@ import (
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
+	"github.com/sirupsen/logrus"
+	"github.com/sirupsen/logrus/hooks/test"
 )
 
 const testOpenClawImage = "ghcr.io/openclaw/openclaw:2026.7.1"
@@ -741,6 +743,145 @@ func TestHarnessUsesOneSDKContainerAndDirectPrivateArchive(t *testing.T) {
 	}
 	if info, err := os.Stat(configPath); err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("retained OpenClaw config mode = %v, %v", info, err)
+	}
+}
+
+// When extract is configured, the Tavily key must be staged in its own file,
+// exported under OpenClaw's fixed TAVILY_API_KEY name by the launcher,
+// enable the tavily plugin entry in the retained config, and stay out of
+// Docker metadata and the retained config — the same guarantees the model
+// key already has.
+func TestStartStagesExtractKeyWhenConfigured(t *testing.T) {
+	modelSecret := []byte("model-secret")
+	extractSecret := []byte("tvly-super-secret")
+	fake := newFakeDocker()
+	manager, err := New(Options{
+		Image: testOpenClawImage, OutputDir: t.TempDir(), StartTimeout: time.Second, AgentTimeout: time.Second,
+		WebSearchEnabled: true, ExtractAPIKeyEnv: "TAVILY_API_KEY",
+		APIKeyLookup: func(name string) ([]byte, bool) {
+			if name == "TAVILY_API_KEY" {
+				return bytes.Clone(extractSecret), true
+			}
+			return bytes.Clone(modelSecret), true
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.client = fake
+	manager.newID = func() (string, error) { return "attempt", nil }
+
+	request := core.HarnessRequest{RunID: "run-1", TaskID: "fix-git", Endpoint: endpointFiles(t), Model: testModel(), Timeout: 37 * time.Second}
+	if err := manager.Start(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(context.Background())
+
+	files := readArchive(t, fake.archive)
+	extractFile, ok := files["run/aries/tavily.key"]
+	if !ok || extractFile.mode != 0o600 || string(extractFile.content) != string(extractSecret) {
+		t.Fatalf("staged tavily key = %#v", extractFile)
+	}
+	launchScript := string(files["run/aries/launch"].content)
+	for _, required := range []string{"tavily_key=$(cat /run/aries/tavily.key)", "export TAVILY_API_KEY=\"$tavily_key\""} {
+		if !strings.Contains(launchScript, required) {
+			t.Fatalf("launcher missing %q: %s", required, launchScript)
+		}
+	}
+
+	serialized := strings.Join(append(append([]string{}, fake.created.Config.Env...), fake.created.Config.Cmd...), "\n")
+	for _, value := range fake.created.Config.Labels {
+		serialized += "\n" + value
+	}
+	if strings.Contains(serialized, string(extractSecret)) {
+		t.Fatal("extract secret entered Docker config")
+	}
+	retained, err := os.ReadFile(filepath.Join(manager.outputDir, request.TaskID, "harness", "openclaw.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(retained, extractSecret) {
+		t.Fatalf("extract secret leaked into the retained config:\n%s", retained)
+	}
+	var configuration openClawConfig
+	if err := json.Unmarshal(retained, &configuration); err != nil {
+		t.Fatal(err)
+	}
+	if configuration.Tools.Web.Search.Provider != "searxng" {
+		t.Fatalf("tools.web.search.provider = %q, want unchanged searxng", configuration.Tools.Web.Search.Provider)
+	}
+	tavilyEntry, ok := configuration.Plugins.Entries["tavily"]
+	if !ok || !tavilyEntry.Enabled {
+		t.Fatalf("plugins.entries.tavily = %#v", configuration.Plugins.Entries)
+	}
+}
+
+// Missing extract credentials must fail Start and leave no partial
+// container, the same contract the model key already has.
+// Unlike Hermes's identically-named ExtractAPIKeyEnv, a missing OpenClaw
+// extract credential must not abort the run: Start should fall back to
+// plain SearXNG-backed web_fetch (no tavily plugin entry at all) and log a
+// warning rather than fail.
+func TestStartFallsBackToNativeWebFetchWhenExtractCredentialMissing(t *testing.T) {
+	fake := newFakeDocker()
+	logger, hook := test.NewNullLogger()
+	manager, err := New(Options{
+		Image: testOpenClawImage, OutputDir: t.TempDir(), StartTimeout: time.Second, AgentTimeout: time.Second,
+		WebSearchEnabled: true, ExtractAPIKeyEnv: "TAVILY_API_KEY", Logger: logger,
+		APIKeyLookup: func(name string) ([]byte, bool) {
+			if name == "TAVILY_API_KEY" {
+				return nil, false
+			}
+			return []byte("model-secret"), true
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.client = fake
+	manager.newID = func() (string, error) { return "attempt", nil }
+
+	request := core.HarnessRequest{RunID: "run-1", TaskID: "fix-git", Endpoint: endpointFiles(t), Model: testModel(), Timeout: 37 * time.Second}
+	if err := manager.Start(context.Background(), request); err != nil {
+		t.Fatalf("expected fallback instead of rejection, got: %v", err)
+	}
+	defer manager.Stop(context.Background())
+	if fake.created.Name == "" {
+		t.Fatal("container was not created despite the intended fallback")
+	}
+
+	var warned bool
+	for _, entry := range hook.AllEntries() {
+		if entry.Level == logrus.WarnLevel && strings.Contains(entry.Message, "falling back") {
+			warned = true
+			break
+		}
+	}
+	if !warned {
+		t.Fatalf("expected a fallback warning log entry, got %#v", hook.AllEntries())
+	}
+
+	retained, err := os.ReadFile(filepath.Join(manager.outputDir, request.TaskID, "harness", "openclaw.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var configuration openClawConfig
+	if err := json.Unmarshal(retained, &configuration); err != nil {
+		t.Fatal(err)
+	}
+	if configuration.Tools.Web == nil || configuration.Tools.Web.Search == nil || configuration.Tools.Web.Search.Provider != "searxng" {
+		t.Fatalf("tools.web.search = %#v, want unchanged searxng", configuration.Tools.Web)
+	}
+	if _, ok := configuration.Plugins.Entries["searxng"]; !ok {
+		t.Fatalf("plugins.entries = %#v, want searxng still present", configuration.Plugins.Entries)
+	}
+	if _, ok := configuration.Plugins.Entries["tavily"]; ok {
+		t.Fatalf("plugins.entries = %#v, want no tavily entry on fallback", configuration.Plugins.Entries)
+	}
+	for _, tool := range configuration.Tools.Sandbox.Tools.AlsoAllow {
+		if tool == "tavily_extract" {
+			t.Fatalf("tools.sandbox.tools.alsoAllow = %#v, want tavily_extract absent on fallback", configuration.Tools.Sandbox.Tools.AlsoAllow)
+		}
 	}
 }
 

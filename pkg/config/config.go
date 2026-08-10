@@ -149,13 +149,6 @@ type HarnessConfig struct {
 // (*HarnessConfig).validate), same as Realtime above: it lives on the shared
 // struct rather than a type-specific sub-block, gated by an explicit type
 // check instead of a nested namespace.
-//
-// ExtractAPIKeyEnv is Hermes-only: it names the host-side environment
-// variable holding a Tavily API key, used as web_extract's backend (SearXNG,
-// Hermes's only search backend, cannot extract page content). Hermes itself
-// always expects the in-container variable named literally TAVILY_API_KEY —
-// this field only controls where the harness looks up the value on the host,
-// mirroring FactConfig.JinaAPIKeyEnv's lookup-name-vs-consumption split.
 type HarnessWebSearchConfig struct {
 	Enabled          bool   `json:"enabled,omitempty"`
 	ExtractAPIKeyEnv string `json:"extract_api_key_env,omitempty"`
@@ -578,8 +571,8 @@ func (h *HarnessConfig) validate() error {
 		return errors.New("harness.web_search requires OpenClaw or Hermes")
 	}
 	if h.WebSearch.ExtractAPIKeyEnv != "" {
-		if h.Type != "hermes" {
-			return errors.New("harness.web_search.extract_api_key_env requires Hermes")
+		if h.Type != "openclaw" && h.Type != "hermes" {
+			return errors.New("harness.web_search.extract_api_key_env requires OpenClaw or Hermes")
 		}
 		if !h.WebSearch.Enabled {
 			return errors.New("harness.web_search.extract_api_key_env requires harness.web_search.enabled")

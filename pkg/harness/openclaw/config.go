@@ -31,6 +31,8 @@ const (
 	// network. Not profile-configurable: it's an internal wiring detail, not
 	// something a user should need to know or vary.
 	searxngBaseURL = "http://task-sandbox:8888"
+	tavilyKeyPath  = "/run/aries/tavily.key"
+	tavilyAPIKeyEnv = "TAVILY_API_KEY"
 )
 
 type openClawConfig struct {
@@ -76,7 +78,8 @@ type pluginsConfig struct {
 }
 
 type pluginEntry struct {
-	Config pluginConfigBlock `json:"config"`
+	Enabled bool               `json:"enabled,omitempty"`
+	Config  *pluginConfigBlock `json:"config,omitempty"`
 }
 
 type pluginConfigBlock struct {
@@ -157,7 +160,7 @@ type sshConfig struct {
 	KnownHostsFile        string `json:"knownHostsFile"`
 }
 
-func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchEnabled, subagentsEnabled bool, maxConcurrentSubagents int) ([]byte, error) {
+func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchEnabled, extractEnabled, subagentsEnabled bool, maxConcurrentSubagents int) ([]byte, error) {
 	if err := validateModel(model); err != nil {
 		return nil, err
 	}
@@ -206,10 +209,20 @@ func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchE
 	}
 	if webSearchEnabled {
 		configuration.Tools.Web = &webToolsConfig{Search: &webSearchToolConfig{Provider: "searxng"}}
-		configuration.Tools.Sandbox = &sandboxToolsGate{Tools: sandboxToolsAllowList{AlsoAllow: []string{"web_search", "web_fetch"}}}
-		configuration.Plugins = &pluginsConfig{Entries: map[string]pluginEntry{
-			"searxng": {Config: pluginConfigBlock{WebSearch: webSearchPluginConfig{BaseURL: searxngBaseURL}}},
-		}}
+		alsoAllow := []string{"web_search", "web_fetch"}
+		entries := map[string]pluginEntry{
+			"searxng": {Config: &pluginConfigBlock{WebSearch: webSearchPluginConfig{BaseURL: searxngBaseURL}}},
+		}
+		if extractEnabled {
+			// tavily_extract only: the entry deliberately carries no apiKey
+			// (the launcher exports it as TAVILY_API_KEY instead, so it
+			// never enters this JSON), and alsoAllow omits tavily_search so
+			// Tavily backs extraction only — search stays SearXNG.
+			alsoAllow = append(alsoAllow, "tavily_extract")
+			entries["tavily"] = pluginEntry{Enabled: true}
+		}
+		configuration.Tools.Sandbox = &sandboxToolsGate{Tools: sandboxToolsAllowList{AlsoAllow: alsoAllow}}
+		configuration.Plugins = &pluginsConfig{Entries: entries}
 	}
 	var output bytes.Buffer
 	encoder := json.NewEncoder(&output)
@@ -314,10 +327,13 @@ func validEnvironmentName(value string) bool {
 	return value != ""
 }
 
-func launcherScript(apiKeyEnv, realtimeAPIKeyEnv string) []byte {
+func launcherScript(apiKeyEnv, realtimeAPIKeyEnv string, extractEnabled bool) []byte {
 	script := "#!/bin/sh\nset -eu\nmodel_key=$(cat " + modelKeyPath + ")\ngateway_key=$(cat " + gatewayKeyPath + ")\nexport " + apiKeyEnv + "=\"$model_key\"\nexport " + gatewayTokenEnv + "=\"$gateway_key\"\n"
 	if realtimeAPIKeyEnv != "" {
 		script += "realtime_key=$(cat " + realtimeKeyPath + ")\nexport " + realtimeAPIKeyEnv + "=\"$realtime_key\"\nunset realtime_key\n"
+	}
+	if extractEnabled {
+		script += "tavily_key=$(cat " + tavilyKeyPath + ")\nexport " + tavilyAPIKeyEnv + "=\"$tavily_key\"\nunset tavily_key\n"
 	}
 	script += "unset model_key gateway_key\nexec \"$@\"\n"
 	return []byte(script)

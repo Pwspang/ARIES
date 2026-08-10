@@ -97,13 +97,18 @@ from inside the sandbox. Both harnesses support this through
 `harness.web_search.enabled: true`, using the DRB task sandbox's built-in
 SearXNG instance as the search backend:
 
-- **OpenClaw** needs no further configuration; its `web_fetch` tool needs no
-  separate extraction backend.
-- **Hermes** additionally accepts `harness.web_search.extract_api_key_env`,
+- **OpenClaw** needs no further configuration for basic `web_search`/
+  `web_fetch`. It also accepts `harness.web_search.extract_api_key_env`,
+  naming the host environment variable holding a Tavily API key; when set,
+  it additionally enables the `tavily_extract` tool (search itself stays on
+  SearXNG either way).
+- **Hermes** likewise accepts `harness.web_search.extract_api_key_env`,
   naming the host environment variable holding a Tavily API key. Without it,
   Hermes's `web_search` tool still works, but `web_extract` (reading a page's
-  content) has no backend and fails. Export the key before the run, e.g.
-  `export TAVILY_API_KEY=...`, matching the name given in the profile.
+  content) has no backend and fails.
+
+For either harness, export the key before the run, e.g.
+`export TAVILY_API_KEY=...`, matching the name given in the profile.
 
 The task prompt itself nudges the agent to call `web_fetch`/`web_extract`
 rather than reimplement page retrieval with `curl`/`wget`/a custom parser over
