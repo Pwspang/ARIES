@@ -16,6 +16,15 @@
     "environment": {
       "image": "ihasfarm/aries-deepresearchbench:latest",
       "workdir": "/workspace"
+    },
+    "fact": {
+      "jina_api_key_env": "JINA_API_KEY"
+    },
+    "judge": {
+    "provider": "deepseek",
+    "base_url": "https://api.deepseek.com",
+    "api_key_env": "DEEPSEEK_API_KEY",
+    "model": "deepseek-v4-flash"
     }
   },
   "harness": {
@@ -41,19 +50,6 @@
     "base_url": "https://api.deepseek.com",
     "api_key_env": "DEEPSEEK_API_KEY",
     "id": "deepseek-v4-flash"
-  },
-  "judge": {
-    "provider": "deepseek",
-    "base_url": "https://api.deepseek.com",
-    "api_key_env": "DEEPSEEK_API_KEY",
-    "model": "deepseek-v4-flash"
-  },
-  "fact": {
-    "provider": "deepseek",
-    "base_url": "https://api.deepseek.com",
-    "api_key_env": "DEEPSEEK_API_KEY",
-    "model": "deepseek-v4-flash",
-    "jina_api_key_env": "JINA_API_KEY"
   },
   "output_dir": "runs"
 }

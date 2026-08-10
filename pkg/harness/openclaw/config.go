@@ -23,7 +23,6 @@ const (
 	agentWrapperPath    = "/run/aries/run-agent"
 	stateContainerPath  = "/home/node/.openclaw"
 	workspaceRoot       = "/aries/openclaw"
-
 	// searxngBaseURL matches the fixed network alias
 	// (pkg/sandbox/docker/docker.go's `networkAlias = "task-sandbox"`) and
 	// port (images/deep-research-bench/Dockerfile) that the DRB task
@@ -125,8 +124,15 @@ type agentsConfig struct {
 }
 
 type agentDefaults struct {
-	Model   primaryModel  `json:"model"`
-	Sandbox sandboxConfig `json:"sandbox"`
+	Model     primaryModel     `json:"model"`
+	Sandbox   sandboxConfig    `json:"sandbox"`
+	Subagents *subagentsConfig `json:"subagents,omitempty"`
+}
+
+// subagentsConfig bounds sessions_spawn concurrency. Omitted entirely when no
+// limit is configured, leaving OpenClaw's own built-in default in place.
+type subagentsConfig struct {
+	MaxConcurrent int `json:"maxConcurrent,omitempty"`
 }
 
 type primaryModel struct {
@@ -151,7 +157,7 @@ type sshConfig struct {
 	KnownHostsFile        string `json:"knownHostsFile"`
 }
 
-func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchEnabled, subagentsEnabled bool) ([]byte, error) {
+func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchEnabled, subagentsEnabled bool, maxConcurrentSubagents int) ([]byte, error) {
 	if err := validateModel(model); err != nil {
 		return nil, err
 	}
@@ -193,21 +199,10 @@ func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchE
 				},
 			},
 		}},
-		// OpenClaw's native SSH filesystem helpers require python3 inside the
-		// remote image. Terminal-Bench images do not promise it, while the exec
-		// tool has the same sandbox access without changing task images.
-		//
-		// sessions_spawn/sessions_yield let the agent defer its final answer
-		// to async sub-agents and pause for their completion events, but
-		// ARIES's harness protocol sends exactly one agent request and treats
-		// the first terminal response as final (docs/design/harness.md) — it
-		// has no continuation mechanism to relay those events back. A yield
-		// ends the run immediately, stranding any spawned sub-agents
-		// mid-task. Denying both (the default) forces the agent to complete
-		// its work within the single turn ARIES can actually observe.
-		// subagentsEnabled opts back into both tools for callers who accept
-		// that a spawned sub-agent's completion may go unobserved.
 		Tools: toolPolicy{Deny: denyToolList(subagentsEnabled)},
+	}
+	if subagentsEnabled && maxConcurrentSubagents > 0 {
+		configuration.Agents.Defaults.Subagents = &subagentsConfig{MaxConcurrent: maxConcurrentSubagents}
 	}
 	if webSearchEnabled {
 		configuration.Tools.Web = &webToolsConfig{Search: &webSearchToolConfig{Provider: "searxng"}}
@@ -227,8 +222,21 @@ func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchE
 }
 
 func denyToolList(subagentsEnabled bool) []string {
+	// OpenClaw's native SSH filesystem helpers require python3 inside the
+	// remote image. Terminal-Bench images do not promise it, while the exec
+	// tool has the same sandbox access without changing task images.
 	deny := []string{"read", "write", "edit", "apply_patch"}
 	if !subagentsEnabled {
+		// sessions_spawn/sessions_yield let the agent defer its final answer
+		// to async sub-agents and pause for their completion events, but
+		// ARIES's harness protocol sends exactly one agent request and treats
+		// the first terminal response as final (docs/design/harness.md) — it
+		// has no continuation mechanism to relay those events back. A yield
+		// ends the run immediately, stranding any spawned sub-agents
+		// mid-task. Denying both (the default) forces the agent to complete
+		// its work within the single turn ARIES can actually observe.
+		// subagentsEnabled opts back into both tools for callers who accept
+		// that a spawned sub-agent's completion may go unobserved.
 		deny = append(deny, "sessions_spawn", "sessions_yield")
 	}
 	return deny

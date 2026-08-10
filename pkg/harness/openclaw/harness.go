@@ -66,18 +66,19 @@ const (
 
 // Options are the host-local inputs to one upstream OpenClaw container.
 type Options struct {
-	Image            string
-	OutputDir        string
-	DockerSocket     string
-	APIKeyLookup     func(string) ([]byte, bool)
-	Mode             string
-	Realtime         RealtimeOptions
-	WebSearchEnabled bool
-	SubagentsEnabled bool
-	CleanupTimeout   time.Duration
-	StartTimeout     time.Duration
-	AgentTimeout     time.Duration
-	Logger           *logrus.Logger
+	Image                  string
+	OutputDir              string
+	DockerSocket           string
+	APIKeyLookup           func(string) ([]byte, bool)
+	Mode                   string
+	Realtime               RealtimeOptions
+	WebSearchEnabled       bool
+	SubagentsEnabled       bool
+	MaxConcurrentSubagents int
+	CleanupTimeout         time.Duration
+	StartTimeout           time.Duration
+	AgentTimeout           time.Duration
+	Logger                 *logrus.Logger
 }
 
 type RealtimeOptions struct {
@@ -126,22 +127,23 @@ type dockerClient interface {
 }
 
 type Manager struct {
-	client           dockerClient
-	image            string
-	outputDir        string
-	cleanupTimeout   time.Duration
-	startTimeout     time.Duration
-	agentTimeout     time.Duration
-	logger           *logrus.Logger
-	apiKeyLookup     func(string) ([]byte, bool)
-	mode             string
-	realtime         RealtimeOptions
-	webSearchEnabled bool
-	subagentsEnabled bool
-	newID            func() (string, error)
-	newGateway     func(string, []byte) (gatewayConnection, error)
-	newRealtime    func(realtimeclient.Gateway, realtimeclient.Options) (realtimeRunner, error)
-	newSpeech      func(audioinput.SpeechClientOptions) (speechSynthesizer, error)
+	client                 dockerClient
+	image                  string
+	outputDir              string
+	cleanupTimeout         time.Duration
+	startTimeout           time.Duration
+	agentTimeout           time.Duration
+	logger                 *logrus.Logger
+	apiKeyLookup           func(string) ([]byte, bool)
+	mode                   string
+	realtime               RealtimeOptions
+	webSearchEnabled       bool
+	subagentsEnabled       bool
+	maxConcurrentSubagents int
+	newID                  func() (string, error)
+	newGateway             func(string, []byte) (gatewayConnection, error)
+	newRealtime            func(realtimeclient.Gateway, realtimeclient.Options) (realtimeRunner, error)
+	newSpeech              func(audioinput.SpeechClientOptions) (speechSynthesizer, error)
 
 	mu        sync.Mutex
 	active    *session
@@ -271,7 +273,8 @@ func New(options Options) (*Manager, error) {
 		cleanupTimeout: options.CleanupTimeout, startTimeout: options.StartTimeout,
 		agentTimeout: options.AgentTimeout, logger: options.Logger,
 		apiKeyLookup: options.APIKeyLookup, mode: options.Mode, realtime: options.Realtime,
-		webSearchEnabled: options.WebSearchEnabled, subagentsEnabled: options.SubagentsEnabled, newID: randomID,
+		webSearchEnabled: options.WebSearchEnabled, subagentsEnabled: options.SubagentsEnabled,
+		maxConcurrentSubagents: options.MaxConcurrentSubagents, newID: randomID,
 		newGateway: func(rawURL string, token []byte) (gatewayConnection, error) {
 			return newGatewayClientWithDisposition(rawURL, token, gatewayScopes(options.Mode), gatewayEventDisposition(options.Mode))
 		},
@@ -302,7 +305,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 	if agentTimeout == 0 {
 		agentTimeout = manager.agentTimeout
 	}
-	configuration, err := renderConfig(request.Model, request.Endpoint, manager.webSearchEnabled, manager.subagentsEnabled)
+	configuration, err := renderConfig(request.Model, request.Endpoint, manager.webSearchEnabled, manager.subagentsEnabled, manager.maxConcurrentSubagents)
 	if err != nil {
 		return err
 	}

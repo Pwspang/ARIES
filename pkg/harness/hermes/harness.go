@@ -95,11 +95,15 @@ type Options struct {
 	StartTimeout     time.Duration
 	AgentTimeout     time.Duration
 	WebSearchEnabled bool
-	// ExtractAPIKeyEnv names the host-side environment variable holding a
-	// Tavily API key, used as web_extract's backend. Empty disables extract
-	// (web_search still works via SearXNG). Ignored unless WebSearchEnabled.
 	ExtractAPIKeyEnv string
-	Logger           *logrus.Logger
+	// SubagentsEnabled controls Hermes's delegate_task tool. False emits
+	// disabled_toolsets: [delegation] in the rendered config.yaml.
+	SubagentsEnabled bool
+	// MaxConcurrentSubagents bounds delegate_task fan-out via
+	// delegation.max_concurrent_children. Zero leaves Hermes's own default
+	// (3) in place. Ignored when SubagentsEnabled is false.
+	MaxConcurrentSubagents int
+	Logger                 *logrus.Logger
 }
 
 // dockerClient is the small official Engine SDK surface used by the harness.
@@ -120,19 +124,21 @@ type dockerClient interface {
 }
 
 type Manager struct {
-	client           dockerClient
-	image            string
-	outputDir        string
-	cleanupTimeout   time.Duration
-	startTimeout     time.Duration
-	agentTimeout     time.Duration
-	maxTurns         int
-	terminalTimeout  int
-	webSearchEnabled bool
-	extractAPIKeyEnv string
-	logger           *logrus.Logger
-	apiKeyLookup     func(string) ([]byte, bool)
-	newID            func() (string, error)
+	client                 dockerClient
+	image                  string
+	outputDir              string
+	cleanupTimeout         time.Duration
+	startTimeout           time.Duration
+	agentTimeout           time.Duration
+	maxTurns               int
+	terminalTimeout        int
+	webSearchEnabled       bool
+	extractAPIKeyEnv       string
+	subagentsEnabled       bool
+	maxConcurrentSubagents int
+	logger                 *logrus.Logger
+	apiKeyLookup           func(string) ([]byte, bool)
+	newID                  func() (string, error)
 
 	mu        sync.Mutex
 	active    *session
@@ -227,6 +233,7 @@ func New(options Options) (*Manager, error) {
 		agentTimeout: options.AgentTimeout, maxTurns: options.MaxTurns,
 		terminalTimeout: options.TerminalTimeout, webSearchEnabled: options.WebSearchEnabled,
 		extractAPIKeyEnv: options.ExtractAPIKeyEnv, logger: options.Logger,
+		subagentsEnabled: options.SubagentsEnabled, maxConcurrentSubagents: options.MaxConcurrentSubagents,
 		apiKeyLookup: options.APIKeyLookup, newID: randomID,
 	}, nil
 }
@@ -255,7 +262,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		agentTimeout = manager.agentTimeout
 	}
 	extractEnabled := manager.webSearchEnabled && manager.extractAPIKeyEnv != ""
-	configuration, err := renderConfig(request.Model, manager.maxTurns, manager.webSearchEnabled, extractEnabled)
+	configuration, err := renderConfig(request.Model, manager.maxTurns, manager.webSearchEnabled, extractEnabled, manager.subagentsEnabled, manager.maxConcurrentSubagents)
 	if err != nil {
 		return err
 	}

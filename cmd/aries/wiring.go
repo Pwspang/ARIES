@@ -127,24 +127,18 @@ func newBenchmark(cfg config.Config, outputRoot, logicalID, occurrenceID string)
 		}
 		return benchmark, nil
 	case "deepresearchbench":
-		if cfg.Judge == nil {
-			return nil, errors.New("deepresearchbench requires judge config")
-		}
 		var executionIDs []string
 		if occurrenceID != logicalID {
 			executionIDs = []string{occurrenceID}
 		}
-		var factCfg config.FactConfig
-		if cfg.Fact != nil {
-			factCfg = *cfg.Fact
-		}
+		judgeModel, factModel, jinaAPIKeyEnv := deepresearchbenchModels(cfg)
 		benchmark, err := deepresearchbench.New(deepresearchbench.Options{
 			Root: cfg.Benchmark.Root, TaskIDs: []string{logicalID}, ExecutionTaskIDs: executionIDs, OutputDir: outputRoot,
 			Revision:      cfg.Versions.DeepResearchBench.Revision,
 			Environment:   environmentFromConfig(cfg.Benchmark.Environment),
-			Judge:         cfg.Judge.CoreModel(),
-			FactJudge:     factCfg.CoreModel(),
-			JinaAPIKeyEnv: factCfg.JinaAPIKeyEnv,
+			Judge:         judgeModel,
+			FactJudge:     factModel,
+			JinaAPIKeyEnv: jinaAPIKeyEnv,
 			APIKeyLookup:  environmentAPIKeyLookup,
 		})
 		if err != nil {
@@ -157,6 +151,25 @@ func newBenchmark(cfg config.Config, outputRoot, logicalID, occurrenceID string)
 	default:
 		return nil, fmt.Errorf("unsupported benchmark type %q", cfg.Benchmark.Type)
 	}
+}
+
+// deepresearchbenchModels resolves the RACE judge and FACT judge model
+// configs for a deepresearchbench profile. A nil benchmark.judge, or a
+// benchmark.fact whose model fields are all empty, default to the profile's
+// main model config rather than requiring it to be repeated.
+func deepresearchbenchModels(cfg config.Config) (judge, fact core.ModelConfig, jinaAPIKeyEnv string) {
+	judge = cfg.CoreModel()
+	if cfg.Benchmark.Judge != nil {
+		judge = cfg.Benchmark.Judge.CoreModel()
+	}
+	fact = cfg.CoreModel()
+	if factCfg := cfg.Benchmark.Fact; factCfg != nil {
+		jinaAPIKeyEnv = factCfg.JinaAPIKeyEnv
+		if factCfg.Provider != "" || factCfg.BaseURL != "" || factCfg.ID != "" || factCfg.APIKeyEnv != "" {
+			fact = factCfg.CoreModel()
+		}
+	}
+	return judge, fact, jinaAPIKeyEnv
 }
 
 // environmentFromConfig converts a profile's benchmark.environment block into
@@ -203,7 +216,8 @@ func newHarness(cfg config.Config, outputRoot string, lookup func(string) ([]byt
 		manager, err := openclawharness.New(openclawharness.Options{
 			Image: cfg.Versions.OpenClaw.Image, OutputDir: outputRoot, APIKeyLookup: lookup, Logger: logger,
 			Mode: cfg.Harness.Mode, Realtime: realtime, WebSearchEnabled: cfg.Harness.WebSearch.Enabled,
-			SubagentsEnabled: cfg.Harness.Subagents.Enabled != nil && *cfg.Harness.Subagents.Enabled,
+			SubagentsEnabled:       cfg.Harness.Subagents.Enabled != nil && *cfg.Harness.Subagents.Enabled,
+			MaxConcurrentSubagents: cfg.Harness.Subagents.MaxConcurrent,
 		})
 		if err != nil {
 			return app.HarnessInstance{}, fmt.Errorf("construct OpenClaw harness: %w", err)
@@ -213,6 +227,8 @@ func newHarness(cfg config.Config, outputRoot string, lookup func(string) ([]byt
 		manager, err := hermesharness.New(hermesharness.Options{
 			Image: cfg.Versions.Hermes.Image, OutputDir: outputRoot, APIKeyLookup: lookup, Logger: logger,
 			WebSearchEnabled: cfg.Harness.WebSearch.Enabled, ExtractAPIKeyEnv: cfg.Harness.WebSearch.ExtractAPIKeyEnv,
+			SubagentsEnabled:       cfg.Harness.Subagents.Enabled != nil && *cfg.Harness.Subagents.Enabled,
+			MaxConcurrentSubagents: cfg.Harness.Subagents.MaxConcurrent,
 		})
 		if err != nil {
 			return app.HarnessInstance{}, fmt.Errorf("construct Hermes harness: %w", err)
@@ -306,20 +322,14 @@ func setupBenchmark(ctx context.Context, cfg config.Config) error {
 func loadPreparationTasks(ctx context.Context, cfg config.Config, taskIDs []string) ([]core.Task, error) {
 	switch cfg.Benchmark.Type {
 	case "deepresearchbench":
-		if cfg.Judge == nil {
-			return nil, errors.New("deepresearchbench requires judge config")
-		}
-		var factCfg config.FactConfig
-		if cfg.Fact != nil {
-			factCfg = *cfg.Fact
-		}
+		judgeModel, factModel, jinaAPIKeyEnv := deepresearchbenchModels(cfg)
 		benchmark, err := deepresearchbench.New(deepresearchbench.Options{
 			Root: cfg.Benchmark.Root, TaskIDs: taskIDs, OutputDir: cfg.OutputDir,
 			Revision:      cfg.Versions.DeepResearchBench.Revision,
 			Environment:   environmentFromConfig(cfg.Benchmark.Environment),
-			Judge:         cfg.Judge.CoreModel(),
-			FactJudge:     factCfg.CoreModel(),
-			JinaAPIKeyEnv: factCfg.JinaAPIKeyEnv,
+			Judge:         judgeModel,
+			FactJudge:     factModel,
+			JinaAPIKeyEnv: jinaAPIKeyEnv,
 			APIKeyLookup:  environmentAPIKeyLookup,
 		})
 		if err != nil {
