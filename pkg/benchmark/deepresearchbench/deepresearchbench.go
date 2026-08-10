@@ -206,10 +206,7 @@ type Options struct {
 	TaskTimeout      time.Duration
 	Environment      core.Environment
 	Judge            core.ModelConfig
-	// FactJudge and JinaAPIKeyEnv together opt into the FACT citation-
-	// trustworthiness metric. FACT is disabled (zero cost, zero metrics)
-	// whenever both are left zero/empty; a half-specified pair is a
-	// construction error rather than a silent partial-disable.
+	JudgeDisabled    bool
 	FactJudge       core.ModelConfig
 	JinaAPIKeyEnv   string
 	APIKeyLookup    func(string) ([]byte, bool)
@@ -231,7 +228,7 @@ type Benchmark struct {
 	criteriaFile     string
 	taskTimeout      time.Duration
 	environment      core.Environment
-	race             raceScorer
+	race             raceScorer // nil when judging is disabled via Options.JudgeDisabled
 	fact             factRunner // nil when FACT evaluation is not configured or was skipped
 	// factSkipReason explains why fact is nil despite a "fact" profile
 	// block being present (e.g. the Jina API key env var isn't set in this
@@ -263,11 +260,8 @@ func New(options Options) (*Benchmark, error) {
 	if strings.TrimSpace(options.Environment.Image) == "" {
 		return nil, errors.New("deepresearchbench environment image is required")
 	}
-	if strings.TrimSpace(options.Judge.BaseURL) == "" || strings.TrimSpace(options.Judge.Model) == "" || strings.TrimSpace(options.Judge.APIKeyEnv) == "" {
-		return nil, errors.New("deepresearchbench judge model config is required")
-	}
 	if options.APIKeyLookup == nil {
-		return nil, errors.New("deepresearchbench judge API key lookup is required")
+		return nil, errors.New("deepresearchbench API key lookup is required")
 	}
 	rewardThreshold := options.RewardThreshold
 	if rewardThreshold == 0 {
@@ -276,15 +270,33 @@ func New(options Options) (*Benchmark, error) {
 	if rewardThreshold <= 0 || rewardThreshold > 100 {
 		return nil, errors.New("deepresearchbench reward threshold must be in (0, 100]")
 	}
-	race, err := newRaceClient(options.Judge, options.APIKeyLookup)
-	if err != nil {
-		return nil, fmt.Errorf("construct deepresearchbench RACE judge: %w", err)
+	var race raceScorer
+	if !options.JudgeDisabled {
+		if strings.TrimSpace(options.Judge.BaseURL) == "" || strings.TrimSpace(options.Judge.Model) == "" || strings.TrimSpace(options.Judge.APIKeyEnv) == "" {
+			return nil, errors.New("deepresearchbench judge model config is required")
+		}
+		var err error
+		race, err = newRaceClient(options.Judge, options.APIKeyLookup)
+		if err != nil {
+			return nil, fmt.Errorf("construct deepresearchbench RACE judge: %w", err)
+		}
+	} else if options.Judge != (core.ModelConfig{}) {
+		return nil, errors.New("deepresearchbench judge model config must not be set when the judge is disabled")
 	}
 
-	factConfigured := strings.TrimSpace(options.FactJudge.BaseURL) != "" || strings.TrimSpace(options.FactJudge.Model) != "" || strings.TrimSpace(options.JinaAPIKeyEnv) != ""
+	factRequested := strings.TrimSpace(options.FactJudge.BaseURL) != "" || strings.TrimSpace(options.FactJudge.Model) != "" || strings.TrimSpace(options.JinaAPIKeyEnv) != ""
 	var fact factRunner
 	var factSkipReason string
-	if factConfigured {
+	switch {
+	case options.JudgeDisabled && factRequested:
+		// Per product decision, disabling the judge is a master switch for
+		// all LLM-based grading. A still-configured fact block is not an
+		// error here — it's silently skipped, the same "degrade, don't fail
+		// construction" treatment as a missing Jina key below.
+		factSkipReason = "judge.enabled is false, which disables both RACE and FACT; skipping FACT"
+	case options.JudgeDisabled:
+		// FACT was never configured either; nothing to do or warn about.
+	case factRequested:
 		if strings.TrimSpace(options.FactJudge.BaseURL) == "" || strings.TrimSpace(options.FactJudge.Model) == "" || strings.TrimSpace(options.FactJudge.APIKeyEnv) == "" {
 			return nil, errors.New("deepresearchbench FACT judge model config is incomplete")
 		}

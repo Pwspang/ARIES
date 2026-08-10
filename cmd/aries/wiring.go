@@ -131,12 +131,13 @@ func newBenchmark(cfg config.Config, outputRoot, logicalID, occurrenceID string)
 		if occurrenceID != logicalID {
 			executionIDs = []string{occurrenceID}
 		}
-		judgeModel, factModel, jinaAPIKeyEnv := deepresearchbenchModels(cfg)
+		judgeModel, factModel, jinaAPIKeyEnv, judgeDisabled := deepresearchbenchModels(cfg)
 		benchmark, err := deepresearchbench.New(deepresearchbench.Options{
 			Root: cfg.Benchmark.Root, TaskIDs: []string{logicalID}, ExecutionTaskIDs: executionIDs, OutputDir: outputRoot,
 			Revision:      cfg.Versions.DeepResearchBench.Revision,
 			Environment:   environmentFromConfig(cfg.Benchmark.Environment),
 			Judge:         judgeModel,
+			JudgeDisabled: judgeDisabled,
 			FactJudge:     factModel,
 			JinaAPIKeyEnv: jinaAPIKeyEnv,
 			APIKeyLookup:  environmentAPIKeyLookup,
@@ -156,11 +157,20 @@ func newBenchmark(cfg config.Config, outputRoot, logicalID, occurrenceID string)
 // deepresearchbenchModels resolves the RACE judge and FACT judge model
 // configs for a deepresearchbench profile. A nil benchmark.judge, or a
 // benchmark.fact whose model fields are all empty, default to the profile's
-// main model config rather than requiring it to be repeated.
-func deepresearchbenchModels(cfg config.Config) (judge, fact core.ModelConfig, jinaAPIKeyEnv string) {
-	judge = cfg.CoreModel()
-	if cfg.Benchmark.Judge != nil {
-		judge = cfg.Benchmark.Judge.CoreModel()
+// main model config rather than requiring it to be repeated. judgeDisabled
+// reports whether benchmark.judge.enabled is explicitly false, which is a
+// master switch disabling both RACE and FACT in deepresearchbench.New —
+// fact/jinaAPIKeyEnv are still resolved unconditionally here regardless, so
+// that New can report *why* FACT was skipped when a fact block is also
+// present.
+func deepresearchbenchModels(cfg config.Config) (judge, fact core.ModelConfig, jinaAPIKeyEnv string, judgeDisabled bool) {
+	if judgeCfg := cfg.Benchmark.Judge; judgeCfg != nil && judgeCfg.Enabled != nil && !*judgeCfg.Enabled {
+		judgeDisabled = true
+	} else {
+		judge = cfg.CoreModel()
+		if judgeCfg != nil {
+			judge = judgeCfg.CoreModel()
+		}
 	}
 	fact = cfg.CoreModel()
 	if factCfg := cfg.Benchmark.Fact; factCfg != nil {
@@ -169,7 +179,7 @@ func deepresearchbenchModels(cfg config.Config) (judge, fact core.ModelConfig, j
 			fact = factCfg.CoreModel()
 		}
 	}
-	return judge, fact, jinaAPIKeyEnv
+	return judge, fact, jinaAPIKeyEnv, judgeDisabled
 }
 
 // environmentFromConfig converts a profile's benchmark.environment block into
@@ -323,12 +333,13 @@ func setupBenchmark(ctx context.Context, cfg config.Config) error {
 func loadPreparationTasks(ctx context.Context, cfg config.Config, taskIDs []string) ([]core.Task, error) {
 	switch cfg.Benchmark.Type {
 	case "deepresearchbench":
-		judgeModel, factModel, jinaAPIKeyEnv := deepresearchbenchModels(cfg)
+		judgeModel, factModel, jinaAPIKeyEnv, judgeDisabled := deepresearchbenchModels(cfg)
 		benchmark, err := deepresearchbench.New(deepresearchbench.Options{
 			Root: cfg.Benchmark.Root, TaskIDs: taskIDs, OutputDir: cfg.OutputDir,
 			Revision:      cfg.Versions.DeepResearchBench.Revision,
 			Environment:   environmentFromConfig(cfg.Benchmark.Environment),
 			Judge:         judgeModel,
+			JudgeDisabled: judgeDisabled,
 			FactJudge:     factModel,
 			JinaAPIKeyEnv: jinaAPIKeyEnv,
 			APIKeyLookup:  environmentAPIKeyLookup,

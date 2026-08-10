@@ -294,6 +294,49 @@ func TestNewRequiresJudgeConfig(t *testing.T) {
 	}
 }
 
+func TestNewAllowsEmptyJudgeWhenJudgeDisabled(t *testing.T) {
+	root := writeFixture(t, defaultFixtureRows(t))
+	options := baseOptions(root)
+	options.Judge = core.ModelConfig{}
+	options.JudgeDisabled = true
+	benchmark, err := New(options)
+	if err != nil {
+		t.Fatalf("New() error = %v, want an empty judge model config accepted when JudgeDisabled is true", err)
+	}
+	if benchmark.race != nil {
+		t.Fatal("race is non-nil, want RACE disabled when JudgeDisabled is true")
+	}
+}
+
+func TestNewRejectsJudgeConfigWhenJudgeDisabled(t *testing.T) {
+	root := writeFixture(t, defaultFixtureRows(t))
+	options := baseOptions(root)
+	options.JudgeDisabled = true
+	if _, err := New(options); err == nil {
+		t.Fatal("accepted a non-empty judge model config alongside JudgeDisabled")
+	}
+}
+
+func TestNewSkipsFactWithReasonWhenJudgeDisabled(t *testing.T) {
+	root := writeFixture(t, defaultFixtureRows(t))
+	options := factOptions(root)
+	options.Judge = core.ModelConfig{}
+	options.JudgeDisabled = true
+	benchmark, err := New(options)
+	if err != nil {
+		t.Fatalf("New() error = %v, want a configured fact block accepted (and ignored) when JudgeDisabled is true", err)
+	}
+	if benchmark.race != nil {
+		t.Fatal("race is non-nil, want RACE disabled when JudgeDisabled is true")
+	}
+	if benchmark.fact != nil {
+		t.Fatal("fact is non-nil, want FACT disabled when JudgeDisabled is true even though FactJudge/JinaAPIKeyEnv were set")
+	}
+	if benchmark.FactSkipReason() == "" {
+		t.Fatal("FactSkipReason() is empty, want an explanation that the judge being disabled also skipped FACT")
+	}
+}
+
 func TestNewRequiresAPIKeyLookup(t *testing.T) {
 	root := writeFixture(t, defaultFixtureRows(t))
 	options := baseOptions(root)

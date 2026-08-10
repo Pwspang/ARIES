@@ -85,6 +85,55 @@ func newTestBenchmark(t *testing.T, race raceScorer) (*Benchmark, string) {
 	return benchmark, root
 }
 
+func newJudgeDisabledTestBenchmark(t *testing.T) *Benchmark {
+	t.Helper()
+	root := writeFixture(t, defaultFixtureRows(t))
+	options := baseOptions(root)
+	options.Judge = core.ModelConfig{}
+	options.JudgeDisabled = true
+	options.OutputDir = t.TempDir()
+	benchmark, err := New(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := benchmark.Tasks(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	return benchmark
+}
+
+// When the judge is disabled, Evaluate must still download and retain the
+// report, but skip RACE entirely: no judge_prompt.txt/judge_response.json,
+// and Status/VerifierStatus report core.StatusNotEnabled (not succeeded or
+// failed) with Score/Reward left at zero.
+func TestEvaluateReportsNotEnabledWhenJudgeDisabled(t *testing.T) {
+	benchmark := newJudgeDisabledTestBenchmark(t)
+	sandbox := &evaluateFake{downloadContent: "candidate report"}
+	evaluation, err := benchmark.Evaluate(context.Background(), core.Task{ID: "1"}, sandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evaluation.Status != core.StatusNotEnabled || evaluation.VerifierStatus != core.StatusNotEnabled {
+		t.Fatalf("evaluation status = %+v, want not_enabled", evaluation)
+	}
+	if evaluation.Score != 0 || evaluation.Reward != 0 {
+		t.Fatalf("evaluation = %+v, want Score=0 Reward=0", evaluation)
+	}
+	if len(evaluation.LogPaths) != 1 {
+		t.Fatalf("LogPaths = %v, want only the report artifact when judging is disabled", evaluation.LogPaths)
+	}
+	if _, err := os.Stat(evaluation.LogPaths[0]); err != nil {
+		t.Fatalf("report artifact missing: %v", err)
+	}
+	artifactDir := filepath.Dir(evaluation.LogPaths[0])
+	if _, err := os.Stat(filepath.Join(artifactDir, "judge_prompt.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("judge_prompt.txt exists (or errored unexpectedly) despite judging being disabled: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(artifactDir, "judge_response.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("judge_response.json exists (or errored unexpectedly) despite judging being disabled: %v", err)
+	}
+}
+
 func TestEvaluateRequiresLiveSandbox(t *testing.T) {
 	benchmark, _ := newTestBenchmark(t, nil)
 	if _, err := benchmark.Evaluate(context.Background(), core.Task{ID: "1"}, nil); err == nil {
