@@ -108,7 +108,7 @@ func TestWebSearchHarnessConfigValidation(t *testing.T) {
 	}
 }
 
-func TestHermesExtractAPIKeyEnvValidation(t *testing.T) {
+func TestExtractAPIKeyEnvValidation(t *testing.T) {
 	hermesBase := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"hermes","web_search":{"enabled":true,"extract_api_key_env":"TAVILY_API_KEY"}}`, 1)
 	hermesBase = strings.Replace(hermesBase, `"bridge":{"type":"openclaw-ssh"}`, `"bridge":{"type":"hermes-ssh"}`, 1)
 	cfg, err := Decode(strings.NewReader(hermesBase))
@@ -125,9 +125,18 @@ func TestHermesExtractAPIKeyEnvValidation(t *testing.T) {
 		t.Fatal("expected rejection of extract_api_key_env without web_search.enabled")
 	}
 
-	nonHermes := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","web_search":{"enabled":true,"extract_api_key_env":"TAVILY_API_KEY"}}`, 1)
-	if _, err := Decode(strings.NewReader(nonHermes)); err == nil {
-		t.Fatal("expected rejection of extract_api_key_env under a non-Hermes harness type")
+	openclawExtract := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","web_search":{"enabled":true,"extract_api_key_env":"TAVILY_API_KEY"}}`, 1)
+	cfg, err = Decode(strings.NewReader(openclawExtract))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Harness.WebSearch.ExtractAPIKeyEnv != "TAVILY_API_KEY" {
+		t.Fatalf("openclaw harness web_search = %#v, want extract_api_key_env set", cfg.Harness.WebSearch)
+	}
+
+	nonOpenClawNonHermes := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"other","web_search":{"enabled":true,"extract_api_key_env":"TAVILY_API_KEY"}}`, 1)
+	if _, err := Decode(strings.NewReader(nonOpenClawNonHermes)); err == nil {
+		t.Fatal("expected rejection of extract_api_key_env under a non-OpenClaw/Hermes harness type")
 	}
 
 	badName := strings.Replace(hermesBase, `"extract_api_key_env":"TAVILY_API_KEY"`, `"extract_api_key_env":"1BAD"`, 1)
