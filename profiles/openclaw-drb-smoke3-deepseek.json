@@ -30,7 +30,8 @@
   "harness": {
     "type": "openclaw",
     "web_search": {
-      "enabled": true
+      "enabled": true,
+      "extract_api_key_env": "TAVILY_API_KEY"
     },
     "subagents": {
       "enabled": false

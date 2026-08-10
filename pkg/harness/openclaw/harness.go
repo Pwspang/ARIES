@@ -66,13 +66,14 @@ const (
 
 // Options are the host-local inputs to one upstream OpenClaw container.
 type Options struct {
-	Image                  string
-	OutputDir              string
-	DockerSocket           string
-	APIKeyLookup           func(string) ([]byte, bool)
-	Mode                   string
-	Realtime               RealtimeOptions
-	WebSearchEnabled       bool
+	Image            string
+	OutputDir        string
+	DockerSocket     string
+	APIKeyLookup     func(string) ([]byte, bool)
+	Mode             string
+	Realtime         RealtimeOptions
+	WebSearchEnabled bool
+	ExtractAPIKeyEnv       string
 	SubagentsEnabled       bool
 	MaxConcurrentSubagents int
 	CleanupTimeout         time.Duration
@@ -138,6 +139,7 @@ type Manager struct {
 	mode                   string
 	realtime               RealtimeOptions
 	webSearchEnabled       bool
+	extractAPIKeyEnv       string
 	subagentsEnabled       bool
 	maxConcurrentSubagents int
 	newID                  func() (string, error)
@@ -194,6 +196,7 @@ type session struct {
 	agentTimeout     time.Duration
 	apiKey           []byte
 	realtimeAPIKey   []byte
+	extractAPIKey    []byte
 	gatewayToken     []byte
 	gatewayURL       string
 	agentIdempotency string
@@ -273,7 +276,7 @@ func New(options Options) (*Manager, error) {
 		cleanupTimeout: options.CleanupTimeout, startTimeout: options.StartTimeout,
 		agentTimeout: options.AgentTimeout, logger: options.Logger,
 		apiKeyLookup: options.APIKeyLookup, mode: options.Mode, realtime: options.Realtime,
-		webSearchEnabled: options.WebSearchEnabled, subagentsEnabled: options.SubagentsEnabled,
+		webSearchEnabled: options.WebSearchEnabled, extractAPIKeyEnv: options.ExtractAPIKeyEnv, subagentsEnabled: options.SubagentsEnabled,
 		maxConcurrentSubagents: options.MaxConcurrentSubagents, newID: randomID,
 		newGateway: func(rawURL string, token []byte) (gatewayConnection, error) {
 			return newGatewayClientWithDisposition(rawURL, token, gatewayScopes(options.Mode), gatewayEventDisposition(options.Mode))
@@ -305,19 +308,43 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 	if agentTimeout == 0 {
 		agentTimeout = manager.agentTimeout
 	}
-	configuration, err := renderConfig(request.Model, request.Endpoint, manager.webSearchEnabled, manager.subagentsEnabled, manager.maxConcurrentSubagents)
+	extractRequested := manager.webSearchEnabled && manager.extractAPIKeyEnv != ""
+	var extractAPIKey []byte
+	extractEnabled := false
+	if extractRequested {
+		extractSource, ok := manager.apiKeyLookup(manager.extractAPIKeyEnv)
+		if !ok {
+			clear(extractSource)
+			manager.logger.WithContext(ctx).WithFields(logrus.Fields{
+				"task_id": request.TaskID, "extract_api_key_env": manager.extractAPIKeyEnv,
+			}).Warn("OpenClaw extract API-key environment is not set; falling back to native web_fetch without Tavily extraction")
+		} else {
+			candidate := bytes.Clone(extractSource)
+			clear(extractSource)
+			if err := validateAPIKey(candidate); err != nil {
+				clear(candidate)
+				return fmt.Errorf("OpenClaw extract API key: %w", err)
+			}
+			extractAPIKey = candidate
+			extractEnabled = true
+		}
+	}
+	configuration, err := renderConfig(request.Model, request.Endpoint, manager.webSearchEnabled, extractEnabled, manager.subagentsEnabled, manager.maxConcurrentSubagents)
 	if err != nil {
+		clear(extractAPIKey)
 		return err
 	}
 	apiKeySource, ok := manager.apiKeyLookup(request.Model.APIKeyEnv)
 	if !ok {
 		clear(apiKeySource)
+		clear(extractAPIKey)
 		return fmt.Errorf("OpenClaw API-key environment %q is not set", request.Model.APIKeyEnv)
 	}
 	apiKey := bytes.Clone(apiKeySource)
 	clear(apiKeySource)
 	if err := validateAPIKey(apiKey); err != nil {
 		clear(apiKey)
+		clear(extractAPIKey)
 		return err
 	}
 	var realtimeAPIKey []byte
@@ -326,6 +353,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		if !ok {
 			clear(apiKey)
 			clear(realtimeKeySource)
+			clear(extractAPIKey)
 			return fmt.Errorf("OpenClaw realtime API-key environment %q is not set", manager.realtime.TTS.APIKeyEnv)
 		}
 		realtimeAPIKey = bytes.Clone(realtimeKeySource)
@@ -333,18 +361,27 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		if err := validateAPIKey(realtimeAPIKey); err != nil {
 			clear(apiKey)
 			clear(realtimeAPIKey)
+			clear(extractAPIKey)
 			return fmt.Errorf("OpenClaw realtime API key: %w", err)
 		}
 	}
 	if bytes.Contains(configuration, apiKey) {
 		clear(apiKey)
 		clear(realtimeAPIKey)
+		clear(extractAPIKey)
 		return errors.New("rendered OpenClaw config contains the API-key value")
 	}
 	if len(realtimeAPIKey) != 0 && bytes.Contains(configuration, realtimeAPIKey) {
 		clear(apiKey)
 		clear(realtimeAPIKey)
+		clear(extractAPIKey)
 		return errors.New("rendered OpenClaw config contains the realtime API-key value")
+	}
+	if len(extractAPIKey) != 0 && bytes.Contains(configuration, extractAPIKey) {
+		clear(apiKey)
+		clear(realtimeAPIKey)
+		clear(extractAPIKey)
+		return errors.New("rendered OpenClaw config contains the extract API-key value")
 	}
 	containerConfig := &container.Config{
 		Image: manager.image,
@@ -363,25 +400,28 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 	if err != nil {
 		clear(apiKey)
 		clear(realtimeAPIKey)
+		clear(extractAPIKey)
 		return fmt.Errorf("generate OpenClaw harness ID: %w", err)
 	}
 	gatewayToken, err := randomSecret(32)
 	if err != nil {
 		clear(apiKey)
 		clear(realtimeAPIKey)
+		clear(extractAPIKey)
 		return fmt.Errorf("generate OpenClaw gateway token: %w", err)
 	}
 	agentIdempotency, err := randomID()
 	if err != nil {
 		clear(apiKey)
 		clear(realtimeAPIKey)
+		clear(extractAPIKey)
 		clear(gatewayToken)
 		return fmt.Errorf("generate OpenClaw agent idempotency key: %w", err)
 	}
 	active := &session{
 		runID: request.RunID, taskID: request.TaskID, safeTaskID: safeTaskID(request.TaskID), attemptID: id,
 		containerName: "aries-openclaw-" + id, artifactDir: filepath.Join(manager.outputDir, request.TaskID, "harness"),
-		endpoint: request.Endpoint, model: request.Model, agentTimeout: agentTimeout, apiKey: apiKey, realtimeAPIKey: realtimeAPIKey, gatewayToken: gatewayToken, agentIdempotency: agentIdempotency,
+		endpoint: request.Endpoint, model: request.Model, agentTimeout: agentTimeout, apiKey: apiKey, realtimeAPIKey: realtimeAPIKey, extractAPIKey: extractAPIKey, gatewayToken: gatewayToken, agentIdempotency: agentIdempotency,
 	}
 	containerConfig.Labels["aries.attempt"] = active.attemptID
 	fail := func(primary error) error {
@@ -1093,12 +1133,12 @@ func (manager *Manager) validateContainer(ctx context.Context, active *session) 
 		return errors.New("OpenClaw container labels do not match the task")
 	}
 	for _, value := range append(append([]string(nil), configuration.Env...), configuration.Cmd...) {
-		if containsSecret(value, active.apiKey, active.realtimeAPIKey, active.gatewayToken) {
+		if containsSecret(value, active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.gatewayToken) {
 			return errors.New("OpenClaw secret entered Docker configuration")
 		}
 	}
 	for _, value := range configuration.Labels {
-		if containsSecret(value, active.apiKey, active.realtimeAPIKey, active.gatewayToken) {
+		if containsSecret(value, active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.gatewayToken) {
 			return errors.New("OpenClaw secret entered Docker labels")
 		}
 	}
@@ -1128,7 +1168,7 @@ func (manager *Manager) runtimeArchive(active *session, configuration []byte) ([
 		"run/aries/openclaw.json":    {content: configuration, mode: 0o600},
 		"run/aries/model.key":        {content: active.apiKey, mode: 0o600},
 		"run/aries/gateway.key":      {content: active.gatewayToken, mode: 0o600},
-		"run/aries/launch":           {content: launcherScript(active.model.APIKeyEnv, manager.realtimeAPIKeyEnv(active)), mode: 0o555},
+		"run/aries/launch":           {content: launcherScript(active.model.APIKeyEnv, manager.realtimeAPIKeyEnv(active), len(active.extractAPIKey) != 0), mode: 0o555},
 		"run/aries/gateway-proxy.js": {content: gatewayProxyScript(), mode: 0o555},
 		"run/aries/gateway-launcher": {content: gatewayLauncherScript(), mode: 0o555},
 		"run/aries/ssh/id_ed25519":   {content: identity, mode: 0o600},
@@ -1137,6 +1177,9 @@ func (manager *Manager) runtimeArchive(active *session, configuration []byte) ([
 	}
 	if len(active.realtimeAPIKey) != 0 {
 		files["run/aries/realtime.key"] = stagedFile{content: active.realtimeAPIKey, mode: 0o600}
+	}
+	if len(active.extractAPIKey) != 0 {
+		files["run/aries/tavily.key"] = stagedFile{content: active.extractAPIKey, mode: 0o600}
 	}
 	return stageArchive(files)
 }
@@ -1311,7 +1354,7 @@ func (manager *Manager) collectArtifacts(ctx context.Context, active *session) e
 		if copyErr != nil || closeErr != nil || stdout.exceeded || stderr.exceeded {
 			errs = append(errs, errors.Join(copyErr, closeErr, errors.New("OpenClaw gateway logs exceeded their bound")))
 		} else {
-			content := allowGatewayLogs(append(stdout.Bytes(), stderr.Bytes()...), active.apiKey, active.realtimeAPIKey, active.gatewayToken)
+			content := allowGatewayLogs(append(stdout.Bytes(), stderr.Bytes()...), active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.gatewayToken)
 			path := filepath.Join(active.artifactDir, "gateway.log")
 			if err := writeArtifact(path, content); err != nil {
 				errs = append(errs, err)
@@ -1356,7 +1399,7 @@ func (manager *Manager) collectTelemetry(ctx context.Context, active *session) (
 	if err != nil || len(archive) > maxDockerOutput {
 		return nil, errors.New("OpenClaw telemetry archive exceeded its bound")
 	}
-	return extractTelemetry(active.artifactDir, archive, active.apiKey, active.realtimeAPIKey, active.gatewayToken)
+	return extractTelemetry(active.artifactDir, archive, active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.gatewayToken)
 }
 
 func failedHarnessResult(active *session, started time.Time, err error) core.HarnessResult {
@@ -1617,13 +1660,15 @@ func clearSessionSecrets(active *session) {
 	active.apiKey = nil
 	clear(active.realtimeAPIKey)
 	active.realtimeAPIKey = nil
+	clear(active.extractAPIKey)
+	active.extractAPIKey = nil
 	clear(active.gatewayToken)
 	active.gatewayToken = nil
 	active.agentIdempotency = ""
 }
 
 func redactSession(content []byte, active *session) []byte {
-	return redactSecrets(content, active.apiKey, active.realtimeAPIKey, active.gatewayToken)
+	return redactSecrets(content, active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.gatewayToken)
 }
 
 type sessionRedactedError struct {
