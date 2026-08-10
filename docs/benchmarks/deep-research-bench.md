@@ -54,6 +54,26 @@ instruction following, readability). Judge artifacts land in
 makes a paid LLM-judge API call in addition to the harness model call — using
 a cheaper judge model is recommended for large task counts.
 
+### Disabling all LLM grading (optional)
+
+Set `"judge": {"enabled": false}` to skip grading entirely — this is a
+master switch that turns off **both** RACE and FACT, not just RACE, so no
+judge LLM call happens at all for the task. `evaluation.status` and
+`evaluation.verifier_status` become `"not_enabled"` (distinct from a graded
+task that failed), and `evaluation.score`/`evaluation.reward` are `0`. This
+is useful for collecting agent reports without paying for any judge calls,
+e.g. to grade them separately offline.
+
+`judge.enabled: false` requires every other `judge` field
+(`provider`/`base_url`/`model`/`api_key_env`) to be left unset — they would
+otherwise name a judge that never gets used. A `benchmark.fact` block left
+in place at the same time is not an error: it's silently ignored (RACE and
+FACT are both off), with a warning printed to stderr at startup explaining
+why, the same way a missing Jina API key already degrades FACT with a
+warning rather than failing the run. Omitting `judge` entirely, or setting
+it without `enabled` (or with `enabled: true`), keeps RACE and FACT exactly
+as described below.
+
 ### FACT citation checking (optional)
 
 A `benchmark.fact` block additionally grades citation trustworthiness with the

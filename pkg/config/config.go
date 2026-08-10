@@ -108,7 +108,18 @@ type BenchmarkEnvironment struct {
 // (see BenchmarkConfig.Judge). It is intentionally a distinct type from
 // ProfileModel so judge-specific fields can be added later without colliding
 // with the harness model's shape.
+//
+// Enabled is a master switch for all LLM-based grading, not just RACE:
+// setting it to false also disables FACT (see BenchmarkConfig.Fact), even
+// if a fact block is separately configured — a still-present fact block is
+// silently skipped rather than rejected in that case (see
+// deepresearchbench.New's FactSkipReason). It is a pointer so "unset"
+// (defaults to enabled, matching today's always-on RACE behavior) is
+// distinguishable from an explicit "false", mirroring
+// HarnessSubagentsConfig.Enabled. The other fields must be left empty when
+// Enabled is false, since they would otherwise be meaningless.
 type JudgeConfig struct {
+	Enabled   *bool  `json:"enabled,omitempty"`
 	Provider  string `json:"provider"`
 	BaseURL   string `json:"base_url"`
 	ID        string `json:"model"`
@@ -512,17 +523,23 @@ func (c *Config) validateBenchmarkType() error {
 			return errors.New("benchmark.environment.image is required for deepresearchbench")
 		}
 		if judge := c.Benchmark.Judge; judge != nil {
-			if strings.TrimSpace(judge.Provider) == "" {
-				return errors.New("judge.provider is required")
-			}
-			if err := validateHTTPBaseURL("judge.base_url", judge.BaseURL); err != nil {
-				return err
-			}
-			if strings.TrimSpace(judge.ID) == "" {
-				return errors.New("judge.model is required")
-			}
-			if !validEnvName(judge.APIKeyEnv) {
-				return errors.New("judge.api_key_env must be an environment variable name")
+			if judge.Enabled != nil && !*judge.Enabled {
+				if judge.Provider != "" || judge.BaseURL != "" || judge.ID != "" || judge.APIKeyEnv != "" {
+					return errors.New("judge model fields must not be set when judge.enabled is false")
+				}
+			} else {
+				if strings.TrimSpace(judge.Provider) == "" {
+					return errors.New("judge.provider is required")
+				}
+				if err := validateHTTPBaseURL("judge.base_url", judge.BaseURL); err != nil {
+					return err
+				}
+				if strings.TrimSpace(judge.ID) == "" {
+					return errors.New("judge.model is required")
+				}
+				if !validEnvName(judge.APIKeyEnv) {
+					return errors.New("judge.api_key_env must be an environment variable name")
+				}
 			}
 		}
 		if fact := c.Benchmark.Fact; fact != nil {
