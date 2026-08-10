@@ -816,8 +816,6 @@ func TestStartStagesExtractKeyWhenConfigured(t *testing.T) {
 	}
 }
 
-// Missing extract credentials must fail Start and leave no partial
-// container, the same contract the model key already has.
 // Unlike Hermes's identically-named ExtractAPIKeyEnv, a missing OpenClaw
 // extract credential must not abort the run: Start should fall back to
 // plain SearXNG-backed web_fetch (no tavily plugin entry at all) and log a
