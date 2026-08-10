@@ -347,6 +347,27 @@ func TestDeepResearchBenchRequiresEnvironmentAndValidatesJudgeWhenPresent(t *tes
 	}
 }
 
+func TestJudgeDisabledValidation(t *testing.T) {
+	judgeDisabled := strings.Replace(validDeepResearchBenchConfig, `"judge":{"provider":"openai","base_url":"https://api.openai.com/v1","model":"gpt-4.1","api_key_env":"OPENAI_API_KEY"}`, `"judge":{"enabled":false}`, 1)
+	if _, err := Decode(strings.NewReader(judgeDisabled)); err != nil {
+		t.Fatalf("judge.enabled:false alone rejected: %v", err)
+	}
+
+	judgeDisabledWithFields := strings.Replace(validDeepResearchBenchConfig, `"judge":{"provider":"openai"`, `"judge":{"enabled":false,"provider":"openai"`, 1)
+	if _, err := Decode(strings.NewReader(judgeDisabledWithFields)); err == nil {
+		t.Fatal("expected rejection of judge model fields set alongside judge.enabled:false")
+	}
+
+	// judge.enabled:false must not be rejected just because a fact block is
+	// also configured: each block validates independently, and whether FACT
+	// actually runs when the judge is disabled is a deepresearchbench.New
+	// concern, not a config-validation one.
+	judgeDisabledWithFact := strings.Replace(validDeepResearchBenchWithFactConfig, `"judge":{"provider":"openai","base_url":"https://api.openai.com/v1","model":"gpt-4.1","api_key_env":"OPENAI_API_KEY"}`, `"judge":{"enabled":false}`, 1)
+	if _, err := Decode(strings.NewReader(judgeDisabledWithFact)); err != nil {
+		t.Fatalf("judge.enabled:false alongside a fact block rejected: %v", err)
+	}
+}
+
 func TestTerminalBench2RejectsEnvironmentAndJudge(t *testing.T) {
 	cases := map[string]struct {
 		input   string
@@ -358,6 +379,10 @@ func TestTerminalBench2RejectsEnvironmentAndJudge(t *testing.T) {
 		},
 		"judge set": {
 			input:   strings.Replace(validConfig, `"benchmark":{"type":"terminalbench2","root":".cache/tb2","tasks":["fix-git"]}`, `"benchmark":{"type":"terminalbench2","root":".cache/tb2","tasks":["fix-git"],"judge":{"provider":"openai","base_url":"https://api.openai.com/v1","model":"gpt-4.1","api_key_env":"OPENAI_API_KEY"}}`, 1),
+			wantErr: "judge must not be set for terminalbench2",
+		},
+		"judge disabled": {
+			input:   strings.Replace(validConfig, `"benchmark":{"type":"terminalbench2","root":".cache/tb2","tasks":["fix-git"]}`, `"benchmark":{"type":"terminalbench2","root":".cache/tb2","tasks":["fix-git"],"judge":{"enabled":false}}`, 1),
 			wantErr: "judge must not be set for terminalbench2",
 		},
 		"fact set": {
