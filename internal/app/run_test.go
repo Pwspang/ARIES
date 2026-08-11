@@ -122,7 +122,7 @@ func TestSetupPreparesBackendBeforeSideEffects(t *testing.T) {
 	}, ValidateComponents: func(config.Config) error { return nil }, SetupBenchmark: func(context.Context, config.Config) error {
 		events = append(events, "setup")
 		return nil
-	}, LoadPreparationTasks: func(context.Context, config.Config, []string) ([]core.Task, error) {
+	}, LoadPreparationTasks: func(context.Context, config.Config, []string, func(string) ([]byte, bool)) ([]core.Task, error) {
 		return nil, nil
 	}, PullImages: func(context.Context, []string) error { return nil }}
 	var out bytes.Buffer
@@ -156,7 +156,7 @@ func TestRunEnsuresPreparationBeforeOutputAndRuntime(t *testing.T) {
 			events = append(events, "benchmark")
 			return nil
 		},
-		LoadPreparationTasks: func(_ context.Context, _ config.Config, taskIDs []string) ([]core.Task, error) {
+		LoadPreparationTasks: func(_ context.Context, _ config.Config, taskIDs []string, _ func(string) ([]byte, bool)) ([]core.Task, error) {
 			events = append(events, "tasks:"+strings.Join(taskIDs, ","))
 			return []core.Task{{Environment: core.Environment{Image: "task:tag"}}}, nil
 		},
@@ -187,7 +187,7 @@ func TestSetupRetriesIncompletePreparationWithoutReadinessMarker(t *testing.T) {
 			return PreparedBackend{Model: cfg.CoreModel()}, nil
 		},
 		SetupBenchmark:       func(context.Context, config.Config) error { return nil },
-		LoadPreparationTasks: func(context.Context, config.Config, []string) ([]core.Task, error) { return nil, nil },
+		LoadPreparationTasks: func(context.Context, config.Config, []string, func(string) ([]byte, bool)) ([]core.Task, error) { return nil, nil },
 		PullImages: func(context.Context, []string) error {
 			pullCalls++
 			if pullCalls == 1 {
@@ -220,9 +220,9 @@ func TestRunCancellationDuringPreparationHasNoDownstreamEffects(t *testing.T) {
 			return PreparedBackend{Model: cfg.CoreModel()}, nil
 		},
 		SetupBenchmark:       func(ctx context.Context, _ config.Config) error { return ctx.Err() },
-		LoadPreparationTasks: func(context.Context, config.Config, []string) ([]core.Task, error) { downstream++; return nil, nil },
+		LoadPreparationTasks: func(context.Context, config.Config, []string, func(string) ([]byte, bool)) ([]core.Task, error) { downstream++; return nil, nil },
 		PullImages:           func(context.Context, []string) error { downstream++; return nil },
-		NewBenchmark:         func(config.Config, string, string, string) (runner.Benchmark, error) { downstream++; return nil, nil },
+		NewBenchmark:         func(config.Config, string, string, string, func(string) ([]byte, bool)) (runner.Benchmark, error) { downstream++; return nil, nil },
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -274,7 +274,7 @@ func (*stubResources) Close() error                                           { 
 
 func TestBuildTaskExperimentCreatesFreshFourRoleGraphs(t *testing.T) {
 	wiring := Wiring{
-		NewBenchmark: func(config.Config, string, string, string) (runner.Benchmark, error) { return &stubBenchmark{}, nil },
+		NewBenchmark: func(config.Config, string, string, string, func(string) ([]byte, bool)) (runner.Benchmark, error) { return &stubBenchmark{}, nil },
 		NewHarness: func(config.Config, string, func(string) ([]byte, bool), *logrus.Logger) (HarnessInstance, error) {
 			h := &stubHarness{}
 			return HarnessInstance{Harness: h, Close: func() error { return nil }}, nil
@@ -317,7 +317,7 @@ func TestBuildTaskExperimentCreatesFreshFourRoleGraphs(t *testing.T) {
 func TestBuildTaskExperimentUnwindsPartialConstruction(t *testing.T) {
 	var events []string
 	wiring := Wiring{
-		NewBenchmark: func(config.Config, string, string, string) (runner.Benchmark, error) { return &stubBenchmark{}, nil },
+		NewBenchmark: func(config.Config, string, string, string, func(string) ([]byte, bool)) (runner.Benchmark, error) { return &stubBenchmark{}, nil },
 		NewHarness: func(config.Config, string, func(string) ([]byte, bool), *logrus.Logger) (HarnessInstance, error) {
 			return HarnessInstance{Harness: &stubHarness{}, Close: func() error { events = append(events, "harness"); return errors.New("harness close") }}, nil
 		},

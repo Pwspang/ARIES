@@ -30,9 +30,9 @@ type Wiring struct {
 	PrepareBackend       func(config.Config, string) (PreparedBackend, error)
 	ValidateComponents   func(config.Config) error
 	SetupBenchmark       func(context.Context, config.Config) error
-	LoadPreparationTasks func(context.Context, config.Config, []string) ([]core.Task, error)
+	LoadPreparationTasks func(context.Context, config.Config, []string, func(string) ([]byte, bool)) ([]core.Task, error)
 	PullImages           func(context.Context, []string) error
-	NewBenchmark         func(config.Config, string, string, string) (runner.Benchmark, error)
+	NewBenchmark         func(config.Config, string, string, string, func(string) ([]byte, bool)) (runner.Benchmark, error)
 	NewHarness           func(config.Config, string, func(string) ([]byte, bool), *logrus.Logger) (HarnessInstance, error)
 	NewSandbox           func(config.Config, string, string, string, []int, *logrus.Logger) (SandboxInstance, error)
 	NewBridge            func(config.Config, string, *logrus.Logger) (runner.ToolBridge, error)
@@ -57,10 +57,16 @@ func Setup(ctx context.Context, profilePath string, stdout io.Writer, dependenci
 	if dependencies.Wiring.PrepareBackend == nil {
 		return errors.New("command wiring is incomplete")
 	}
-	if _, err := dependencies.Wiring.PrepareBackend(cfg, cfg.OutputDir); err != nil {
+	prepared, err := dependencies.Wiring.PrepareBackend(cfg, cfg.OutputDir)
+	if err != nil {
 		return err
 	}
-	if err := ensurePrepared(ctx, cfg, dependencies.Wiring); err != nil {
+	apiKeyLookup, releaseAPIKeys, err := resolveAPIKeyLookup(prepared.Model, dependencies.ExecutablePath)
+	if err != nil {
+		return fmt.Errorf("load local API key: %w", err)
+	}
+	defer releaseAPIKeys()
+	if err := ensurePrepared(ctx, cfg, dependencies.Wiring, apiKeyLookup); err != nil {
 		return err
 	}
 	_, err = fmt.Fprintf(stdout, "profile ready: %s\n", profilePath)
@@ -91,9 +97,21 @@ func Run(ctx context.Context, profilePath string, stdout io.Writer, dependencies
 	if err != nil {
 		return err
 	}
+	apiKeyLookup, releaseAPIKeys, keyErr := resolveAPIKeyLookup(prepared.Model, dependencies.ExecutablePath)
+	if keyErr != nil {
+		validation := failedLiveValidation(prepared.Model, liveValidationCredentialInvalid, 0)
+		errs := []error{fmt.Errorf("load local API key: %w", keyErr)}
+		if mkErr := createRunOutputRoot(outputRoot); mkErr != nil {
+			errs = append(errs, mkErr)
+		} else if persistErr := persistLiveValidation(outputRoot, validation); persistErr != nil {
+			errs = append(errs, persistErr)
+		}
+		return errors.Join(errs...)
+	}
+	defer releaseAPIKeys()
 	preparationEntry := logger.WithFields(logrus.Fields{"run_id": runID, "profile": cfg.Name, "backend": cfg.Runtime.Backend, "mode": cfg.Runtime.Mode, "component": "preparation"})
 	preparationEntry.WithField("preparation_state", "preparing").Info("profile preparation")
-	if err := ensurePrepared(ctx, cfg, dependencies.Wiring); err != nil {
+	if err := ensurePrepared(ctx, cfg, dependencies.Wiring, apiKeyLookup); err != nil {
 		preparationEntry.WithFields(logrus.Fields{"preparation_state": "not_prepared", "error_category": "preparation_failed"}).Error("profile preparation")
 		return err
 	}
@@ -116,21 +134,8 @@ func Run(ctx context.Context, profilePath string, stdout io.Writer, dependencies
 		returnErr = errors.Join(returnErr, detachRunLog())
 	}()
 
-	preflightLookup := environmentAPIKeyLookup
-	var harnessLookup func(string) ([]byte, bool)
-	if isOfficialDeepSeek(prepared.Model) {
-		if keyPath, anchored := repositoryAPIKeyPath(dependencies.ExecutablePath); anchored {
-			apiKeys, exists, keyErr := loadLocalAPIKeySource(keyPath)
-			if keyErr != nil {
-				validation := failedLiveValidation(prepared.Model, liveValidationCredentialInvalid, 0)
-				return errors.Join(fmt.Errorf("load local API key: %w", keyErr), persistLiveValidation(outputRoot, validation))
-			}
-			if exists {
-				defer apiKeys.Clear()
-				preflightLookup, harnessLookup = apiKeys.Lookup, apiKeys.Lookup
-			}
-		}
-	}
+	preflightLookup := apiKeyLookup
+	harnessLookup := apiKeyLookup
 
 	runtime := prepared.Runtime
 	runtimeEntry := runEntry.WithField("component", "model_runtime")
@@ -233,14 +238,14 @@ func Run(ctx context.Context, profilePath string, stdout io.Writer, dependencies
 	return returnErr
 }
 
-func ensurePrepared(ctx context.Context, cfg config.Config, wiring Wiring) error {
+func ensurePrepared(ctx context.Context, cfg config.Config, wiring Wiring, apiKeyLookup func(string) ([]byte, bool)) error {
 	if wiring.SetupBenchmark == nil || wiring.LoadPreparationTasks == nil || wiring.PullImages == nil {
 		return errors.New("preparation wiring is incomplete")
 	}
 	if err := wiring.SetupBenchmark(ctx, cfg); err != nil {
 		return err
 	}
-	tasks, err := wiring.LoadPreparationTasks(ctx, cfg, uniqueStrings(cfg.Benchmark.Tasks))
+	tasks, err := wiring.LoadPreparationTasks(ctx, cfg, uniqueStrings(cfg.Benchmark.Tasks), apiKeyLookup)
 	if err != nil {
 		return err
 	}
@@ -289,7 +294,7 @@ func buildTaskExperiment(cfg config.Config, model core.ModelConfig, effectiveGPU
 	if wiring.NewBenchmark == nil || wiring.NewHarness == nil || wiring.NewSandbox == nil || wiring.NewBridge == nil {
 		return nil, errors.New("component wiring is incomplete")
 	}
-	benchmark, err := wiring.NewBenchmark(cfg, outputRoot, logicalID, occurrenceID)
+	benchmark, err := wiring.NewBenchmark(cfg, outputRoot, logicalID, occurrenceID, apiKeyLookup)
 	if err != nil {
 		return nil, err
 	}
