@@ -26,6 +26,20 @@ const searxngStartScript = "cd /opt/searxng-src && SEARXNG_SETTINGS_PATH=/etc/se
 // OpenClaw harness container uses to reach this same instance externally.
 const searxngHealthCheckURL = "http://127.0.0.1:8888/search?format=json&q=aries-healthcheck"
 
+// randomizeSubtasksStartScript launches the randomize sidecar built into the
+// DRB task image (see images/deep-research-bench/Dockerfile), the same way
+// searxngStartScript launches SearXNG above: nohup'd and reparented to PID 1
+// once this shell exits. It is only started when Options.RandomizeSubtasks
+// is set, since it exists solely to back randomizeSubtasksInstruction (see
+// deepresearchbench.go).
+const randomizeSubtasksStartScript = "nohup python3 /opt/randomize_server.py " +
+	">/var/log/randomize-server.log 2>&1 &"
+
+// randomizeSubtasksHealthCheckURL is probed from inside the sandbox container
+// itself (loopback), mirroring searxngHealthCheckURL above. The harness
+// container reaches the same server externally at http://task-sandbox:8889.
+const randomizeSubtasksHealthCheckURL = "http://127.0.0.1:8889/healthz"
+
 // Package-level vars, not consts, so tests can shrink them to avoid waiting
 // out the real bound.
 var (
@@ -65,6 +79,11 @@ func (b *Benchmark) PrepareSandbox(ctx context.Context, task core.Task, sandbox 
 	if err := startSearXNG(ctx, sandbox); err != nil {
 		return err
 	}
+	if b.randomizeSubtasks {
+		if err := startRandomizeServer(ctx, sandbox); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -92,4 +111,30 @@ func startSearXNG(ctx context.Context, sandbox runner.Sandbox) error {
 		}
 	}
 	return errors.New("SearXNG did not become ready before the bound")
+}
+
+func startRandomizeServer(ctx context.Context, sandbox runner.Sandbox) error {
+	started, err := sandbox.Exec(ctx, core.Command{Path: "/bin/sh", Args: []string{"-c", randomizeSubtasksStartScript}})
+	if err != nil {
+		return fmt.Errorf("start randomize server: %w", err)
+	}
+	if started.ExitCode != 0 {
+		return fmt.Errorf("start randomize server: exit code %d", started.ExitCode)
+	}
+	for attempt := 0; attempt < searxngHealthCheckAttempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("await randomize server readiness: %w", ctx.Err())
+			case <-time.After(searxngHealthCheckDelay):
+			}
+		}
+		probed, err := sandbox.Exec(ctx, core.Command{
+			Path: "/bin/sh", Args: []string{"-c", "curl -sf -o /dev/null " + randomizeSubtasksHealthCheckURL},
+		})
+		if err == nil && probed.ExitCode == 0 {
+			return nil
+		}
+	}
+	return errors.New("randomize server did not become ready before the bound")
 }

@@ -82,12 +82,13 @@ type ProfileModel struct {
 }
 
 type BenchmarkConfig struct {
-	Type        string                `json:"type"`
-	Root        string                `json:"root"`
-	Tasks       []string              `json:"tasks"`
-	Environment *BenchmarkEnvironment `json:"environment,omitempty"`
-	Judge       *JudgeConfig          `json:"judge,omitempty"`
-	Fact        *FactConfig           `json:"fact,omitempty"`
+	Type              string                `json:"type"`
+	Root              string                `json:"root"`
+	Tasks             []string              `json:"tasks"`
+	Environment       *BenchmarkEnvironment `json:"environment,omitempty"`
+	Judge             *JudgeConfig          `json:"judge,omitempty"`
+	Fact              *FactConfig           `json:"fact,omitempty"`
+	RandomizeSubtasks bool                  `json:"randomize_subtasks,omitempty"`
 }
 
 // BenchmarkEnvironment describes the task sandbox for benchmarks (currently
@@ -573,6 +574,9 @@ func (c *Config) validateBenchmarkType() error {
 		}
 		if c.Benchmark.Fact != nil {
 			return errors.New("fact must not be set for terminalbench2")
+		}
+		if c.Benchmark.RandomizeSubtasks {
+			return errors.New("randomize_subtasks must not be set for terminalbench2")
 		}
 		return nil
 	default:

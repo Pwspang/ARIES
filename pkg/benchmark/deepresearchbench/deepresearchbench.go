@@ -58,6 +58,31 @@ const reportInstruction = "\n\nWrite your final, complete research report to " +
 	"in this same turn — a message that only states an intention to write the report, without a " +
 	"tool call that performs it, does not satisfy this requirement and will be scored as a failure."
 
+// randomizeSubtasksInstruction is appended, only when Options.RandomizeSubtasks is set, on
+// top of taskPromptTemplate's own step 2 ("Plan the work: decompose the question into
+// sub-questions..."). ARIES cannot register a native function-calling tool on OpenClaw's or
+// Hermes's model (neither exposes a generic custom-tool hook — see
+// pkg/harness/openclaw/config.go, pkg/harness/hermes/config.go), so this instead points the
+// agent at a plain HTTP sidecar started inside the task sandbox by PrepareSandbox
+// (pkg/benchmark/deepresearchbench/sandbox.go), reachable over the same "task-sandbox"
+// network alias OpenClaw's web_search already uses for SearXNG. Forcing the plan into a
+// literal JSON array first (rather than leaving "decompose the question" as free text) gives
+// the agent something concrete to hand the sidecar instead of an ambiguous instruction to
+// "randomize your own plan," which a model has no way to do deterministically on its own.
+const randomizeSubtasksInstruction = "\n\n" +
+	"## Randomized sub-question order\n\n" +
+	"Before you begin searching, make your step-2 plan concrete: write your planned\n" +
+	"sub-questions as a JSON array of strings — e.g.\n" +
+	"`[\"sub-question 1\", \"sub-question 2\", \"sub-question 3\"]` — with no other text.\n" +
+	"Then POST that exact JSON array as the `subtasks` field to\n" +
+	"http://task-sandbox:8889/randomize, for example:\n" +
+	"`curl -s -X POST http://task-sandbox:8889/randomize -H 'Content-Type: application/json' " +
+	"-d '{\"subtasks\": [\"sub-question 1\", \"sub-question 2\", \"sub-question 3\"]}'`\n" +
+	"using your exec/terminal tool. The response is `{\"subtasks\": [...]}` with the same\n" +
+	"strings in a randomized order — that is your execution order for researching each\n" +
+	"sub-question. Do not start searching until you've made this call, and do not reorder\n" +
+	"the returned list yourself."
+
 // taskPromptTemplate is the fixed instruction every Deep Research Bench task
 // is wrapped in before being sent to the harness. It is intentionally not
 // configurable: the citation format it mandates is a hard requirement of the
@@ -207,10 +232,15 @@ type Options struct {
 	Environment      core.Environment
 	Judge            core.ModelConfig
 	JudgeDisabled    bool
-	FactJudge       core.ModelConfig
-	JinaAPIKeyEnv   string
-	APIKeyLookup    func(string) ([]byte, bool)
-	RewardThreshold float64
+	FactJudge        core.ModelConfig
+	JinaAPIKeyEnv    string
+	APIKeyLookup     func(string) ([]byte, bool)
+	RewardThreshold  float64
+	// RandomizeSubtasks appends randomizeSubtasksInstruction to every task's
+	// instruction, directing the agent to hand its planned sub-questions to
+	// the in-sandbox randomize sidecar (started by PrepareSandbox) and follow
+	// the order it returns instead of its own.
+	RandomizeSubtasks bool
 }
 
 // Benchmark discovers selected Deep Research Bench tasks. Unlike
@@ -235,8 +265,9 @@ type Benchmark struct {
 	// environment), as opposed to FACT simply never having been
 	// configured. Empty when FACT is either enabled or was never
 	// configured at all.
-	factSkipReason  string
-	rewardThreshold float64
+	factSkipReason    string
+	rewardThreshold   float64
+	randomizeSubtasks bool
 
 	mu         sync.RWMutex
 	numericIDs map[string]int
@@ -371,20 +402,21 @@ func New(options Options) (*Benchmark, error) {
 	environment.AllowNetwork = true
 
 	return &Benchmark{
-		root:             filepath.Clean(options.Root),
-		taskIDs:          slices.Clone(options.TaskIDs),
-		executionTaskIDs: slices.Clone(executionTaskIDs),
-		outputDir:        filepath.Clean(options.OutputDir),
-		revision:         options.Revision,
-		queryFile:        queryFile,
-		referenceFile:    referenceFile,
-		criteriaFile:     criteriaFile,
-		taskTimeout:      options.TaskTimeout,
-		environment:      environment,
-		race:             race,
-		fact:             fact,
-		factSkipReason:   factSkipReason,
-		rewardThreshold:  rewardThreshold,
+		root:              filepath.Clean(options.Root),
+		taskIDs:           slices.Clone(options.TaskIDs),
+		executionTaskIDs:  slices.Clone(executionTaskIDs),
+		outputDir:         filepath.Clean(options.OutputDir),
+		revision:          options.Revision,
+		queryFile:         queryFile,
+		referenceFile:     referenceFile,
+		criteriaFile:      criteriaFile,
+		taskTimeout:       options.TaskTimeout,
+		environment:       environment,
+		race:              race,
+		fact:              fact,
+		factSkipReason:    factSkipReason,
+		rewardThreshold:   rewardThreshold,
+		randomizeSubtasks: options.RandomizeSubtasks,
 	}, nil
 }
 
@@ -444,9 +476,13 @@ func (b *Benchmark) Tasks(ctx context.Context) ([]core.Task, error) {
 		}
 		executionID := b.executionTaskIDs[index]
 		numericIDs[executionID] = numericID
+		instruction := applyPromptTemplate(taskPromptTemplate, prompt) + reportInstruction
+		if b.randomizeSubtasks {
+			instruction += randomizeSubtasksInstruction
+		}
 		tasks = append(tasks, core.Task{
 			ID:          executionID,
-			Instruction: applyPromptTemplate(taskPromptTemplate, prompt) + reportInstruction,
+			Instruction: instruction,
 			Timeout:     b.taskTimeout,
 			Environment: b.environment,
 		})

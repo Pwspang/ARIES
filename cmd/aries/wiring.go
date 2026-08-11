@@ -137,13 +137,14 @@ func newBenchmark(cfg config.Config, outputRoot, logicalID, occurrenceID string,
 		judgeModel, factModel, jinaAPIKeyEnv, judgeDisabled := deepresearchbenchModels(cfg)
 		benchmark, err := deepresearchbench.New(deepresearchbench.Options{
 			Root: cfg.Benchmark.Root, TaskIDs: []string{logicalID}, ExecutionTaskIDs: executionIDs, OutputDir: outputRoot,
-			Revision:      cfg.Versions.DeepResearchBench.Revision,
-			Environment:   environmentFromConfig(cfg.Benchmark.Environment),
-			Judge:         judgeModel,
-			JudgeDisabled: judgeDisabled,
-			FactJudge:     factModel,
-			JinaAPIKeyEnv: jinaAPIKeyEnv,
-			APIKeyLookup:  lookup,
+			Revision:          cfg.Versions.DeepResearchBench.Revision,
+			Environment:       environmentFromConfig(cfg.Benchmark.Environment),
+			Judge:             judgeModel,
+			JudgeDisabled:     judgeDisabled,
+			FactJudge:         factModel,
+			JinaAPIKeyEnv:     jinaAPIKeyEnv,
+			APIKeyLookup:      lookup,
+			RandomizeSubtasks: cfg.Benchmark.RandomizeSubtasks,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("construct deepresearchbench benchmark: %w", err)
@@ -342,13 +343,14 @@ func loadPreparationTasks(ctx context.Context, cfg config.Config, taskIDs []stri
 		judgeModel, factModel, jinaAPIKeyEnv, judgeDisabled := deepresearchbenchModels(cfg)
 		benchmark, err := deepresearchbench.New(deepresearchbench.Options{
 			Root: cfg.Benchmark.Root, TaskIDs: taskIDs, OutputDir: cfg.OutputDir,
-			Revision:      cfg.Versions.DeepResearchBench.Revision,
-			Environment:   environmentFromConfig(cfg.Benchmark.Environment),
-			Judge:         judgeModel,
-			JudgeDisabled: judgeDisabled,
-			FactJudge:     factModel,
-			JinaAPIKeyEnv: jinaAPIKeyEnv,
-			APIKeyLookup:  lookup,
+			Revision:          cfg.Versions.DeepResearchBench.Revision,
+			Environment:       environmentFromConfig(cfg.Benchmark.Environment),
+			Judge:             judgeModel,
+			JudgeDisabled:     judgeDisabled,
+			FactJudge:         factModel,
+			JinaAPIKeyEnv:     jinaAPIKeyEnv,
+			APIKeyLookup:      lookup,
+			RandomizeSubtasks: cfg.Benchmark.RandomizeSubtasks,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("validate deepresearchbench profile: %w", err)
