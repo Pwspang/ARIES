@@ -8,6 +8,8 @@ import (
 	"os"
 	"sync"
 	"syscall"
+
+	"github.com/hyscale-lab/aries/pkg/core"
 )
 
 const (
@@ -142,4 +144,23 @@ func environmentAPIKeyLookup(name string) ([]byte, bool) {
 		return nil, false
 	}
 	return []byte(value), true
+}
+
+func resolveAPIKeyLookup(model core.ModelConfig, executablePath string) (lookup func(string) ([]byte, bool), cleanup func(), err error) {
+	noop := func() {}
+	if !isOfficialDeepSeek(model) {
+		return environmentAPIKeyLookup, noop, nil
+	}
+	keyPath, anchored := repositoryAPIKeyPath(executablePath)
+	if !anchored {
+		return environmentAPIKeyLookup, noop, nil
+	}
+	apiKeys, exists, keyErr := loadLocalAPIKeySource(keyPath)
+	if keyErr != nil {
+		return nil, noop, keyErr
+	}
+	if !exists {
+		return environmentAPIKeyLookup, noop, nil
+	}
+	return apiKeys.Lookup, apiKeys.Clear, nil
 }
