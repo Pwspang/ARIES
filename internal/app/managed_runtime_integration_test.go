@@ -70,9 +70,9 @@ func TestConcreteManagedRuntimeWrapsPreflightAndTaskLifecycle(t *testing.T) {
 			return PreparedBackend{Model: cfg.CoreModel(), Runtime: concrete}, err
 		},
 		SetupBenchmark:       func(context.Context, config.Config) error { record("prepare"); return nil },
-		LoadPreparationTasks: func(context.Context, config.Config, []string) ([]core.Task, error) { return nil, nil },
+		LoadPreparationTasks: func(context.Context, config.Config, []string, func(string) ([]byte, bool)) ([]core.Task, error) { return nil, nil },
 		PullImages:           func(context.Context, []string) error { return nil },
-		NewBenchmark: func(_ config.Config, _, _, occurrenceID string) (runner.Benchmark, error) {
+		NewBenchmark: func(_ config.Config, _, _, occurrenceID string, _ func(string) ([]byte, bool)) (runner.Benchmark, error) {
 			record("compose")
 			return &managedIntegrationBenchmark{id: occurrenceID}, nil
 		},
@@ -158,9 +158,9 @@ func TestConcreteManagedRuntimeNaturalExitLogsStoppedAfterUnexpectedExit(t *test
 			return PreparedBackend{Model: cfg.CoreModel(), Runtime: concrete}, err
 		},
 		SetupBenchmark:       func(context.Context, config.Config) error { return nil },
-		LoadPreparationTasks: func(context.Context, config.Config, []string) ([]core.Task, error) { return nil, nil },
+		LoadPreparationTasks: func(context.Context, config.Config, []string, func(string) ([]byte, bool)) ([]core.Task, error) { return nil, nil },
 		PullImages:           func(context.Context, []string) error { return nil },
-		NewBenchmark: func(_ config.Config, _, _, occurrenceID string) (runner.Benchmark, error) {
+		NewBenchmark: func(_ config.Config, _, _, occurrenceID string, _ func(string) ([]byte, bool)) (runner.Benchmark, error) {
 			if err := os.WriteFile(exitNow, []byte("exit"), 0o600); err != nil {
 				return nil, err
 			}

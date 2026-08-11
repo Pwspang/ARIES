@@ -114,7 +114,10 @@ func prepareBackend(cfg config.Config, outputDir string) (app.PreparedBackend, e
 	}
 }
 
-func newBenchmark(cfg config.Config, outputRoot, logicalID, occurrenceID string) (runner.Benchmark, error) {
+func newBenchmark(cfg config.Config, outputRoot, logicalID, occurrenceID string, lookup func(string) ([]byte, bool)) (runner.Benchmark, error) {
+	if lookup == nil {
+		lookup = environmentAPIKeyLookup
+	}
 	switch cfg.Benchmark.Type {
 	case "terminalbench2":
 		var executionIDs []string
@@ -140,7 +143,7 @@ func newBenchmark(cfg config.Config, outputRoot, logicalID, occurrenceID string)
 			JudgeDisabled: judgeDisabled,
 			FactJudge:     factModel,
 			JinaAPIKeyEnv: jinaAPIKeyEnv,
-			APIKeyLookup:  environmentAPIKeyLookup,
+			APIKeyLookup:  lookup,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("construct deepresearchbench benchmark: %w", err)
@@ -330,7 +333,10 @@ func setupBenchmark(ctx context.Context, cfg config.Config) error {
 	}
 }
 
-func loadPreparationTasks(ctx context.Context, cfg config.Config, taskIDs []string) ([]core.Task, error) {
+func loadPreparationTasks(ctx context.Context, cfg config.Config, taskIDs []string, lookup func(string) ([]byte, bool)) ([]core.Task, error) {
+	if lookup == nil {
+		lookup = environmentAPIKeyLookup
+	}
 	switch cfg.Benchmark.Type {
 	case "deepresearchbench":
 		judgeModel, factModel, jinaAPIKeyEnv, judgeDisabled := deepresearchbenchModels(cfg)
@@ -342,7 +348,7 @@ func loadPreparationTasks(ctx context.Context, cfg config.Config, taskIDs []stri
 			JudgeDisabled: judgeDisabled,
 			FactJudge:     factModel,
 			JinaAPIKeyEnv: jinaAPIKeyEnv,
-			APIKeyLookup:  environmentAPIKeyLookup,
+			APIKeyLookup:  lookup,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("validate deepresearchbench profile: %w", err)
