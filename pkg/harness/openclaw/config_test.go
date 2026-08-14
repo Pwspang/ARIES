@@ -165,6 +165,9 @@ func TestRenderConfigEnablesSearXNGWebSearch(t *testing.T) {
 	if !ok || entry.Config.WebSearch.BaseURL != searxngBaseURL {
 		t.Fatalf("plugins.entries.searxng = %#v", configuration.Plugins.Entries)
 	}
+	if len(configuration.Plugins.Allow) != 1 || configuration.Plugins.Allow[0] != "searxng" {
+		t.Fatalf("plugins.allow = %#v, want [\"searxng\"]: without it OpenClaw never actually registers web_search as a callable tool", configuration.Plugins.Allow)
+	}
 	if configuration.Tools.Sandbox == nil {
 		t.Fatal("tools.sandbox gate missing: web_search/web_fetch would be invisible to a sandboxed session")
 	}
@@ -194,6 +197,9 @@ func TestRenderConfigEnablesTavilyExtractAlongsideSearXNGSearch(t *testing.T) {
 	tavilyEntry, ok := configuration.Plugins.Entries["tavily"]
 	if !ok || !tavilyEntry.Enabled || tavilyEntry.Config != nil {
 		t.Fatalf("plugins.entries.tavily = %#v", configuration.Plugins.Entries)
+	}
+	if len(configuration.Plugins.Allow) != 2 || configuration.Plugins.Allow[0] != "searxng" || configuration.Plugins.Allow[1] != "tavily" {
+		t.Fatalf("plugins.allow = %#v, want [\"searxng\", \"tavily\"]", configuration.Plugins.Allow)
 	}
 	alsoAllow := configuration.Tools.Sandbox.Tools.AlsoAllow
 	if len(alsoAllow) != 3 || alsoAllow[2] != "tavily_extract" {

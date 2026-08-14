@@ -73,8 +73,19 @@ type webSearchToolConfig struct {
 	Provider string `json:"provider"`
 }
 
+// pluginsConfig's Allow lists externally-installed (non-bundled) plugins
+// OpenClaw's gateway is allowed to actually expose tools from. This is a
+// separate trust gate from toolPolicy.Sandbox's alsoAllow: alsoAllow makes a
+// tool visible to the sandboxed agent session, but OpenClaw additionally
+// refuses to auto-load any non-bundled plugin's tools at all — regardless of
+// alsoAllow — unless it's also named here. Without it, `openclaw doctor
+// --fix` still installs and enables the plugin (so gateway.log shows it
+// selected as the search provider), but web_search is never actually
+// registered as a callable tool, and the agent silently falls back to
+// guessing URLs for web_fetch instead.
 type pluginsConfig struct {
 	Entries map[string]pluginEntry `json:"entries"`
+	Allow   []string               `json:"allow,omitempty"`
 }
 
 type pluginEntry struct {
@@ -213,6 +224,7 @@ func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchE
 		entries := map[string]pluginEntry{
 			"searxng": {Config: &pluginConfigBlock{WebSearch: webSearchPluginConfig{BaseURL: searxngBaseURL}}},
 		}
+		allow := []string{"searxng"}
 		if extractEnabled {
 			// tavily_extract only: the entry deliberately carries no apiKey
 			// (the launcher exports it as TAVILY_API_KEY instead, so it
@@ -220,9 +232,10 @@ func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchE
 			// Tavily backs extraction only — search stays SearXNG.
 			alsoAllow = append(alsoAllow, "tavily_extract")
 			entries["tavily"] = pluginEntry{Enabled: true}
+			allow = append(allow, "tavily")
 		}
 		configuration.Tools.Sandbox = &sandboxToolsGate{Tools: sandboxToolsAllowList{AlsoAllow: alsoAllow}}
-		configuration.Plugins = &pluginsConfig{Entries: entries}
+		configuration.Plugins = &pluginsConfig{Entries: entries, Allow: allow}
 	}
 	var output bytes.Buffer
 	encoder := json.NewEncoder(&output)
