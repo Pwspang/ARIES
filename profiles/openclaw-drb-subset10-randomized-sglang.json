@@ -1,0 +1,67 @@
+{
+  "name": "openclaw-drb-subset10-randomized-sglang",
+  "versions_file": "../configs/versions.json",
+  "overrides_file": "",
+  "execution": {
+    "concurrency": 2
+  },
+  "benchmark": {
+    "type": "deepresearchbench",
+    "root": ".cache/deep-research-bench",
+    "tasks": [
+      "8",
+      "1",
+      "66",
+      "16",
+      "58",
+      "75",
+      "71",
+      "51",
+      "21",
+      "25"
+    ],
+    "environment": {
+      "image": "ihasfarm/aries-deepresearchbench:latest",
+      "workdir": "/workspace"
+    },
+    "fact": {
+      "jina_api_key_env": "JINA_API_KEY"
+    },
+    "judge": {
+    "provider": "deepseek",
+    "base_url": "https://api.deepseek.com",
+    "api_key_env": "DEEPSEEK_API_KEY",
+    "model": "deepseek-v4-flash"
+    },
+    "randomize_subtasks": true
+  },
+  "harness": {
+    "type": "openclaw",
+    "web_search": {
+      "enabled": true,
+      "extract_api_key_env": "TAVILY_API_KEY"
+    },
+    "subagents": {
+      "enabled": false
+    }
+  },
+  "sandbox": {
+    "type": "docker"
+  },
+  "bridge": {
+    "type": "openclaw-ssh"
+  },
+  "runtime": {
+    "backend": "sglang",
+    "mode": "external",
+    "config": {
+      "file": "../configs/sglang/vllm-drb-passthrough.yaml"
+    }
+  },
+  "model": {
+    "base_url": "http://host.docker.internal:8100/v1",
+    "api_key_env": "SGLANG_API_KEY",
+    "id": "Qwen/Qwen3.6-35B-A3B-FP8"
+  },
+  "output_dir": "runs"
+}
