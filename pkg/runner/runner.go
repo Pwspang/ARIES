@@ -214,6 +214,113 @@ func (r *Runner) runTask(ctx context.Context, task core.Task) (core.TaskResult, 
 		return finish()
 	}
 
+	if multiTurnBenchmark, isMultiTurn := r.benchmark.(MultiTurnBenchmark); isMultiTurn {
+		turnIndex := 0
+		for {
+			instruction, proceed, nextErr := multiTurnBenchmark.NextTurn(ctx, task, turnIndex, sandbox)
+			if nextErr != nil {
+				allErrors = append(allErrors, fmt.Errorf("determine turn %d instruction: %w", turnIndex, nextErr))
+				return finish()
+			}
+			if !proceed {
+				break
+			}
+
+			turnEndpoint, turnErr := r.bridge.Start(ctx, sandbox)
+			bridgeActive = true
+			if turnErr != nil {
+				allErrors = append(allErrors, fmt.Errorf("start bridge (turn %d): %w", turnIndex, turnErr))
+				return finish()
+			}
+			result.ToolLogPaths = append(result.ToolLogPaths, turnEndpoint.LogPaths...)
+
+			turnErr = r.harness.Start(ctx, core.HarnessRequest{
+				RunID:     r.runID,
+				TaskID:    task.ID,
+				Endpoint:  turnEndpoint,
+				Model:     r.model,
+				Timeout:   harnessTimeout,
+				CPU:       harnessCPU,
+				MemoryMB:  harnessMemory,
+				OutputDir: r.outputDir,
+			})
+			harnessActive = true
+			var turnResult core.HarnessResult
+			if turnErr != nil {
+				turnResult.Status = failureStatus(turnErr)
+				turnResult.Error = turnErr.Error()
+				allErrors = append(allErrors, fmt.Errorf("start harness (turn %d): %w", turnIndex, turnErr))
+			} else {
+				harnessResult, runErr := r.harness.Run(ctx, instruction)
+				turnResult = harnessResult
+				if runErr == nil {
+					if turnResult.Status == "" {
+						turnResult.Status = core.StatusSucceeded
+					}
+				} else {
+					turnResult.Status = failureStatus(runErr)
+					turnResult.Error = runErr.Error()
+					allErrors = append(allErrors, fmt.Errorf("run harness (turn %d): %w", turnIndex, runErr))
+				}
+			}
+			result.Turns = append(result.Turns, turnResult)
+			result.Harness = turnResult
+
+			isolationErrors := make([]error, 0, 2)
+			isolationCtx, cancelIsolation := context.WithTimeout(context.WithoutCancel(ctx), r.cleanupTimeout)
+			if err := r.harness.Stop(isolationCtx); err != nil {
+				isolationErrors = append(isolationErrors, fmt.Errorf("confirm harness stopped (turn %d): %w", turnIndex, err))
+			} else {
+				harnessActive = false
+				result.Isolation.HarnessStopped = true
+			}
+			if err := r.bridge.Stop(isolationCtx); err != nil {
+				isolationErrors = append(isolationErrors, fmt.Errorf("confirm bridge revoked (turn %d): %w", turnIndex, err))
+			} else {
+				bridgeActive = false
+				result.Isolation.BridgeRevoked = true
+			}
+			cancelIsolation()
+
+			if len(isolationErrors) != 0 {
+				isolationErr := errors.Join(isolationErrors...)
+				result.Isolation.Status = core.StatusBlockedIsolation
+				result.Isolation.Error = isolationErr.Error()
+				result.Evaluation.Status = core.StatusBlockedIsolation
+				result.Evaluation.Error = "evaluation blocked because harness termination or bridge revocation was not confirmed"
+				allErrors = append(allErrors, isolationErrors...)
+				return finish()
+			}
+
+			if turnResult.Status != core.StatusSucceeded {
+				// This turn's harness run itself failed. Isolation was
+				// confirmed, but evaluating now would only ever see partial,
+				// unreliable artifacts from an incomplete turn sequence, so
+				// stop here without evaluating (matching the plan-validation
+				// "fail loudly" convention for structured multi-turn tasks).
+				result.Isolation.Status = core.StatusConfirmed
+				return finish()
+			}
+
+			turnIndex++
+		}
+
+		result.Isolation.Status = core.StatusConfirmed
+		evaluation, evaluationErr := r.benchmark.Evaluate(ctx, originalTask, sandbox)
+		result.Evaluation = evaluation
+		if evaluationErr == nil {
+			if result.Evaluation.Status == "" {
+				result.Evaluation.Status = core.StatusSucceeded
+			}
+		} else {
+			result.Evaluation.Status = failureStatus(evaluationErr)
+			result.Evaluation.Error = evaluationErr.Error()
+			allErrors = append(allErrors, fmt.Errorf("evaluate sandbox: %w", evaluationErr))
+		}
+
+		return finish()
+	}
+
 	endpoint, err := r.bridge.Start(ctx, sandbox)
 	// Start may fail after allocating task-local resources or after its internal
 	// rollback fails. Stop is idempotent, so every Start attempt must be followed

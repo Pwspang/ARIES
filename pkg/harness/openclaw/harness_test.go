@@ -143,6 +143,7 @@ func (fake *fakeDocker) ContainerCreate(_ context.Context, options client.Contai
 	defer fake.mu.Unlock()
 	fake.createCalls++
 	fake.created = options
+	fake.removed = false
 	fake.container = container.InspectResponse{
 		ID: "openclaw-id", Config: options.Config, HostConfig: options.HostConfig,
 		State:           &container.State{},
@@ -703,7 +704,7 @@ func TestHarnessUsesOneSDKContainerAndDirectPrivateArchive(t *testing.T) {
 	if len(bindings) != 1 || bindings[0].HostIP.String() != "127.0.0.1" {
 		t.Fatalf("agent gateway port bindings = %#v", bindings)
 	}
-	if _, err := os.Stat(filepath.Join(manager.outputDir, "fix-git", "harness", "agent-result.json")); err != nil {
+	if _, err := os.Stat(filepath.Join(manager.outputDir, "fix-git", "harness-turn-01", "agent-result.json")); err != nil {
 		t.Fatalf("agent result artifact: %v", err)
 	}
 	serialized := strings.Join(append(append([]string{}, fake.created.Config.Env...), fake.created.Config.Cmd...), "\n")
@@ -733,7 +734,7 @@ func TestHarnessUsesOneSDKContainerAndDirectPrivateArchive(t *testing.T) {
 			t.Fatalf("artifact %q: %v", path, err)
 		}
 	}
-	configPath := filepath.Join(manager.outputDir, "fix-git", "harness", "openclaw.json")
+	configPath := filepath.Join(manager.outputDir, "fix-git", "harness-turn-01", "openclaw.json")
 	configArtifact, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatalf("retained OpenClaw config: %v", err)
@@ -743,6 +744,54 @@ func TestHarnessUsesOneSDKContainerAndDirectPrivateArchive(t *testing.T) {
 	}
 	if info, err := os.Stat(configPath); err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("retained OpenClaw config mode = %v, %v", info, err)
+	}
+}
+
+// A second Start/Run/Stop cycle for the same TaskID must not collide with the
+// first turn's artifacts on disk (openclaw.json, agent-result.json, etc. are
+// all created with O_EXCL), and Stop resetting manager.active must genuinely
+// allow the harness to be reused for a later turn against the same sandbox.
+func TestHarnessSupportsSequentialStartCyclesForSameTask(t *testing.T) {
+	fake := newFakeDocker()
+	manager := newTestManager(t, fake, []byte("model-secret"))
+	// Start clears the API-key bytes it is handed after cloning them, so a
+	// second Start needs its own fresh copy rather than reusing a slice that
+	// the first turn has already zeroed.
+	manager.apiKeyLookup = func(string) ([]byte, bool) { return []byte("model-secret"), true }
+	request := core.HarnessRequest{RunID: "run-1", TaskID: "fix-git", Endpoint: endpointFiles(t), Model: testModel(), Timeout: 37 * time.Second}
+
+	if err := manager.Start(context.Background(), request); err != nil {
+		t.Fatalf("first Start: %v", err)
+	}
+	if _, err := manager.Run(context.Background(), "first turn"); err != nil {
+		t.Fatalf("first Run: %v", err)
+	}
+	if err := manager.Stop(context.Background()); err != nil {
+		t.Fatalf("first Stop: %v", err)
+	}
+	firstConfig := filepath.Join(manager.outputDir, "fix-git", "harness-turn-01", "openclaw.json")
+	if _, err := os.Stat(firstConfig); err != nil {
+		t.Fatalf("first turn artifact: %v", err)
+	}
+
+	if err := manager.Start(context.Background(), request); err != nil {
+		t.Fatalf("second Start after Stop unexpectedly failed (turn-scoped artifact paths should not collide): %v", err)
+	}
+	result, err := manager.Run(context.Background(), "second turn")
+	if err != nil || result.Status != core.StatusSucceeded {
+		t.Fatalf("second Run = %#v, %v", result, err)
+	}
+	if err := manager.Stop(context.Background()); err != nil {
+		t.Fatalf("second Stop: %v", err)
+	}
+	secondConfig := filepath.Join(manager.outputDir, "fix-git", "harness-turn-02", "openclaw.json")
+	if _, err := os.Stat(secondConfig); err != nil {
+		t.Fatalf("second turn artifact: %v", err)
+	}
+	// The first turn's artifacts must still be intact (never overwritten by the
+	// second turn's session).
+	if _, err := os.Stat(firstConfig); err != nil {
+		t.Fatalf("first turn artifact clobbered by second turn: %v", err)
 	}
 }
 
@@ -796,7 +845,7 @@ func TestStartStagesExtractKeyWhenConfigured(t *testing.T) {
 	if strings.Contains(serialized, string(extractSecret)) {
 		t.Fatal("extract secret entered Docker config")
 	}
-	retained, err := os.ReadFile(filepath.Join(manager.outputDir, request.TaskID, "harness", "openclaw.json"))
+	retained, err := os.ReadFile(filepath.Join(manager.outputDir, request.TaskID, "harness-turn-01", "openclaw.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -859,7 +908,7 @@ func TestStartFallsBackToNativeWebFetchWhenExtractCredentialMissing(t *testing.T
 		t.Fatalf("expected a fallback warning log entry, got %#v", hook.AllEntries())
 	}
 
-	retained, err := os.ReadFile(filepath.Join(manager.outputDir, request.TaskID, "harness", "openclaw.json"))
+	retained, err := os.ReadFile(filepath.Join(manager.outputDir, request.TaskID, "harness-turn-01", "openclaw.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1067,11 +1116,11 @@ func TestRealtimeModePublishesGatewayAndRunsRunner(t *testing.T) {
 		t.Fatal("realtime secret entered Docker config")
 	}
 	for _, name := range []string{"voice-instruction.txt", "voice-instruction.wav", "voice-instruction.wav.meta.json"} {
-		if _, err := os.Stat(filepath.Join(manager.outputDir, "fix-git", "harness", name)); err != nil {
+		if _, err := os.Stat(filepath.Join(manager.outputDir, "fix-git", "harness-turn-01", name)); err != nil {
 			t.Fatalf("missing %s: %v", name, err)
 		}
 	}
-	path := filepath.Join(manager.outputDir, "fix-git", "harness", "realtime-result.json")
+	path := filepath.Join(manager.outputDir, "fix-git", "harness-turn-01", "realtime-result.json")
 	content, err := os.ReadFile(path)
 	if err != nil || !bytes.Contains(content, []byte(`"output_text": "spoken"`)) {
 		t.Fatalf("realtime result artifact = %s, %v", content, err)

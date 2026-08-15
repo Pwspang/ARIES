@@ -154,6 +154,7 @@ type Manager struct {
 	stopErr   error
 	closeOnce sync.Once
 	closeErr  error
+	turnCount int
 }
 
 type realtimeRunner interface {
@@ -418,9 +419,10 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(gatewayToken)
 		return fmt.Errorf("generate OpenClaw agent idempotency key: %w", err)
 	}
+	manager.turnCount++
 	active := &session{
 		runID: request.RunID, taskID: request.TaskID, safeTaskID: safeTaskID(request.TaskID), attemptID: id,
-		containerName: "aries-openclaw-" + id, artifactDir: filepath.Join(manager.outputDir, request.TaskID, "harness"),
+		containerName: "aries-openclaw-" + id, artifactDir: filepath.Join(manager.outputDir, request.TaskID, fmt.Sprintf("harness-turn-%02d", manager.turnCount)),
 		endpoint: request.Endpoint, model: request.Model, agentTimeout: agentTimeout, apiKey: apiKey, realtimeAPIKey: realtimeAPIKey, extractAPIKey: extractAPIKey, gatewayToken: gatewayToken, agentIdempotency: agentIdempotency,
 	}
 	containerConfig.Labels["aries.attempt"] = active.attemptID

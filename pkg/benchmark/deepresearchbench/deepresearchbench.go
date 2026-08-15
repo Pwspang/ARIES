@@ -181,6 +181,54 @@ const taskPromptTemplate = "" +
 	"- Reply `DONE` as a standalone line, with nothing else, once the report at\n" +
 	"  `" + reportPath + "` is written."
 
+// planPath is the fixed, ARIES-owned location the agent is instructed to
+// write its sub-question decomposition to during the plan-generation pass
+// (Options.PlanOnly). It deliberately never coincides with reportPath: a
+// plan-only run never produces a report, and a structured-subtasks run never
+// produces a plan (it reads one already captured host-side).
+const planPath = "/tmp/aries-plan.json"
+
+// planPromptTemplate is the fixed instruction every Deep Research Bench task
+// is wrapped in during the plan-generation pass (Options.PlanOnly). Unlike
+// taskPromptTemplate, it deliberately excludes reportInstruction and the
+// citation-format rules: this pass never touches reportPath, only planPath,
+// and is graded only on whether a valid plan was captured (see
+// (*Benchmark).evaluatePlan), never by RACE/FACT. "{question}" is replaced
+// with the task's actual research prompt by applyPromptTemplate.
+const planPromptTemplate = "" +
+	"You are an autonomous research analyst preparing to tackle a DeepResearch-Bench\n" +
+	"task in a Linux container. This session only plans the work — do not research\n" +
+	"the question or write a report yet.\n" +
+	"\n" +
+	"## Research Question\n" +
+	"\n" +
+	"{question}\n" +
+	"\n" +
+	"## Task\n" +
+	"\n" +
+	"1. Read the research question carefully — note its exact scope, language, and\n" +
+	"   any specific deliverables the prompter asks for.\n" +
+	"2. Decompose it into an ordered list of sub-questions: the minimal set of\n" +
+	"   information-gathering steps needed to answer the research question,\n" +
+	"   ordered so that a later sub-question may depend on evidence a reader would\n" +
+	"   gather from an earlier one.\n" +
+	"3. Write that ordered list, and nothing else, as a JSON array of strings to\n" +
+	"   `" + planPath + "`, e.g. `[\"first sub-question\", \"second sub-question\"]`.\n" +
+	"4. When the file is written, reply with a single line: `DONE`.\n" +
+	"\n" +
+	"## Rules\n" +
+	"\n" +
+	"- Do not search the web, fetch any pages, or write a research report — this\n" +
+	"  session produces only the plan.\n" +
+	"- The JSON array must contain at least one sub-question, and every\n" +
+	"  sub-question must be non-empty text (not blank or only whitespace).\n" +
+	"- You must actually invoke a tool (e.g. a shell/exec command that creates the\n" +
+	"  file) to write " + planPath + " in this same turn — a message that only\n" +
+	"  states an intention to write it, without a tool call that performs it,\n" +
+	"  does not satisfy this requirement and will be scored as a failure.\n" +
+	"- Reply `DONE` as a standalone line, with nothing else, once " + planPath + "\n" +
+	"  is written."
+
 // defaultRewardThreshold is the RACE overall score (0-100, scaled from the
 // underlying target/(target+reference) ratio — see evaluate.go) at or above
 // which a task is scored as a pass (Reward = 1). 50 means the candidate ties
@@ -207,10 +255,46 @@ type Options struct {
 	Environment      core.Environment
 	Judge            core.ModelConfig
 	JudgeDisabled    bool
-	FactJudge       core.ModelConfig
-	JinaAPIKeyEnv   string
-	APIKeyLookup    func(string) ([]byte, bool)
-	RewardThreshold float64
+	FactJudge        core.ModelConfig
+	JinaAPIKeyEnv    string
+	APIKeyLookup     func(string) ([]byte, bool)
+	RewardThreshold  float64
+
+	// PlanOnly switches Tasks()/Evaluate() into the plan-generation pass: each
+	// task is wrapped in planPromptTemplate instead of taskPromptTemplate, and
+	// Evaluate downloads/validates/persists the resulting plan instead of
+	// running RACE/FACT. Requires JudgeDisabled (see New's validation comment)
+	// and PlansetDir. Mutually exclusive with StructuredSubtasks.
+	PlanOnly bool
+	// PlansetDir is the host-side directory Evaluate writes
+	// "<numeric_task_id>.json" plan files into when PlanOnly is true.
+	// Required when PlanOnly is true.
+	PlansetDir string
+
+	// StructuredSubtasks switches the benchmark into the structured
+	// execution pass: nil (the default) keeps today's single-turn behavior
+	// unchanged. When set, *Benchmark implements runner.MultiTurnBenchmark
+	// and runs one isolated agent session per subtask (read from a planset
+	// produced by an earlier PlanOnly pass) followed by a final synthesis
+	// turn. Mutually exclusive with PlanOnly.
+	StructuredSubtasks *StructuredSubtasksOptions
+}
+
+// StructuredSubtasksOptions configures the structured execution pass (see
+// Options.StructuredSubtasks and (*Benchmark).NextTurn).
+type StructuredSubtasksOptions struct {
+	// PlansetDir is the host-side directory holding one
+	// "<numeric_task_id>.json" ordered-subtask-list file per task, produced
+	// by an earlier Options.PlanOnly pass. Required.
+	PlansetDir string
+	// Order is "sequential" (plan file order, unchanged), "shuffled"
+	// (deterministically permuted per task via a seeded random shuffle), or
+	// "adversarial" (plan file order fully reversed, deterministically, no
+	// seed) — see (*Benchmark).subtasksFor.
+	Order string
+	// Seed seeds the per-task deterministic shuffle. Required (non-zero)
+	// when Order is "shuffled"; ignored otherwise.
+	Seed int64
 }
 
 // Benchmark discovers selected Deep Research Bench tasks. Unlike
@@ -238,11 +322,17 @@ type Benchmark struct {
 	factSkipReason  string
 	rewardThreshold float64
 
-	mu         sync.RWMutex
-	numericIDs map[string]int
+	planOnly           bool
+	plansetDir         string
+	structuredSubtasks *StructuredSubtasksOptions
+
+	mu           sync.RWMutex
+	numericIDs   map[string]int
+	subtaskPlans map[string][]string // task.ID -> ordered (possibly shuffled) subtasks, cached by subtasksFor
 }
 
 var _ runner.Benchmark = (*Benchmark)(nil)
+var _ runner.MultiTurnBenchmark = (*Benchmark)(nil)
 
 func New(options Options) (*Benchmark, error) {
 	if strings.TrimSpace(options.Root) == "" {
@@ -269,6 +359,40 @@ func New(options Options) (*Benchmark, error) {
 	}
 	if rewardThreshold <= 0 || rewardThreshold > 100 {
 		return nil, errors.New("deepresearchbench reward threshold must be in (0, 100]")
+	}
+
+	if options.PlanOnly && options.StructuredSubtasks != nil {
+		return nil, errors.New("deepresearchbench plan-only mode and structured subtasks are mutually exclusive")
+	}
+	if options.PlanOnly {
+		// The plan-generation pass never runs RACE/FACT (it never produces a
+		// report at reportPath at all), so requiring the caller to also pass
+		// JudgeDisabled makes that explicit at the config layer instead of
+		// silently ignoring a configured judge here. This mirrors New's
+		// existing "explicit master switch, not an implicit one" convention
+		// for JudgeDisabled below.
+		if !options.JudgeDisabled {
+			return nil, errors.New("deepresearchbench plan-only mode requires JudgeDisabled (the plan-generation pass never runs RACE/FACT)")
+		}
+		if strings.TrimSpace(options.PlansetDir) == "" {
+			return nil, errors.New("deepresearchbench plan-only mode requires a planset directory")
+		}
+	}
+	var structuredSubtasks *StructuredSubtasksOptions
+	if options.StructuredSubtasks != nil {
+		copied := *options.StructuredSubtasks
+		if strings.TrimSpace(copied.PlansetDir) == "" {
+			return nil, errors.New("deepresearchbench structured subtasks requires a planset directory")
+		}
+		switch copied.Order {
+		case "sequential", "shuffled", "adversarial":
+		default:
+			return nil, errors.New(`deepresearchbench structured subtasks order must be "sequential", "shuffled", or "adversarial"`)
+		}
+		if copied.Order == "shuffled" && copied.Seed == 0 {
+			return nil, errors.New("deepresearchbench structured subtasks requires a non-zero seed when order is shuffled")
+		}
+		structuredSubtasks = &copied
 	}
 	var race raceScorer
 	if !options.JudgeDisabled {
@@ -385,7 +509,21 @@ func New(options Options) (*Benchmark, error) {
 		fact:             fact,
 		factSkipReason:   factSkipReason,
 		rewardThreshold:  rewardThreshold,
+
+		planOnly:           options.PlanOnly,
+		plansetDir:         cleanOptionalDir(options.PlansetDir),
+		structuredSubtasks: structuredSubtasks,
 	}, nil
+}
+
+// cleanOptionalDir applies filepath.Clean only to a non-empty path, so an
+// unset directory option (not applicable to this benchmark instance) stays
+// the empty string rather than becoming ".".
+func cleanOptionalDir(path string) string {
+	if path == "" {
+		return ""
+	}
+	return filepath.Clean(path)
 }
 
 // FactSkipReason reports why FACT is disabled despite being configured
@@ -444,9 +582,16 @@ func (b *Benchmark) Tasks(ctx context.Context) ([]core.Task, error) {
 		}
 		executionID := b.executionTaskIDs[index]
 		numericIDs[executionID] = numericID
+		instruction := applyPromptTemplate(taskPromptTemplate, prompt) + reportInstruction
+		if b.planOnly {
+			// Plan-generation instructions deliberately omit reportInstruction
+			// and the citation-format rules: this pass never touches
+			// reportPath at all, only planPath.
+			instruction = applyPromptTemplate(planPromptTemplate, prompt)
+		}
 		tasks = append(tasks, core.Task{
 			ID:          executionID,
-			Instruction: applyPromptTemplate(taskPromptTemplate, prompt) + reportInstruction,
+			Instruction: instruction,
 			Timeout:     b.taskTimeout,
 			Environment: b.environment,
 		})

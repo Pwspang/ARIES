@@ -106,8 +106,8 @@ func TestManagerProxiesSSHExecToSandboxAndRetainsReplayableToolLog(t *testing.T)
 	}
 	assertDynamicLoopbackEndpoint(t, endpoint)
 	wantLogPaths := []string{
-		filepath.Join(outputDir, "contract-task", "bridge", "tool-calls.jsonl"),
-		filepath.Join(outputDir, "contract-task", "bridge", "ssh_raw.log"),
+		filepath.Join(outputDir, "contract-task", "bridge-turn-01", "tool-calls.jsonl"),
+		filepath.Join(outputDir, "contract-task", "bridge-turn-01", "ssh_raw.log"),
 	}
 	if !reflect.DeepEqual(endpoint.LogPaths, wantLogPaths) {
 		t.Fatalf("tool log path = %q", endpoint.LogPaths)
@@ -273,6 +273,44 @@ func TestManagerRejectsMalformedSSHExecWithoutSandboxExecution(t *testing.T) {
 	payload := unescapeRawValue(t, rawRecords[0]["payload"])
 	if !bytes.Equal(payload, ssh.Marshal(struct{ Command string }{malformed})) || rawRecords[0]["wire_command"] != malformed || rawRecords[0]["stdin"] != "" {
 		t.Fatalf("raw rejection evidence = %#v payload=%x", rawRecords[0], payload)
+	}
+}
+
+func TestManagerSupportsSequentialStartCyclesForSameTask(t *testing.T) {
+	outputDir := t.TempDir()
+	manager := newContractManager(t, outputDir)
+	sandbox := &contractSandbox{result: core.CommandResult{ExitCode: 0}}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	firstEndpoint, err := manager.Start(ctx, sandbox)
+	if err != nil {
+		t.Fatalf("first Start: %v", err)
+	}
+	wantFirst := []string{
+		filepath.Join(outputDir, "contract-task", "bridge-turn-01", "tool-calls.jsonl"),
+		filepath.Join(outputDir, "contract-task", "bridge-turn-01", "ssh_raw.log"),
+	}
+	if !reflect.DeepEqual(firstEndpoint.LogPaths, wantFirst) {
+		t.Fatalf("first turn log paths = %q, want %q", firstEndpoint.LogPaths, wantFirst)
+	}
+	if err := manager.Stop(ctx); err != nil {
+		t.Fatalf("first Stop: %v", err)
+	}
+
+	secondEndpoint, err := manager.Start(ctx, sandbox)
+	if err != nil {
+		t.Fatalf("second Start after Stop unexpectedly failed (turn-scoped artifact paths should not collide): %v", err)
+	}
+	wantSecond := []string{
+		filepath.Join(outputDir, "contract-task", "bridge-turn-02", "tool-calls.jsonl"),
+		filepath.Join(outputDir, "contract-task", "bridge-turn-02", "ssh_raw.log"),
+	}
+	if !reflect.DeepEqual(secondEndpoint.LogPaths, wantSecond) {
+		t.Fatalf("second turn log paths = %q, want %q", secondEndpoint.LogPaths, wantSecond)
+	}
+	if err := manager.Stop(ctx); err != nil {
+		t.Fatalf("second Stop: %v", err)
 	}
 }
 

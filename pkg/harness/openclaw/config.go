@@ -131,6 +131,12 @@ type providerConfig struct {
 type modelRecord struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+	// MaxTokens is a best-effort attempt to bound the model's completion
+	// length (see core.ModelConfig.MaxOutputTokens); OpenClaw's provider/
+	// model-catalog schema is not vendored in this repo, so this field name
+	// is unverified against OpenClaw's actual config parser. Omitted
+	// entirely when unset, matching today's behavior.
+	MaxTokens int `json:"maxTokens,omitempty"`
 }
 
 type agentsConfig struct {
@@ -198,7 +204,7 @@ func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchE
 					BaseURL: model.BaseURL,
 					APIKey:  "${" + model.APIKeyEnv + "}",
 					API:     "openai-completions",
-					Models:  []modelRecord{{ID: model.Model, Name: model.Model}},
+					Models:  []modelRecord{{ID: model.Model, Name: model.Model, MaxTokens: model.MaxOutputTokens}},
 				},
 			},
 		},
