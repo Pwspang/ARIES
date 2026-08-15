@@ -23,7 +23,7 @@ func testModel() core.ModelConfig {
 }
 
 func TestRenderConfigLocksProviderSharedSSHAndPlaceholder(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, false, false, false, 0)
+	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, false, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestRenderConfigLocksProviderSharedSSHAndPlaceholder(t *testing.T) {
 }
 
 func TestRenderConfigOmitsMaxTokensWhenUnset(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, false, false, false, 0)
+	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, false, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestRenderConfigOmitsMaxTokensWhenUnset(t *testing.T) {
 func TestRenderConfigSetsMaxTokensWhenConfigured(t *testing.T) {
 	model := testModel()
 	model.MaxOutputTokens = 32000
-	content, err := renderConfig(model, testEndpoint(), false, false, false, false, 0)
+	content, err := renderConfig(model, testEndpoint(), false, "", false, false, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestRenderConfigSelectsSGLangProviderWithoutSerializingKey(t *testing.T) {
 	model := testModel()
 	model.Provider = "sglang"
 	model.APIKeyEnv = "SGLANG_API_KEY"
-	content, err := renderConfig(model, testEndpoint(), false, false, false, false, 0)
+	content, err := renderConfig(model, testEndpoint(), false, "", false, false, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestRenderConfigNormalizesAndStrictlyValidatesSGLangBaseURL(t *testing.T) {
 	model := testModel()
 	model.Provider = "sglang"
 	model.BaseURL += "/"
-	content, err := renderConfig(model, testEndpoint(), false, false, false, false, 0)
+	content, err := renderConfig(model, testEndpoint(), false, "", false, false, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestRenderConfigNormalizesAndStrictlyValidatesSGLangBaseURL(t *testing.T) {
 	}
 	for _, invalid := range []string{"http://host/v1/v1", "http://host/v1?", "http://host/v%31"} {
 		model.BaseURL = invalid
-		if _, err := renderConfig(model, testEndpoint(), false, false, false, false, 0); err == nil {
+		if _, err := renderConfig(model, testEndpoint(), false, "", false, false, 0); err == nil {
 			t.Fatalf("accepted SGLang base URL %q", invalid)
 		}
 	}
@@ -138,7 +138,7 @@ func TestRenderConfigRejectsInvalidInputs(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			model, endpoint := testModel(), testEndpoint()
 			mutate(&model, &endpoint)
-			if _, err := renderConfig(model, endpoint, false, false, false, false, 0); err == nil {
+			if _, err := renderConfig(model, endpoint, false, "", false, false, 0); err == nil {
 				t.Fatal("invalid input was accepted")
 			}
 		})
@@ -148,13 +148,13 @@ func TestRenderConfigRejectsInvalidInputs(t *testing.T) {
 func TestRenderConfigAcceptsLowercaseEnvironmentName(t *testing.T) {
 	model := testModel()
 	model.APIKeyEnv = "aries_fake_api_key"
-	if _, err := renderConfig(model, testEndpoint(), false, false, false, false, 0); err != nil {
+	if _, err := renderConfig(model, testEndpoint(), false, "", false, false, 0); err != nil {
 		t.Fatalf("renderConfig() rejected a valid environment name: %v", err)
 	}
 }
 
 func TestRenderConfigOmitsWebSearchWhenDisabled(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, false, false, false, 0)
+	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, false, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +174,7 @@ func TestRenderConfigOmitsWebSearchWhenDisabled(t *testing.T) {
 }
 
 func TestRenderConfigEnablesSearXNGWebSearch(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), true, false, false, false, 0)
+	content, err := renderConfig(testModel(), testEndpoint(), true, "", false, false, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +205,7 @@ func TestRenderConfigEnablesSearXNGWebSearch(t *testing.T) {
 }
 
 func TestRenderConfigEnablesTavilyExtractAlongsideSearXNGSearch(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), true, false, true, false, 0)
+	content, err := renderConfig(testModel(), testEndpoint(), true, "", true, false, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +240,7 @@ func TestRenderConfigEnablesTavilyExtractAlongsideSearXNGSearch(t *testing.T) {
 }
 
 func TestRenderConfigUsesFirecrawlAsSearchProvider(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), true, true, false, false, 0)
+	content, err := renderConfig(testModel(), testEndpoint(), true, "firecrawl", false, false, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +268,7 @@ func TestRenderConfigUsesFirecrawlAsSearchProvider(t *testing.T) {
 }
 
 func TestRenderConfigCombinesFirecrawlSearchWithTavilyExtract(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), true, true, true, false, 0)
+	content, err := renderConfig(testModel(), testEndpoint(), true, "firecrawl", true, false, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,8 +288,59 @@ func TestRenderConfigCombinesFirecrawlSearchWithTavilyExtract(t *testing.T) {
 	}
 }
 
+func TestRenderConfigUsesTavilyAsSearchProvider(t *testing.T) {
+	content, err := renderConfig(testModel(), testEndpoint(), true, "tavily", false, false, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var configuration openClawConfig
+	if err := json.Unmarshal(content, &configuration); err != nil {
+		t.Fatal(err)
+	}
+	if configuration.Tools.Web == nil || configuration.Tools.Web.Search == nil || configuration.Tools.Web.Search.Provider != "tavily" {
+		t.Fatalf("tools.web.search = %#v, want provider tavily", configuration.Tools.Web)
+	}
+	if _, ok := configuration.Plugins.Entries["searxng"]; ok {
+		t.Fatalf("plugins.entries = %#v, want no searxng entry when tavily is the provider", configuration.Plugins.Entries)
+	}
+	tavilyEntry, ok := configuration.Plugins.Entries["tavily"]
+	if !ok || !tavilyEntry.Enabled || tavilyEntry.Config != nil {
+		t.Fatalf("plugins.entries.tavily = %#v, want enabled with no config/apiKey serialized", configuration.Plugins.Entries)
+	}
+	if len(configuration.Plugins.Allow) != 1 || configuration.Plugins.Allow[0] != "tavily" {
+		t.Fatalf("plugins.allow = %#v, want [\"tavily\"]", configuration.Plugins.Allow)
+	}
+	alsoAllow := configuration.Tools.Sandbox.Tools.AlsoAllow
+	if len(alsoAllow) != 2 || alsoAllow[0] != "web_search" || alsoAllow[1] != "web_fetch" {
+		t.Fatalf("tools.sandbox.tools.alsoAllow = %#v, want unchanged (no tavily_extract without extract enabled)", alsoAllow)
+	}
+}
+
+func TestRenderConfigTavilySearchAndExtractShareOnePluginEntry(t *testing.T) {
+	content, err := renderConfig(testModel(), testEndpoint(), true, "tavily", true, false, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var configuration openClawConfig
+	if err := json.Unmarshal(content, &configuration); err != nil {
+		t.Fatal(err)
+	}
+	if configuration.Tools.Web.Search.Provider != "tavily" {
+		t.Fatalf("tools.web.search.provider = %q, want tavily", configuration.Tools.Web.Search.Provider)
+	}
+	// The same "tavily" plugin backs both capabilities here: allow must list
+	// it exactly once, not once per capability.
+	if len(configuration.Plugins.Allow) != 1 || configuration.Plugins.Allow[0] != "tavily" {
+		t.Fatalf("plugins.allow = %#v, want [\"tavily\"] (deduplicated)", configuration.Plugins.Allow)
+	}
+	alsoAllow := configuration.Tools.Sandbox.Tools.AlsoAllow
+	if len(alsoAllow) != 3 || alsoAllow[2] != "tavily_extract" {
+		t.Fatalf("tools.sandbox.tools.alsoAllow = %#v, want tavily_extract appended", alsoAllow)
+	}
+}
+
 func TestRenderConfigIgnoresExtractWhenWebSearchDisabled(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, false, true, false, 0)
+	content, err := renderConfig(testModel(), testEndpoint(), false, "", true, false, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,7 +357,7 @@ func TestRenderConfigIgnoresExtractWhenWebSearchDisabled(t *testing.T) {
 }
 
 func TestRenderConfigAllowsSubagentsWhenEnabled(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, false, false, true, 0)
+	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, true, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +371,7 @@ func TestRenderConfigAllowsSubagentsWhenEnabled(t *testing.T) {
 }
 
 func TestRenderConfigSetsMaxConcurrentSubagentsWhenEnabled(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, false, false, true, 2)
+	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, true, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +385,7 @@ func TestRenderConfigSetsMaxConcurrentSubagentsWhenEnabled(t *testing.T) {
 }
 
 func TestRenderConfigOmitsSubagentsBlockWhenNoLimitSet(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, false, false, true, 0)
+	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, true, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +399,7 @@ func TestRenderConfigOmitsSubagentsBlockWhenNoLimitSet(t *testing.T) {
 }
 
 func TestRenderConfigIgnoresMaxConcurrentWhenSubagentsDisabled(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, false, false, false, 2)
+	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, false, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,7 +413,7 @@ func TestRenderConfigIgnoresMaxConcurrentWhenSubagentsDisabled(t *testing.T) {
 }
 
 func TestLauncherUsesFileSecretAndDirectExec(t *testing.T) {
-	script := string(launcherScript("ARIES_FAKE_API_KEY", "OPENAI_API_KEY", false, false))
+	script := string(launcherScript("ARIES_FAKE_API_KEY", "OPENAI_API_KEY", false, false, false))
 	for _, required := range []string{"model_key=$(cat /run/aries/model.key)", "gateway_key=$(cat /run/aries/gateway.key)", "export ARIES_FAKE_API_KEY=\"$model_key\"", "export OPENCLAW_GATEWAY_TOKEN=\"$gateway_key\"", "exec \"$@\""} {
 		if !strings.Contains(script, required) {
 			t.Fatalf("launcher missing %q: %s", required, script)
@@ -373,34 +424,53 @@ func TestLauncherUsesFileSecretAndDirectExec(t *testing.T) {
 			t.Fatalf("launcher missing realtime export %q: %s", required, script)
 		}
 	}
-	agentScript := string(launcherScript("ARIES_FAKE_API_KEY", "", false, false))
+	agentScript := string(launcherScript("ARIES_FAKE_API_KEY", "", false, false, false))
 	if strings.Contains(agentScript, "realtime.key") || strings.Contains(agentScript, "OPENAI_API_KEY") {
 		t.Fatalf("agent launcher exports realtime key: %s", agentScript)
 	}
 }
 
 func TestLauncherExportsTavilyKeyWhenExtractEnabled(t *testing.T) {
-	script := string(launcherScript("ARIES_FAKE_API_KEY", "", true, false))
+	script := string(launcherScript("ARIES_FAKE_API_KEY", "", true, false, false))
 	for _, required := range []string{"tavily_key=$(cat /run/aries/tavily.key)", "export TAVILY_API_KEY=\"$tavily_key\"", "unset tavily_key"} {
 		if !strings.Contains(script, required) {
 			t.Fatalf("launcher missing tavily export %q: %s", required, script)
 		}
 	}
-	disabledScript := string(launcherScript("ARIES_FAKE_API_KEY", "", false, false))
+	disabledScript := string(launcherScript("ARIES_FAKE_API_KEY", "", false, false, false))
 	if strings.Contains(disabledScript, "tavily.key") || strings.Contains(disabledScript, "TAVILY_API_KEY") {
 		t.Fatalf("launcher exports tavily key when extract is disabled: %s", disabledScript)
 	}
 }
 
 func TestLauncherExportsFirecrawlKeyWhenEnabled(t *testing.T) {
-	script := string(launcherScript("ARIES_FAKE_API_KEY", "", false, true))
+	script := string(launcherScript("ARIES_FAKE_API_KEY", "", false, true, false))
 	for _, required := range []string{"firecrawl_key=$(cat /run/aries/firecrawl.key)", "export FIRECRAWL_API_KEY=\"$firecrawl_key\"", "unset firecrawl_key"} {
 		if !strings.Contains(script, required) {
 			t.Fatalf("launcher missing firecrawl export %q: %s", required, script)
 		}
 	}
-	disabledScript := string(launcherScript("ARIES_FAKE_API_KEY", "", false, false))
+	disabledScript := string(launcherScript("ARIES_FAKE_API_KEY", "", false, false, false))
 	if strings.Contains(disabledScript, "firecrawl.key") || strings.Contains(disabledScript, "FIRECRAWL_API_KEY") {
 		t.Fatalf("launcher exports firecrawl key when disabled: %s", disabledScript)
+	}
+}
+
+func TestLauncherExportsTavilyKeyWhenSearchProviderEnabled(t *testing.T) {
+	script := string(launcherScript("ARIES_FAKE_API_KEY", "", false, false, true))
+	for _, required := range []string{"tavily_key=$(cat /run/aries/tavily.key)", "export TAVILY_API_KEY=\"$tavily_key\"", "unset tavily_key"} {
+		if !strings.Contains(script, required) {
+			t.Fatalf("launcher missing tavily export %q: %s", required, script)
+		}
+	}
+	// The export must fire exactly once even if both extract and the tavily
+	// search provider are enabled together (same underlying credential/env var).
+	combinedScript := string(launcherScript("ARIES_FAKE_API_KEY", "", true, false, true))
+	if strings.Count(combinedScript, "export TAVILY_API_KEY=") != 1 {
+		t.Fatalf("launcher exported TAVILY_API_KEY more than once: %s", combinedScript)
+	}
+	disabledScript := string(launcherScript("ARIES_FAKE_API_KEY", "", false, false, false))
+	if strings.Contains(disabledScript, "tavily.key") || strings.Contains(disabledScript, "TAVILY_API_KEY") {
+		t.Fatalf("launcher exports tavily key when disabled: %s", disabledScript)
 	}
 }
