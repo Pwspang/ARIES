@@ -68,6 +68,12 @@ func renderConfig(model core.ModelConfig, maxTurns int, webSearchEnabled, extrac
 	output.WriteString("  base_url: " + yamlString(model.BaseURL) + "\n")
 	output.WriteString("  api_key: " + yamlString("${"+model.APIKeyEnv+"}") + "\n")
 	output.WriteString("  api_mode: \"chat_completions\"\n")
+	if model.MaxOutputTokens > 0 {
+		// Best-effort; Hermes's own config schema is not vendored in this
+		// repo, so "max_tokens" here is unverified against its actual
+		// parser (see core.ModelConfig.MaxOutputTokens).
+		output.WriteString("  max_tokens: " + strconv.Itoa(model.MaxOutputTokens) + "\n")
+	}
 	output.WriteString("\nagent:\n")
 	output.WriteString("  max_turns: " + strconv.Itoa(maxTurns) + "\n")
 	if !subagentsEnabled {

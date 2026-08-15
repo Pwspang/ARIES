@@ -13,6 +13,19 @@ type Benchmark interface {
 	Evaluate(context.Context, core.Task, Sandbox) (core.Evaluation, error)
 }
 
+// MultiTurnBenchmark is an additive, optional capability a Benchmark may
+// implement to request more than one agent session against the same
+// sandbox. Benchmarks that do not implement it keep today's exact
+// single-cycle Runner behavior.
+type MultiTurnBenchmark interface {
+	Benchmark
+	// NextTurn returns the instruction for the next agent session given the
+	// zero-based turnIndex about to run, with direct sandbox access to
+	// inspect artifacts left by prior turns. ok=false ends the loop; Runner
+	// then calls Evaluate against the same sandbox exactly as it does today.
+	NextTurn(ctx context.Context, task core.Task, turnIndex int, sandbox Sandbox) (instruction string, ok bool, err error)
+}
+
 // AgentHarness owns one task-local agent runtime.
 type AgentHarness interface {
 	Start(context.Context, core.HarnessRequest) error

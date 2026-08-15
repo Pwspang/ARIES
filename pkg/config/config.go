@@ -79,6 +79,10 @@ type ProfileModel struct {
 	ID        string `json:"id"`
 	BaseURL   string `json:"base_url"`
 	APIKeyEnv string `json:"api_key_env"`
+	// MaxOutputTokens bounds the harness model's completion length; see
+	// core.ModelConfig.MaxOutputTokens. Zero (the default) leaves the
+	// provider's own default in place.
+	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
 }
 
 type BenchmarkConfig struct {
@@ -88,6 +92,34 @@ type BenchmarkConfig struct {
 	Environment *BenchmarkEnvironment `json:"environment,omitempty"`
 	Judge       *JudgeConfig          `json:"judge,omitempty"`
 	Fact        *FactConfig           `json:"fact,omitempty"`
+
+	// PlanOnly and PlansetDir configure Deep Research Bench's plan-generation
+	// pass (see pkg/benchmark/deepresearchbench.Options.PlanOnly): each task
+	// is wrapped in a minimal decomposition prompt instead of the full
+	// research prompt, and Evaluate captures the resulting plan into
+	// PlansetDir instead of running RACE/FACT. Mutually exclusive with
+	// StructuredSubtasks (see validateBenchmarkType).
+	PlanOnly   bool   `json:"plan_only,omitempty"`
+	PlansetDir string `json:"planset_dir,omitempty"`
+
+	// StructuredSubtasks configures Deep Research Bench's structured
+	// execution pass (see
+	// pkg/benchmark/deepresearchbench.Options.StructuredSubtasks): nil (the
+	// default) keeps today's single-turn behavior. Mutually exclusive with
+	// PlanOnly.
+	StructuredSubtasks *StructuredSubtasksConfig `json:"structured_subtasks,omitempty"`
+}
+
+// StructuredSubtasksConfig mirrors
+// pkg/benchmark/deepresearchbench.StructuredSubtasksOptions. PlansetDir
+// reuses BenchmarkConfig.PlansetDir's own json tag ("planset_dir") deliberately:
+// both name the same "directory of per-task plan files" concept, just for
+// different passes over the same task set, so there is no reason to give
+// them distinct field names.
+type StructuredSubtasksConfig struct {
+	PlansetDir string `json:"planset_dir"`
+	Order      string `json:"order"`
+	Seed       int64  `json:"seed,omitempty"`
 }
 
 // BenchmarkEnvironment describes the task sandbox for benchmarks (currently
@@ -240,7 +272,10 @@ func (c BridgeConfig) RetainBridgeRawLog() bool {
 }
 
 func (c Config) CoreModel() core.ModelConfig {
-	return core.ModelConfig{Provider: c.Runtime.Backend, BaseURL: c.Model.BaseURL, Model: c.Model.ID, APIKeyEnv: c.Model.APIKeyEnv}
+	return core.ModelConfig{
+		Provider: c.Runtime.Backend, BaseURL: c.Model.BaseURL, Model: c.Model.ID,
+		APIKeyEnv: c.Model.APIKeyEnv, MaxOutputTokens: c.Model.MaxOutputTokens,
+	}
 }
 
 // Versions contains the upstream version selections shared by profiles.
@@ -491,6 +526,9 @@ func (c *Config) validate() error {
 	if !validEnvName(c.Model.APIKeyEnv) {
 		return errors.New("model.api_key_env must be an environment variable name")
 	}
+	if c.Model.MaxOutputTokens < 0 {
+		return errors.New("model.max_output_tokens must not be negative")
+	}
 	if err := c.validateBenchmarkType(); err != nil {
 		return err
 	}
@@ -521,6 +559,30 @@ func (c *Config) validateBenchmarkType() error {
 	case "deepresearchbench":
 		if c.Benchmark.Environment == nil || strings.TrimSpace(c.Benchmark.Environment.Image) == "" {
 			return errors.New("benchmark.environment.image is required for deepresearchbench")
+		}
+		if c.Benchmark.PlanOnly && c.Benchmark.StructuredSubtasks != nil {
+			return errors.New("benchmark.plan_only and benchmark.structured_subtasks are mutually exclusive")
+		}
+		if c.Benchmark.PlanOnly {
+			if judge := c.Benchmark.Judge; judge == nil || judge.Enabled == nil || *judge.Enabled {
+				return errors.New("benchmark.plan_only requires judge.enabled to be explicitly false")
+			}
+			if strings.TrimSpace(c.Benchmark.PlansetDir) == "" {
+				return errors.New("benchmark.planset_dir is required when benchmark.plan_only is true")
+			}
+		}
+		if structured := c.Benchmark.StructuredSubtasks; structured != nil {
+			if strings.TrimSpace(structured.PlansetDir) == "" {
+				return errors.New("benchmark.structured_subtasks.planset_dir is required")
+			}
+			switch structured.Order {
+			case "sequential", "shuffled", "adversarial":
+			default:
+				return errors.New(`benchmark.structured_subtasks.order must be "sequential", "shuffled", or "adversarial"`)
+			}
+			if structured.Order == "shuffled" && structured.Seed == 0 {
+				return errors.New("benchmark.structured_subtasks.seed is required (non-zero) when order is shuffled")
+			}
 		}
 		if judge := c.Benchmark.Judge; judge != nil {
 			if judge.Enabled != nil && !*judge.Enabled {
@@ -573,6 +635,12 @@ func (c *Config) validateBenchmarkType() error {
 		}
 		if c.Benchmark.Fact != nil {
 			return errors.New("fact must not be set for terminalbench2")
+		}
+		if c.Benchmark.PlanOnly || c.Benchmark.PlansetDir != "" {
+			return errors.New("benchmark.plan_only and benchmark.planset_dir must not be set for terminalbench2")
+		}
+		if c.Benchmark.StructuredSubtasks != nil {
+			return errors.New("benchmark.structured_subtasks must not be set for terminalbench2")
 		}
 		return nil
 	default:

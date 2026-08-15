@@ -82,6 +82,14 @@ type ModelConfig struct {
 	BaseURL   string `json:"base_url"`
 	Model     string `json:"model"`
 	APIKeyEnv string `json:"api_key_env"`
+	// MaxOutputTokens bounds the harness model's completion length. Zero
+	// means unset: the provider's own default applies, unchanged from
+	// before this field existed. Providers like DeepSeek document no
+	// numeric default for their newer models and silently truncate long
+	// completions (finish_reason "length") when the client never sends an
+	// explicit value, so this exists to let a profile ask for a larger
+	// budget than that undocumented default.
+	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
 }
 
 // ToolEndpoint is the bridge endpoint and task-local file contract given to a
@@ -174,11 +182,18 @@ type TaskResult struct {
 	TaskID       string          `json:"task_id"`
 	ToolLogPaths []string        `json:"tool_log_paths,omitempty"`
 	Harness      HarnessResult   `json:"harness"`
-	Isolation    IsolationResult `json:"isolation"`
-	Evaluation   Evaluation      `json:"evaluation"`
-	Observer     ObserverResult  `json:"observer"`
-	Cleanup      CleanupResult   `json:"cleanup"`
-	Duration     time.Duration   `json:"duration"`
+	// Turns records every agent-session turn's HarnessResult for multi-turn
+	// benchmarks (see runner.MultiTurnBenchmark), in execution order. Harness
+	// always holds the *last* turn's result (or the only turn's result for
+	// today's single-cycle benchmarks) so anything reading Harness behaves the
+	// same regardless of how many turns ran. Turns is purely additional
+	// debugging data and is not counted by RunSummary.
+	Turns      []HarnessResult `json:"turns,omitempty"`
+	Isolation  IsolationResult `json:"isolation"`
+	Evaluation Evaluation      `json:"evaluation"`
+	Observer   ObserverResult  `json:"observer"`
+	Cleanup    CleanupResult   `json:"cleanup"`
+	Duration   time.Duration   `json:"duration"`
 }
 
 // RunSummary is a direct count of task outcomes.

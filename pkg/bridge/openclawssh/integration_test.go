@@ -95,8 +95,8 @@ func TestBridgeExecMutatesTheEvaluatorSandbox(t *testing.T) {
 		t.Fatal("bridge listener still accepts connections after Stop")
 	}
 	wantLogPaths := []string{
-		filepath.Join(outputDir, "same-state", "bridge", "tool-calls.jsonl"),
-		filepath.Join(outputDir, "same-state", "bridge", "ssh_raw.log"),
+		filepath.Join(outputDir, "same-state", "bridge-turn-01", "tool-calls.jsonl"),
+		filepath.Join(outputDir, "same-state", "bridge-turn-01", "ssh_raw.log"),
 	}
 	if !slices.Equal(endpoint.LogPaths, wantLogPaths) {
 		t.Fatalf("log paths = %q, want %q", endpoint.LogPaths, wantLogPaths)

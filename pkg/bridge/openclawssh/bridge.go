@@ -64,11 +64,12 @@ type Manager struct {
 	afterStart     func(*bridgeSession) error
 	omitRawLog     bool
 
-	mu       sync.Mutex
-	active   *bridgeSession
-	stopping bool
-	stopDone chan struct{}
-	stopErr  error
+	mu        sync.Mutex
+	active    *bridgeSession
+	stopping  bool
+	stopDone  chan struct{}
+	stopErr   error
+	turnCount int
 }
 
 type bridgeSandbox interface {
@@ -584,7 +585,8 @@ func (manager *Manager) Start(ctx context.Context, generic runner.Sandbox) (core
 		sandbox: sandbox, connections: make(map[net.Conn]struct{}),
 		replyRequest: func(request *ssh.Request, accepted bool) error { return request.Reply(accepted, nil) },
 	}
-	session.artifactDir = filepath.Join(manager.outputDir, sandbox.TaskID(), "bridge")
+	manager.turnCount++
+	session.artifactDir = filepath.Join(manager.outputDir, sandbox.TaskID(), fmt.Sprintf("bridge-turn-%02d", manager.turnCount))
 	fail := func(primary error) (core.ToolEndpoint, error) {
 		session.partialStart = true
 		session.revoke()

@@ -137,13 +137,16 @@ func newBenchmark(cfg config.Config, outputRoot, logicalID, occurrenceID string,
 		judgeModel, factModel, jinaAPIKeyEnv, judgeDisabled := deepresearchbenchModels(cfg)
 		benchmark, err := deepresearchbench.New(deepresearchbench.Options{
 			Root: cfg.Benchmark.Root, TaskIDs: []string{logicalID}, ExecutionTaskIDs: executionIDs, OutputDir: outputRoot,
-			Revision:      cfg.Versions.DeepResearchBench.Revision,
-			Environment:   environmentFromConfig(cfg.Benchmark.Environment),
-			Judge:         judgeModel,
-			JudgeDisabled: judgeDisabled,
-			FactJudge:     factModel,
-			JinaAPIKeyEnv: jinaAPIKeyEnv,
-			APIKeyLookup:  lookup,
+			Revision:           cfg.Versions.DeepResearchBench.Revision,
+			Environment:        environmentFromConfig(cfg.Benchmark.Environment),
+			Judge:              judgeModel,
+			JudgeDisabled:      judgeDisabled,
+			FactJudge:          factModel,
+			JinaAPIKeyEnv:      jinaAPIKeyEnv,
+			APIKeyLookup:       lookup,
+			PlanOnly:           cfg.Benchmark.PlanOnly,
+			PlansetDir:         cfg.Benchmark.PlansetDir,
+			StructuredSubtasks: structuredSubtasksOptions(cfg),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("construct deepresearchbench benchmark: %w", err)
@@ -183,6 +186,22 @@ func deepresearchbenchModels(cfg config.Config) (judge, fact core.ModelConfig, j
 		}
 	}
 	return judge, fact, jinaAPIKeyEnv, judgeDisabled
+}
+
+// structuredSubtasksOptions converts a profile's benchmark.structured_subtasks
+// block into deepresearchbench.StructuredSubtasksOptions, mirroring how
+// RandomizeSubtasks-style optional blocks are threaded elsewhere in this
+// file. Returns nil (today's single-turn behavior) when the block is absent.
+func structuredSubtasksOptions(cfg config.Config) *deepresearchbench.StructuredSubtasksOptions {
+	structured := cfg.Benchmark.StructuredSubtasks
+	if structured == nil {
+		return nil
+	}
+	return &deepresearchbench.StructuredSubtasksOptions{
+		PlansetDir: structured.PlansetDir,
+		Order:      structured.Order,
+		Seed:       structured.Seed,
+	}
 }
 
 // environmentFromConfig converts a profile's benchmark.environment block into
@@ -342,13 +361,16 @@ func loadPreparationTasks(ctx context.Context, cfg config.Config, taskIDs []stri
 		judgeModel, factModel, jinaAPIKeyEnv, judgeDisabled := deepresearchbenchModels(cfg)
 		benchmark, err := deepresearchbench.New(deepresearchbench.Options{
 			Root: cfg.Benchmark.Root, TaskIDs: taskIDs, OutputDir: cfg.OutputDir,
-			Revision:      cfg.Versions.DeepResearchBench.Revision,
-			Environment:   environmentFromConfig(cfg.Benchmark.Environment),
-			Judge:         judgeModel,
-			JudgeDisabled: judgeDisabled,
-			FactJudge:     factModel,
-			JinaAPIKeyEnv: jinaAPIKeyEnv,
-			APIKeyLookup:  lookup,
+			Revision:           cfg.Versions.DeepResearchBench.Revision,
+			Environment:        environmentFromConfig(cfg.Benchmark.Environment),
+			Judge:              judgeModel,
+			JudgeDisabled:      judgeDisabled,
+			FactJudge:          factModel,
+			JinaAPIKeyEnv:      jinaAPIKeyEnv,
+			APIKeyLookup:       lookup,
+			PlanOnly:           cfg.Benchmark.PlanOnly,
+			PlansetDir:         cfg.Benchmark.PlansetDir,
+			StructuredSubtasks: structuredSubtasksOptions(cfg),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("validate deepresearchbench profile: %w", err)

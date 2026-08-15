@@ -233,6 +233,25 @@ func TestSubagentsMaxConcurrentValidation(t *testing.T) {
 	}
 }
 
+func TestModelMaxOutputTokensValidation(t *testing.T) {
+	limited := strings.Replace(validConfig, `"api_key_env":"DEEPSEEK_API_KEY"}`, `"api_key_env":"DEEPSEEK_API_KEY","max_output_tokens":32000}`, 1)
+	cfg, err := Decode(strings.NewReader(limited))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Model.MaxOutputTokens != 32000 {
+		t.Fatalf("model.max_output_tokens = %d, want 32000", cfg.Model.MaxOutputTokens)
+	}
+	if cfg.CoreModel().MaxOutputTokens != 32000 {
+		t.Fatalf("CoreModel().MaxOutputTokens = %d, want 32000", cfg.CoreModel().MaxOutputTokens)
+	}
+
+	negative := strings.Replace(validConfig, `"api_key_env":"DEEPSEEK_API_KEY"}`, `"api_key_env":"DEEPSEEK_API_KEY","max_output_tokens":-1}`, 1)
+	if _, err := Decode(strings.NewReader(negative)); err == nil {
+		t.Fatal("expected rejection of a negative model.max_output_tokens")
+	}
+}
+
 func TestRejectsLegacyRuntimeFields(t *testing.T) {
 	cases := map[string]string{
 		"sglang_file":    strings.Replace(validConfig, `"versions_file":"../configs/versions.json",`, `"versions_file":"../configs/versions.json","sglang_file":"native.yaml",`, 1),
@@ -368,6 +387,79 @@ func TestJudgeDisabledValidation(t *testing.T) {
 	}
 }
 
+const validPlanOnlyDeepResearchBenchConfig = `{
+  "name":"test-run","versions_file":"../configs/versions.json",
+  "benchmark":{"type":"deepresearchbench","root":".cache/drb","tasks":["1"],"environment":{"image":"aries/drb:latest","workdir":"/workspace"},
+    "judge":{"enabled":false},"plan_only":true,"planset_dir":"plansets/test-v1"},
+  "harness":{"type":"openclaw"},"sandbox":{"type":"docker"},"bridge":{"type":"openclaw-ssh"},
+  "runtime":{"backend":"deepseek","mode":"external"},
+  "model":{"id":"fake","base_url":"http://127.0.0.1:8080","api_key_env":"DEEPSEEK_API_KEY"}
+}`
+
+const validStructuredSubtasksDeepResearchBenchConfig = `{
+  "name":"test-run","versions_file":"../configs/versions.json",
+  "benchmark":{"type":"deepresearchbench","root":".cache/drb","tasks":["1"],"environment":{"image":"aries/drb:latest","workdir":"/workspace"},
+    "judge":{"provider":"openai","base_url":"https://api.openai.com/v1","model":"gpt-4.1","api_key_env":"OPENAI_API_KEY"},
+    "structured_subtasks":{"planset_dir":"plansets/test-v1","order":"sequential"}},
+  "harness":{"type":"openclaw"},"sandbox":{"type":"docker"},"bridge":{"type":"openclaw-ssh"},
+  "runtime":{"backend":"deepseek","mode":"external"},
+  "model":{"id":"fake","base_url":"http://127.0.0.1:8080","api_key_env":"DEEPSEEK_API_KEY"}
+}`
+
+func TestPlanOnlyValidation(t *testing.T) {
+	if _, err := Decode(strings.NewReader(validPlanOnlyDeepResearchBenchConfig)); err != nil {
+		t.Fatalf("valid plan-only config rejected: %v", err)
+	}
+
+	judgeEnabled := strings.Replace(validPlanOnlyDeepResearchBenchConfig, `"judge":{"enabled":false}`, `"judge":{"provider":"openai","base_url":"https://api.openai.com/v1","model":"gpt-4.1","api_key_env":"OPENAI_API_KEY"}`, 1)
+	if _, err := Decode(strings.NewReader(judgeEnabled)); err == nil {
+		t.Fatal("expected rejection of plan_only with the judge enabled")
+	}
+
+	noJudgeBlock := strings.Replace(validPlanOnlyDeepResearchBenchConfig, `"judge":{"enabled":false},`, ``, 1)
+	if _, err := Decode(strings.NewReader(noJudgeBlock)); err == nil {
+		t.Fatal("expected rejection of plan_only with no judge block at all (defaults to enabled)")
+	}
+
+	noPlansetDir := strings.Replace(validPlanOnlyDeepResearchBenchConfig, `,"planset_dir":"plansets/test-v1"`, ``, 1)
+	if _, err := Decode(strings.NewReader(noPlansetDir)); err == nil {
+		t.Fatal("expected rejection of plan_only with no planset_dir")
+	}
+
+	withStructuredSubtasks := strings.Replace(validPlanOnlyDeepResearchBenchConfig,
+		`"plan_only":true,"planset_dir":"plansets/test-v1"`,
+		`"plan_only":true,"planset_dir":"plansets/test-v1","structured_subtasks":{"planset_dir":"plansets/test-v1","order":"sequential"}`, 1)
+	if _, err := Decode(strings.NewReader(withStructuredSubtasks)); err == nil {
+		t.Fatal("expected rejection of plan_only combined with structured_subtasks")
+	}
+}
+
+func TestStructuredSubtasksValidation(t *testing.T) {
+	if _, err := Decode(strings.NewReader(validStructuredSubtasksDeepResearchBenchConfig)); err != nil {
+		t.Fatalf("valid structured_subtasks config rejected: %v", err)
+	}
+
+	noPlansetDir := strings.Replace(validStructuredSubtasksDeepResearchBenchConfig, `"planset_dir":"plansets/test-v1","order":"sequential"`, `"order":"sequential"`, 1)
+	if _, err := Decode(strings.NewReader(noPlansetDir)); err == nil {
+		t.Fatal("expected rejection of structured_subtasks with no planset_dir")
+	}
+
+	badOrder := strings.Replace(validStructuredSubtasksDeepResearchBenchConfig, `"order":"sequential"`, `"order":"random"`, 1)
+	if _, err := Decode(strings.NewReader(badOrder)); err == nil {
+		t.Fatal("expected rejection of an invalid structured_subtasks order")
+	}
+
+	shuffledNoSeed := strings.Replace(validStructuredSubtasksDeepResearchBenchConfig, `"order":"sequential"`, `"order":"shuffled"`, 1)
+	if _, err := Decode(strings.NewReader(shuffledNoSeed)); err == nil {
+		t.Fatal("expected rejection of order:shuffled with no seed")
+	}
+
+	shuffledWithSeed := strings.Replace(validStructuredSubtasksDeepResearchBenchConfig, `"order":"sequential"`, `"order":"shuffled","seed":42`, 1)
+	if _, err := Decode(strings.NewReader(shuffledWithSeed)); err != nil {
+		t.Fatalf("valid order:shuffled with a seed rejected: %v", err)
+	}
+}
+
 func TestTerminalBench2RejectsEnvironmentAndJudge(t *testing.T) {
 	cases := map[string]struct {
 		input   string
@@ -388,6 +480,14 @@ func TestTerminalBench2RejectsEnvironmentAndJudge(t *testing.T) {
 		"fact set": {
 			input:   strings.Replace(validConfig, `"benchmark":{"type":"terminalbench2","root":".cache/tb2","tasks":["fix-git"]}`, `"benchmark":{"type":"terminalbench2","root":".cache/tb2","tasks":["fix-git"],"fact":{"provider":"openai","base_url":"https://api.openai.com/v1","model":"gpt-4.1-mini","api_key_env":"OPENAI_API_KEY","jina_api_key_env":"JINA_API_KEY"}}`, 1),
 			wantErr: "fact must not be set for terminalbench2",
+		},
+		"plan_only set": {
+			input:   strings.Replace(validConfig, `"benchmark":{"type":"terminalbench2","root":".cache/tb2","tasks":["fix-git"]}`, `"benchmark":{"type":"terminalbench2","root":".cache/tb2","tasks":["fix-git"],"plan_only":true,"planset_dir":"plansets/x"}`, 1),
+			wantErr: "benchmark.plan_only and benchmark.planset_dir must not be set for terminalbench2",
+		},
+		"structured_subtasks set": {
+			input:   strings.Replace(validConfig, `"benchmark":{"type":"terminalbench2","root":".cache/tb2","tasks":["fix-git"]}`, `"benchmark":{"type":"terminalbench2","root":".cache/tb2","tasks":["fix-git"],"structured_subtasks":{"planset_dir":"plansets/x","order":"sequential"}}`, 1),
+			wantErr: "benchmark.structured_subtasks must not be set for terminalbench2",
 		},
 	}
 	for name, testCase := range cases {
@@ -466,7 +566,7 @@ func TestCheckedInProfilesLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 9 {
+	if len(paths) != 18 {
 		t.Fatalf("profiles=%v", paths)
 	}
 	for _, path := range paths {

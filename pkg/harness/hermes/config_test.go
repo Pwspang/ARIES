@@ -39,6 +39,28 @@ func TestRenderConfigReferencesCredentialByName(t *testing.T) {
 	}
 }
 
+func TestRenderConfigOmitsMaxTokensWhenUnset(t *testing.T) {
+	rendered, err := renderConfig(validModel(), 90, false, false, true, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(rendered), "max_tokens:") {
+		t.Fatalf("expected no max_tokens line when MaxOutputTokens is unset:\n%s", rendered)
+	}
+}
+
+func TestRenderConfigSetsMaxTokensWhenConfigured(t *testing.T) {
+	model := validModel()
+	model.MaxOutputTokens = 32000
+	rendered, err := renderConfig(model, 90, false, false, true, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(rendered), "max_tokens: 32000") {
+		t.Fatalf("expected max_tokens: 32000 in rendered config:\n%s", rendered)
+	}
+}
+
 func TestRenderConfigNormalizesSGLangAndRejectsBadInput(t *testing.T) {
 	model := validModel()
 	model.Provider = "sglang"

@@ -53,6 +53,33 @@ func TestRenderConfigLocksProviderSharedSSHAndPlaceholder(t *testing.T) {
 	}
 }
 
+func TestRenderConfigOmitsMaxTokensWhenUnset(t *testing.T) {
+	content, err := renderConfig(testModel(), testEndpoint(), false, false, false, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(content, []byte("maxTokens")) {
+		t.Fatalf("expected no maxTokens field when MaxOutputTokens is unset, got %s", content)
+	}
+}
+
+func TestRenderConfigSetsMaxTokensWhenConfigured(t *testing.T) {
+	model := testModel()
+	model.MaxOutputTokens = 32000
+	content, err := renderConfig(model, testEndpoint(), false, false, false, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var configuration openClawConfig
+	if err := json.Unmarshal(content, &configuration); err != nil {
+		t.Fatal(err)
+	}
+	provider := configuration.Models.Providers["aries"]
+	if len(provider.Models) != 1 || provider.Models[0].MaxTokens != 32000 {
+		t.Fatalf("provider models = %#v, want MaxTokens=32000", provider.Models)
+	}
+}
+
 func TestRenderConfigSelectsSGLangProviderWithoutSerializingKey(t *testing.T) {
 	model := testModel()
 	model.Provider = "sglang"

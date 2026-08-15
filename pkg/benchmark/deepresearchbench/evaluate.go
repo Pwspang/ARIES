@@ -45,6 +45,9 @@ type raceArtifact struct {
 // for a disabled Observer) and Score/Reward are 0, distinct from a run that
 // was graded and failed.
 func (b *Benchmark) Evaluate(ctx context.Context, task core.Task, sandbox runner.Sandbox) (core.Evaluation, error) {
+	if b.planOnly {
+		return b.evaluatePlan(ctx, task, sandbox)
+	}
 	started := time.Now()
 	evaluation := core.Evaluation{Status: core.StatusFailed, VerifierStatus: core.StatusFailed}
 	finish := func(err error) (core.Evaluation, error) {
