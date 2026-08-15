@@ -251,6 +251,7 @@ func newHarness(cfg config.Config, outputRoot string, lookup func(string) ([]byt
 			ExtractAPIKeyEnv:       cfg.Harness.WebSearch.ExtractAPIKeyEnv,
 			SearchProvider:         cfg.Harness.WebSearch.Provider,
 			FirecrawlAPIKeyEnv:     cfg.Harness.WebSearch.FirecrawlAPIKeyEnv,
+			TavilyAPIKeyEnv:        cfg.Harness.WebSearch.TavilyAPIKeyEnv,
 			SubagentsEnabled:       cfg.Harness.Subagents.Enabled != nil && *cfg.Harness.Subagents.Enabled,
 			MaxConcurrentSubagents: cfg.Harness.Subagents.MaxConcurrent,
 		})

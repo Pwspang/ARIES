@@ -196,12 +196,22 @@ type HarnessWebSearchConfig struct {
 	Enabled          bool   `json:"enabled,omitempty"`
 	ExtractAPIKeyEnv string `json:"extract_api_key_env,omitempty"`
 	// Provider selects the web_search tool's backend. Empty (the default)
-	// keeps today's behavior (OpenClaw's built-in SearXNG instance); the only
-	// other accepted value is "firecrawl", which replaces SearXNG entirely as
-	// the active tools.web.search.provider (see FirecrawlAPIKeyEnv) rather
-	// than layering alongside it the way ExtractAPIKeyEnv's Tavily plugin
-	// does. OpenClaw-only for now (see (*HarnessConfig).validate) — Hermes
-	// has its own analogous wiring that would need mirroring separately.
+	// keeps today's behavior (OpenClaw's built-in SearXNG instance); the other
+	// accepted values are "firecrawl" and "tavily", which replace SearXNG
+	// entirely as the active tools.web.search.provider (see
+	// FirecrawlAPIKeyEnv/TavilyAPIKeyEnv) rather than layering alongside it
+	// the way ExtractAPIKeyEnv's Tavily-extract capability does. OpenClaw-only
+	// for now (see (*HarnessConfig).validate) — Hermes has its own analogous
+	// wiring that would need mirroring separately.
+	//
+	// Firecrawl and Tavily differ in one important way verified against the
+	// actual installed OpenClaw plugin manifests: Firecrawl's manifest
+	// declares a webFetchProviders contract, so once it's installed+
+	// credentialed OpenClaw auto-selects it as the web_fetch fallback too —
+	// confirmed empirically, no config override prevents this. Tavily's
+	// manifest declares no such contract (only webSearchProviders), so
+	// selecting it here leaves web_fetch on OpenClaw's native fetcher,
+	// avoiding Firecrawl's incremental fetch cost.
 	Provider string `json:"provider,omitempty"`
 	// FirecrawlAPIKeyEnv names the host environment variable holding the
 	// Firecrawl API key, required when Provider is "firecrawl". Unlike
@@ -211,6 +221,14 @@ type HarnessWebSearchConfig struct {
 	// provider, so silently falling back to SearXNG would mask the
 	// misconfiguration for an entire run.
 	FirecrawlAPIKeyEnv string `json:"firecrawl_api_key_env,omitempty"`
+	// TavilyAPIKeyEnv names the host environment variable holding the Tavily
+	// API key, required when Provider is "tavily". Same fail-fast rationale
+	// as FirecrawlAPIKeyEnv. Deliberately a separate field from
+	// ExtractAPIKeyEnv even though both ultimately credential the same
+	// "tavily" plugin: collapsing them would force the tavily_extract tool on
+	// whenever Tavily search is requested, which isn't what a profile wanting
+	// search-only (zero fetch-tool change) is asking for.
+	TavilyAPIKeyEnv string `json:"tavily_api_key_env,omitempty"`
 }
 
 // HarnessSubagentsConfig is an OpenClaw/Hermes-only concept (see
@@ -683,8 +701,8 @@ func (h *HarnessConfig) validate() error {
 		}
 	}
 	if h.WebSearch.Provider != "" {
-		if h.WebSearch.Provider != "firecrawl" {
-			return errors.New("harness.web_search.provider must be \"firecrawl\" if set")
+		if h.WebSearch.Provider != "firecrawl" && h.WebSearch.Provider != "tavily" {
+			return errors.New("harness.web_search.provider must be \"firecrawl\" or \"tavily\" if set")
 		}
 		if h.Type != "openclaw" {
 			return errors.New("harness.web_search.provider requires OpenClaw")
@@ -692,11 +710,19 @@ func (h *HarnessConfig) validate() error {
 		if !h.WebSearch.Enabled {
 			return errors.New("harness.web_search.provider requires harness.web_search.enabled")
 		}
-		if !validEnvName(h.WebSearch.FirecrawlAPIKeyEnv) {
-			return errors.New("harness.web_search.provider \"firecrawl\" requires harness.web_search.firecrawl_api_key_env")
+		if h.WebSearch.Provider == "firecrawl" {
+			if !validEnvName(h.WebSearch.FirecrawlAPIKeyEnv) {
+				return errors.New("harness.web_search.provider \"firecrawl\" requires harness.web_search.firecrawl_api_key_env")
+			}
+		} else {
+			if !validEnvName(h.WebSearch.TavilyAPIKeyEnv) {
+				return errors.New("harness.web_search.provider \"tavily\" requires harness.web_search.tavily_api_key_env")
+			}
 		}
 	} else if h.WebSearch.FirecrawlAPIKeyEnv != "" {
 		return errors.New("harness.web_search.firecrawl_api_key_env requires harness.web_search.provider \"firecrawl\"")
+	} else if h.WebSearch.TavilyAPIKeyEnv != "" {
+		return errors.New("harness.web_search.tavily_api_key_env requires harness.web_search.provider \"tavily\"")
 	}
 	if h.Subagents.Enabled != nil && h.Type != "openclaw" && h.Type != "hermes" {
 		return errors.New("harness.subagents requires OpenClaw or Hermes")

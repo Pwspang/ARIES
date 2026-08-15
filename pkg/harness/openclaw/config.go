@@ -30,8 +30,8 @@ const (
 	// OpenClaw harness container, which joins the same per-task Docker
 	// network. Not profile-configurable: it's an internal wiring detail, not
 	// something a user should need to know or vary.
-	searxngBaseURL = "http://task-sandbox:8888"
-	tavilyKeyPath  = "/run/aries/tavily.key"
+	searxngBaseURL  = "http://task-sandbox:8888"
+	tavilyKeyPath   = "/run/aries/tavily.key"
 	tavilyAPIKeyEnv = "TAVILY_API_KEY"
 	// firecrawlKeyPath/firecrawlAPIKeyEnv mirror tavilyKeyPath/tavilyAPIKeyEnv:
 	// firecrawlAPIKeyEnv is the fixed *container-side* exported variable name
@@ -183,7 +183,7 @@ type sshConfig struct {
 	KnownHostsFile        string `json:"knownHostsFile"`
 }
 
-func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchEnabled, firecrawlEnabled, extractEnabled, subagentsEnabled bool, maxConcurrentSubagents int) ([]byte, error) {
+func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchEnabled bool, searchProvider string, extractEnabled, subagentsEnabled bool, maxConcurrentSubagents int) ([]byte, error) {
 	if err := validateModel(model); err != nil {
 		return nil, err
 	}
@@ -234,17 +234,36 @@ func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchE
 		alsoAllow := []string{"web_search", "web_fetch"}
 		var entries map[string]pluginEntry
 		var allow []string
-		if firecrawlEnabled {
+		switch searchProvider {
+		case "firecrawl":
 			// Firecrawl fully replaces SearXNG as the active search provider
 			// (not layered alongside it the way Tavily's extract-only entry
 			// is below): no searxng entry is registered at all. The plugin
 			// entry carries no Config/apiKey — same "secret never touches
 			// JSON" approach as tavily's entry — it auto-detects its key from
 			// the ambient FIRECRAWL_API_KEY env var the launcher exports.
+			//
+			// Firecrawl's plugin manifest declares a webFetchProviders
+			// contract (verified against the actual installed OpenClaw
+			// package), so enabling it here also makes OpenClaw auto-select
+			// it as the web_fetch fallback — confirmed empirically, no known
+			// config override prevents this. Profiles that don't want that
+			// incremental fetch cost should use "tavily" instead (below),
+			// whose manifest declares no webFetchProviders contract.
 			configuration.Tools.Web = &webToolsConfig{Search: &webSearchToolConfig{Provider: "firecrawl"}}
 			entries = map[string]pluginEntry{"firecrawl": {Enabled: true}}
 			allow = []string{"firecrawl"}
-		} else {
+		case "tavily":
+			// Same "no Config/apiKey in JSON" approach as firecrawl/tavily-
+			// extract above. Unlike Firecrawl, Tavily's plugin manifest
+			// declares only a webSearchProviders contract (no
+			// webFetchProviders), so web_fetch stays on OpenClaw's native
+			// fetcher — verified against the actual installed plugin
+			// manifest and a live gateway startup, not just documentation.
+			configuration.Tools.Web = &webToolsConfig{Search: &webSearchToolConfig{Provider: "tavily"}}
+			entries = map[string]pluginEntry{"tavily": {Enabled: true}}
+			allow = []string{"tavily"}
+		default:
 			configuration.Tools.Web = &webToolsConfig{Search: &webSearchToolConfig{Provider: "searxng"}}
 			entries = map[string]pluginEntry{
 				"searxng": {Config: &pluginConfigBlock{WebSearch: webSearchPluginConfig{BaseURL: searxngBaseURL}}},
@@ -255,10 +274,16 @@ func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchE
 			// tavily_extract only: the entry deliberately carries no apiKey
 			// (the launcher exports it as TAVILY_API_KEY instead, so it
 			// never enters this JSON), and alsoAllow omits tavily_search so
-			// Tavily backs extraction only — search stays SearXNG.
+			// Tavily backs extraction only — search stays whatever
+			// searchProvider selected. The entry/allow-list entry may already
+			// exist if searchProvider is "tavily" itself (same plugin backing
+			// both capabilities); only add it if it isn't there yet, so the
+			// two capabilities compose without a duplicate "tavily" in allow.
 			alsoAllow = append(alsoAllow, "tavily_extract")
-			entries["tavily"] = pluginEntry{Enabled: true}
-			allow = append(allow, "tavily")
+			if _, exists := entries["tavily"]; !exists {
+				entries["tavily"] = pluginEntry{Enabled: true}
+				allow = append(allow, "tavily")
+			}
 		}
 		configuration.Tools.Sandbox = &sandboxToolsGate{Tools: sandboxToolsAllowList{AlsoAllow: alsoAllow}}
 		configuration.Plugins = &pluginsConfig{Entries: entries, Allow: allow}
@@ -366,12 +391,12 @@ func validEnvironmentName(value string) bool {
 	return value != ""
 }
 
-func launcherScript(apiKeyEnv, realtimeAPIKeyEnv string, extractEnabled, firecrawlEnabled bool) []byte {
+func launcherScript(apiKeyEnv, realtimeAPIKeyEnv string, extractEnabled, firecrawlEnabled, tavilySearchEnabled bool) []byte {
 	script := "#!/bin/sh\nset -eu\nmodel_key=$(cat " + modelKeyPath + ")\ngateway_key=$(cat " + gatewayKeyPath + ")\nexport " + apiKeyEnv + "=\"$model_key\"\nexport " + gatewayTokenEnv + "=\"$gateway_key\"\n"
 	if realtimeAPIKeyEnv != "" {
 		script += "realtime_key=$(cat " + realtimeKeyPath + ")\nexport " + realtimeAPIKeyEnv + "=\"$realtime_key\"\nunset realtime_key\n"
 	}
-	if extractEnabled {
+	if extractEnabled || tavilySearchEnabled {
 		script += "tavily_key=$(cat " + tavilyKeyPath + ")\nexport " + tavilyAPIKeyEnv + "=\"$tavily_key\"\nunset tavily_key\n"
 	}
 	if firecrawlEnabled {

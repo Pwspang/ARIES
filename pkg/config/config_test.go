@@ -187,6 +187,54 @@ func TestFirecrawlProviderValidation(t *testing.T) {
 	}
 }
 
+func TestTavilyProviderValidation(t *testing.T) {
+	tavilyBase := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","web_search":{"enabled":true,"provider":"tavily","tavily_api_key_env":"TAVILY_API_KEY"}}`, 1)
+	cfg, err := Decode(strings.NewReader(tavilyBase))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Harness.WebSearch.Provider != "tavily" || cfg.Harness.WebSearch.TavilyAPIKeyEnv != "TAVILY_API_KEY" {
+		t.Fatalf("harness web_search = %#v, want tavily provider set", cfg.Harness.WebSearch)
+	}
+
+	hermesProvider := strings.Replace(tavilyBase, `"type":"openclaw"`, `"type":"hermes"`, 1)
+	hermesProvider = strings.Replace(hermesProvider, `"bridge":{"type":"openclaw-ssh"}`, `"bridge":{"type":"hermes-ssh"}`, 1)
+	if _, err := Decode(strings.NewReader(hermesProvider)); err == nil {
+		t.Fatal("expected rejection of web_search.provider \"tavily\" under Hermes (OpenClaw-only for now)")
+	}
+
+	notEnabled := strings.Replace(tavilyBase, `"enabled":true`, `"enabled":false`, 1)
+	if _, err := Decode(strings.NewReader(notEnabled)); err == nil {
+		t.Fatal("expected rejection of web_search.provider \"tavily\" without web_search.enabled")
+	}
+
+	missingKeyEnv := strings.Replace(tavilyBase, `,"tavily_api_key_env":"TAVILY_API_KEY"`, ``, 1)
+	if _, err := Decode(strings.NewReader(missingKeyEnv)); err == nil {
+		t.Fatal("expected rejection of provider \"tavily\" without tavily_api_key_env")
+	}
+
+	badKeyName := strings.Replace(tavilyBase, `"tavily_api_key_env":"TAVILY_API_KEY"`, `"tavily_api_key_env":"1BAD"`, 1)
+	if _, err := Decode(strings.NewReader(badKeyName)); err == nil {
+		t.Fatal("expected rejection of an invalid tavily_api_key_env name")
+	}
+
+	keyEnvWithoutProvider := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","web_search":{"enabled":true,"tavily_api_key_env":"TAVILY_API_KEY"}}`, 1)
+	if _, err := Decode(strings.NewReader(keyEnvWithoutProvider)); err == nil {
+		t.Fatal("expected rejection of tavily_api_key_env without provider \"tavily\"")
+	}
+
+	// provider "tavily" must still coexist with the independent, non-fatal
+	// extract_api_key_env capability (same underlying plugin, orthogonal toggle).
+	combined := strings.Replace(tavilyBase, `"provider":"tavily","tavily_api_key_env":"TAVILY_API_KEY"`, `"provider":"tavily","tavily_api_key_env":"TAVILY_API_KEY","extract_api_key_env":"TAVILY_API_KEY"`, 1)
+	cfg, err = Decode(strings.NewReader(combined))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Harness.WebSearch.ExtractAPIKeyEnv != "TAVILY_API_KEY" {
+		t.Fatalf("harness web_search = %#v, want extract_api_key_env preserved alongside provider \"tavily\"", cfg.Harness.WebSearch)
+	}
+}
+
 func TestSubagentsHarnessConfigValidation(t *testing.T) {
 	// validConfig's harness is already {"type":"openclaw"} with no subagents
 	// block, so leaving it untouched exercises the default.
@@ -608,7 +656,7 @@ func TestCheckedInProfilesLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 21 {
+	if len(paths) != 22 {
 		t.Fatalf("profiles=%v", paths)
 	}
 	for _, path := range paths {

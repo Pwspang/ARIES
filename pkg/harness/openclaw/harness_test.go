@@ -1037,6 +1037,152 @@ func TestStartFailsWhenFirecrawlCredentialMissing(t *testing.T) {
 	}
 }
 
+// When provider is configured as tavily, the Tavily key must be staged in its
+// own file, exported under OpenClaw's fixed TAVILY_API_KEY name by the
+// launcher, enable the tavily plugin entry (with no searxng entry) in the
+// retained config, and stay out of Docker metadata and the retained config —
+// same guarantees as Firecrawl above.
+func TestStartStagesTavilySearchKeyWhenConfigured(t *testing.T) {
+	modelSecret := []byte("model-secret")
+	tavilySecret := []byte("tvly-super-secret")
+	fake := newFakeDocker()
+	manager, err := New(Options{
+		Image: testOpenClawImage, OutputDir: t.TempDir(), StartTimeout: time.Second, AgentTimeout: time.Second,
+		WebSearchEnabled: true, SearchProvider: "tavily", TavilyAPIKeyEnv: "TAVILY_API_KEY",
+		APIKeyLookup: func(name string) ([]byte, bool) {
+			if name == "TAVILY_API_KEY" {
+				return bytes.Clone(tavilySecret), true
+			}
+			return bytes.Clone(modelSecret), true
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.client = fake
+	manager.newID = func() (string, error) { return "attempt", nil }
+
+	request := core.HarnessRequest{RunID: "run-1", TaskID: "fix-git", Endpoint: endpointFiles(t), Model: testModel(), Timeout: 37 * time.Second}
+	if err := manager.Start(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(context.Background())
+
+	files := readArchive(t, fake.archive)
+	tavilyFile, ok := files["run/aries/tavily.key"]
+	if !ok || tavilyFile.mode != 0o600 || string(tavilyFile.content) != string(tavilySecret) {
+		t.Fatalf("staged tavily key = %#v", tavilyFile)
+	}
+	launchScript := string(files["run/aries/launch"].content)
+	for _, required := range []string{"tavily_key=$(cat /run/aries/tavily.key)", "export TAVILY_API_KEY=\"$tavily_key\""} {
+		if !strings.Contains(launchScript, required) {
+			t.Fatalf("launcher missing %q: %s", required, launchScript)
+		}
+	}
+
+	serialized := strings.Join(append(append([]string{}, fake.created.Config.Env...), fake.created.Config.Cmd...), "\n")
+	for _, value := range fake.created.Config.Labels {
+		serialized += "\n" + value
+	}
+	if strings.Contains(serialized, string(tavilySecret)) {
+		t.Fatal("tavily secret entered Docker config")
+	}
+	retained, err := os.ReadFile(filepath.Join(manager.outputDir, request.TaskID, "harness-turn-01", "openclaw.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(retained, tavilySecret) {
+		t.Fatalf("tavily secret leaked into the retained config:\n%s", retained)
+	}
+	var configuration openClawConfig
+	if err := json.Unmarshal(retained, &configuration); err != nil {
+		t.Fatal(err)
+	}
+	if configuration.Tools.Web.Search.Provider != "tavily" {
+		t.Fatalf("tools.web.search.provider = %q, want tavily", configuration.Tools.Web.Search.Provider)
+	}
+	if _, ok := configuration.Plugins.Entries["searxng"]; ok {
+		t.Fatalf("plugins.entries = %#v, want no searxng entry when tavily is the provider", configuration.Plugins.Entries)
+	}
+	tavilyEntry, ok := configuration.Plugins.Entries["tavily"]
+	if !ok || !tavilyEntry.Enabled {
+		t.Fatalf("plugins.entries.tavily = %#v", configuration.Plugins.Entries)
+	}
+}
+
+// Unlike ExtractAPIKeyEnv's non-fatal degrade, a missing Tavily search
+// credential must fail Start outright: the profile explicitly requested
+// Tavily as its only search provider, so silently falling back to SearXNG
+// would mask the misconfiguration for an entire run.
+func TestStartFailsWhenTavilySearchCredentialMissing(t *testing.T) {
+	fake := newFakeDocker()
+	manager, err := New(Options{
+		Image: testOpenClawImage, OutputDir: t.TempDir(), StartTimeout: time.Second, AgentTimeout: time.Second,
+		WebSearchEnabled: true, SearchProvider: "tavily", TavilyAPIKeyEnv: "TAVILY_API_KEY",
+		APIKeyLookup: func(name string) ([]byte, bool) {
+			if name == "TAVILY_API_KEY" {
+				return nil, false
+			}
+			return []byte("model-secret"), true
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.client = fake
+	manager.newID = func() (string, error) { return "attempt", nil }
+
+	request := core.HarnessRequest{RunID: "run-1", TaskID: "fix-git", Endpoint: endpointFiles(t), Model: testModel(), Timeout: 37 * time.Second}
+	if err := manager.Start(context.Background(), request); err == nil {
+		t.Fatal("expected Start to fail when the Tavily search credential is missing")
+	}
+	if fake.created.Name != "" {
+		t.Fatal("container was created despite the missing Tavily search credential")
+	}
+}
+
+// When a profile combines provider:"tavily" with extract_api_key_env (same
+// underlying plugin, two independent toggles), the search-provider secret —
+// resolved through the fatal/guaranteed-present path — must be the one
+// staged into the shared run/aries/tavily.key file, not the extract secret.
+func TestStartPrefersTavilySearchKeyOverExtractKeyWhenBothConfigured(t *testing.T) {
+	modelSecret := []byte("model-secret")
+	searchSecret := []byte("tvly-search-secret")
+	extractSecret := []byte("tvly-extract-secret")
+	fake := newFakeDocker()
+	manager, err := New(Options{
+		Image: testOpenClawImage, OutputDir: t.TempDir(), StartTimeout: time.Second, AgentTimeout: time.Second,
+		WebSearchEnabled: true, SearchProvider: "tavily", TavilyAPIKeyEnv: "TAVILY_SEARCH_KEY", ExtractAPIKeyEnv: "TAVILY_EXTRACT_KEY",
+		APIKeyLookup: func(name string) ([]byte, bool) {
+			switch name {
+			case "TAVILY_SEARCH_KEY":
+				return bytes.Clone(searchSecret), true
+			case "TAVILY_EXTRACT_KEY":
+				return bytes.Clone(extractSecret), true
+			default:
+				return bytes.Clone(modelSecret), true
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.client = fake
+	manager.newID = func() (string, error) { return "attempt", nil }
+
+	request := core.HarnessRequest{RunID: "run-1", TaskID: "fix-git", Endpoint: endpointFiles(t), Model: testModel(), Timeout: 37 * time.Second}
+	if err := manager.Start(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(context.Background())
+
+	files := readArchive(t, fake.archive)
+	tavilyFile, ok := files["run/aries/tavily.key"]
+	if !ok || string(tavilyFile.content) != string(searchSecret) {
+		t.Fatalf("staged tavily key = %#v, want the search-provider secret to win", tavilyFile)
+	}
+}
+
 func TestAgentRunUsesGatewayOnceWithExactParameters(t *testing.T) {
 	fake := newFakeDocker()
 	manager := newTestManager(t, fake, []byte("model-secret"))
