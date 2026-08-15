@@ -74,6 +74,11 @@ type Options struct {
 	Realtime         RealtimeOptions
 	WebSearchEnabled bool
 	ExtractAPIKeyEnv       string
+	// SearchProvider selects the web_search backend: empty (default) keeps
+	// today's SearXNG-only behavior; "firecrawl" replaces it entirely with
+	// the Firecrawl plugin's provider, requiring FirecrawlAPIKeyEnv.
+	SearchProvider         string
+	FirecrawlAPIKeyEnv     string
 	SubagentsEnabled       bool
 	MaxConcurrentSubagents int
 	CleanupTimeout         time.Duration
@@ -140,6 +145,8 @@ type Manager struct {
 	realtime               RealtimeOptions
 	webSearchEnabled       bool
 	extractAPIKeyEnv       string
+	searchProvider         string
+	firecrawlAPIKeyEnv     string
 	subagentsEnabled       bool
 	maxConcurrentSubagents int
 	newID                  func() (string, error)
@@ -198,6 +205,7 @@ type session struct {
 	apiKey           []byte
 	realtimeAPIKey   []byte
 	extractAPIKey    []byte
+	firecrawlAPIKey  []byte
 	gatewayToken     []byte
 	gatewayURL       string
 	agentIdempotency string
@@ -277,7 +285,9 @@ func New(options Options) (*Manager, error) {
 		cleanupTimeout: options.CleanupTimeout, startTimeout: options.StartTimeout,
 		agentTimeout: options.AgentTimeout, logger: options.Logger,
 		apiKeyLookup: options.APIKeyLookup, mode: options.Mode, realtime: options.Realtime,
-		webSearchEnabled: options.WebSearchEnabled, extractAPIKeyEnv: options.ExtractAPIKeyEnv, subagentsEnabled: options.SubagentsEnabled,
+		webSearchEnabled: options.WebSearchEnabled, extractAPIKeyEnv: options.ExtractAPIKeyEnv,
+		searchProvider: options.SearchProvider, firecrawlAPIKeyEnv: options.FirecrawlAPIKeyEnv,
+		subagentsEnabled: options.SubagentsEnabled,
 		maxConcurrentSubagents: options.MaxConcurrentSubagents, newID: randomID,
 		newGateway: func(rawURL string, token []byte) (gatewayConnection, error) {
 			return newGatewayClientWithDisposition(rawURL, token, gatewayScopes(options.Mode), gatewayEventDisposition(options.Mode))
@@ -330,15 +340,39 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 			extractEnabled = true
 		}
 	}
-	configuration, err := renderConfig(request.Model, request.Endpoint, manager.webSearchEnabled, extractEnabled, manager.subagentsEnabled, manager.maxConcurrentSubagents)
+	firecrawlRequested := manager.webSearchEnabled && manager.searchProvider == "firecrawl"
+	var firecrawlAPIKey []byte
+	if firecrawlRequested {
+		// Unlike extract above, a missing key here is fatal rather than a
+		// silent degrade: the profile explicitly requested Firecrawl as its
+		// only search provider, so quietly reverting to SearXNG would mask
+		// the misconfiguration for an entire run.
+		firecrawlSource, ok := manager.apiKeyLookup(manager.firecrawlAPIKeyEnv)
+		if !ok {
+			clear(firecrawlSource)
+			clear(extractAPIKey)
+			return fmt.Errorf("OpenClaw Firecrawl API-key environment %q is not set", manager.firecrawlAPIKeyEnv)
+		}
+		candidate := bytes.Clone(firecrawlSource)
+		clear(firecrawlSource)
+		if err := validateAPIKey(candidate); err != nil {
+			clear(candidate)
+			clear(extractAPIKey)
+			return fmt.Errorf("OpenClaw Firecrawl API key: %w", err)
+		}
+		firecrawlAPIKey = candidate
+	}
+	configuration, err := renderConfig(request.Model, request.Endpoint, manager.webSearchEnabled, firecrawlRequested, extractEnabled, manager.subagentsEnabled, manager.maxConcurrentSubagents)
 	if err != nil {
 		clear(extractAPIKey)
+		clear(firecrawlAPIKey)
 		return err
 	}
 	apiKeySource, ok := manager.apiKeyLookup(request.Model.APIKeyEnv)
 	if !ok {
 		clear(apiKeySource)
 		clear(extractAPIKey)
+		clear(firecrawlAPIKey)
 		return fmt.Errorf("OpenClaw API-key environment %q is not set", request.Model.APIKeyEnv)
 	}
 	apiKey := bytes.Clone(apiKeySource)
@@ -346,6 +380,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 	if err := validateAPIKey(apiKey); err != nil {
 		clear(apiKey)
 		clear(extractAPIKey)
+		clear(firecrawlAPIKey)
 		return err
 	}
 	var realtimeAPIKey []byte
@@ -355,6 +390,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 			clear(apiKey)
 			clear(realtimeKeySource)
 			clear(extractAPIKey)
+			clear(firecrawlAPIKey)
 			return fmt.Errorf("OpenClaw realtime API-key environment %q is not set", manager.realtime.TTS.APIKeyEnv)
 		}
 		realtimeAPIKey = bytes.Clone(realtimeKeySource)
@@ -363,6 +399,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 			clear(apiKey)
 			clear(realtimeAPIKey)
 			clear(extractAPIKey)
+			clear(firecrawlAPIKey)
 			return fmt.Errorf("OpenClaw realtime API key: %w", err)
 		}
 	}
@@ -370,19 +407,29 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(apiKey)
 		clear(realtimeAPIKey)
 		clear(extractAPIKey)
+		clear(firecrawlAPIKey)
 		return errors.New("rendered OpenClaw config contains the API-key value")
 	}
 	if len(realtimeAPIKey) != 0 && bytes.Contains(configuration, realtimeAPIKey) {
 		clear(apiKey)
 		clear(realtimeAPIKey)
 		clear(extractAPIKey)
+		clear(firecrawlAPIKey)
 		return errors.New("rendered OpenClaw config contains the realtime API-key value")
 	}
 	if len(extractAPIKey) != 0 && bytes.Contains(configuration, extractAPIKey) {
 		clear(apiKey)
 		clear(realtimeAPIKey)
 		clear(extractAPIKey)
+		clear(firecrawlAPIKey)
 		return errors.New("rendered OpenClaw config contains the extract API-key value")
+	}
+	if len(firecrawlAPIKey) != 0 && bytes.Contains(configuration, firecrawlAPIKey) {
+		clear(apiKey)
+		clear(realtimeAPIKey)
+		clear(extractAPIKey)
+		clear(firecrawlAPIKey)
+		return errors.New("rendered OpenClaw config contains the Firecrawl API-key value")
 	}
 	containerConfig := &container.Config{
 		Image: manager.image,
@@ -402,6 +449,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(apiKey)
 		clear(realtimeAPIKey)
 		clear(extractAPIKey)
+		clear(firecrawlAPIKey)
 		return fmt.Errorf("generate OpenClaw harness ID: %w", err)
 	}
 	gatewayToken, err := randomSecret(32)
@@ -409,6 +457,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(apiKey)
 		clear(realtimeAPIKey)
 		clear(extractAPIKey)
+		clear(firecrawlAPIKey)
 		return fmt.Errorf("generate OpenClaw gateway token: %w", err)
 	}
 	agentIdempotency, err := randomID()
@@ -416,6 +465,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(apiKey)
 		clear(realtimeAPIKey)
 		clear(extractAPIKey)
+		clear(firecrawlAPIKey)
 		clear(gatewayToken)
 		return fmt.Errorf("generate OpenClaw agent idempotency key: %w", err)
 	}
@@ -423,7 +473,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 	active := &session{
 		runID: request.RunID, taskID: request.TaskID, safeTaskID: safeTaskID(request.TaskID), attemptID: id,
 		containerName: "aries-openclaw-" + id, artifactDir: filepath.Join(manager.outputDir, request.TaskID, fmt.Sprintf("harness-turn-%02d", manager.turnCount)),
-		endpoint: request.Endpoint, model: request.Model, agentTimeout: agentTimeout, apiKey: apiKey, realtimeAPIKey: realtimeAPIKey, extractAPIKey: extractAPIKey, gatewayToken: gatewayToken, agentIdempotency: agentIdempotency,
+		endpoint: request.Endpoint, model: request.Model, agentTimeout: agentTimeout, apiKey: apiKey, realtimeAPIKey: realtimeAPIKey, extractAPIKey: extractAPIKey, firecrawlAPIKey: firecrawlAPIKey, gatewayToken: gatewayToken, agentIdempotency: agentIdempotency,
 	}
 	containerConfig.Labels["aries.attempt"] = active.attemptID
 	fail := func(primary error) error {
@@ -1135,12 +1185,12 @@ func (manager *Manager) validateContainer(ctx context.Context, active *session) 
 		return errors.New("OpenClaw container labels do not match the task")
 	}
 	for _, value := range append(append([]string(nil), configuration.Env...), configuration.Cmd...) {
-		if containsSecret(value, active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.gatewayToken) {
+		if containsSecret(value, active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.firecrawlAPIKey, active.gatewayToken) {
 			return errors.New("OpenClaw secret entered Docker configuration")
 		}
 	}
 	for _, value := range configuration.Labels {
-		if containsSecret(value, active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.gatewayToken) {
+		if containsSecret(value, active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.firecrawlAPIKey, active.gatewayToken) {
 			return errors.New("OpenClaw secret entered Docker labels")
 		}
 	}
@@ -1170,7 +1220,7 @@ func (manager *Manager) runtimeArchive(active *session, configuration []byte) ([
 		"run/aries/openclaw.json":    {content: configuration, mode: 0o600},
 		"run/aries/model.key":        {content: active.apiKey, mode: 0o600},
 		"run/aries/gateway.key":      {content: active.gatewayToken, mode: 0o600},
-		"run/aries/launch":           {content: launcherScript(active.model.APIKeyEnv, manager.realtimeAPIKeyEnv(active), len(active.extractAPIKey) != 0), mode: 0o555},
+		"run/aries/launch":           {content: launcherScript(active.model.APIKeyEnv, manager.realtimeAPIKeyEnv(active), len(active.extractAPIKey) != 0, len(active.firecrawlAPIKey) != 0), mode: 0o555},
 		"run/aries/gateway-proxy.js": {content: gatewayProxyScript(), mode: 0o555},
 		"run/aries/gateway-launcher": {content: gatewayLauncherScript(), mode: 0o555},
 		"run/aries/ssh/id_ed25519":   {content: identity, mode: 0o600},
@@ -1182,6 +1232,9 @@ func (manager *Manager) runtimeArchive(active *session, configuration []byte) ([
 	}
 	if len(active.extractAPIKey) != 0 {
 		files["run/aries/tavily.key"] = stagedFile{content: active.extractAPIKey, mode: 0o600}
+	}
+	if len(active.firecrawlAPIKey) != 0 {
+		files["run/aries/firecrawl.key"] = stagedFile{content: active.firecrawlAPIKey, mode: 0o600}
 	}
 	return stageArchive(files)
 }
@@ -1356,7 +1409,7 @@ func (manager *Manager) collectArtifacts(ctx context.Context, active *session) e
 		if copyErr != nil || closeErr != nil || stdout.exceeded || stderr.exceeded {
 			errs = append(errs, errors.Join(copyErr, closeErr, errors.New("OpenClaw gateway logs exceeded their bound")))
 		} else {
-			content := allowGatewayLogs(append(stdout.Bytes(), stderr.Bytes()...), active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.gatewayToken)
+			content := allowGatewayLogs(append(stdout.Bytes(), stderr.Bytes()...), active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.firecrawlAPIKey, active.gatewayToken)
 			path := filepath.Join(active.artifactDir, "gateway.log")
 			if err := writeArtifact(path, content); err != nil {
 				errs = append(errs, err)
@@ -1401,7 +1454,7 @@ func (manager *Manager) collectTelemetry(ctx context.Context, active *session) (
 	if err != nil || len(archive) > maxDockerOutput {
 		return nil, errors.New("OpenClaw telemetry archive exceeded its bound")
 	}
-	return extractTelemetry(active.artifactDir, archive, active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.gatewayToken)
+	return extractTelemetry(active.artifactDir, archive, active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.firecrawlAPIKey, active.gatewayToken)
 }
 
 func failedHarnessResult(active *session, started time.Time, err error) core.HarnessResult {
@@ -1664,13 +1717,15 @@ func clearSessionSecrets(active *session) {
 	active.realtimeAPIKey = nil
 	clear(active.extractAPIKey)
 	active.extractAPIKey = nil
+	clear(active.firecrawlAPIKey)
+	active.firecrawlAPIKey = nil
 	clear(active.gatewayToken)
 	active.gatewayToken = nil
 	active.agentIdempotency = ""
 }
 
 func redactSession(content []byte, active *session) []byte {
-	return redactSecrets(content, active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.gatewayToken)
+	return redactSecrets(content, active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.firecrawlAPIKey, active.gatewayToken)
 }
 
 type sessionRedactedError struct {
