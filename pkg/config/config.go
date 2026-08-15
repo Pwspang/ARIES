@@ -195,6 +195,22 @@ type HarnessConfig struct {
 type HarnessWebSearchConfig struct {
 	Enabled          bool   `json:"enabled,omitempty"`
 	ExtractAPIKeyEnv string `json:"extract_api_key_env,omitempty"`
+	// Provider selects the web_search tool's backend. Empty (the default)
+	// keeps today's behavior (OpenClaw's built-in SearXNG instance); the only
+	// other accepted value is "firecrawl", which replaces SearXNG entirely as
+	// the active tools.web.search.provider (see FirecrawlAPIKeyEnv) rather
+	// than layering alongside it the way ExtractAPIKeyEnv's Tavily plugin
+	// does. OpenClaw-only for now (see (*HarnessConfig).validate) — Hermes
+	// has its own analogous wiring that would need mirroring separately.
+	Provider string `json:"provider,omitempty"`
+	// FirecrawlAPIKeyEnv names the host environment variable holding the
+	// Firecrawl API key, required when Provider is "firecrawl". Unlike
+	// ExtractAPIKeyEnv (a bonus capability that degrades to disabled if the
+	// key is missing at runtime), a missing key here fails the harness start
+	// outright: the profile explicitly requested Firecrawl as its only search
+	// provider, so silently falling back to SearXNG would mask the
+	// misconfiguration for an entire run.
+	FirecrawlAPIKeyEnv string `json:"firecrawl_api_key_env,omitempty"`
 }
 
 // HarnessSubagentsConfig is an OpenClaw/Hermes-only concept (see
@@ -665,6 +681,22 @@ func (h *HarnessConfig) validate() error {
 		if !validEnvName(h.WebSearch.ExtractAPIKeyEnv) {
 			return errors.New("harness.web_search.extract_api_key_env must be an environment variable name")
 		}
+	}
+	if h.WebSearch.Provider != "" {
+		if h.WebSearch.Provider != "firecrawl" {
+			return errors.New("harness.web_search.provider must be \"firecrawl\" if set")
+		}
+		if h.Type != "openclaw" {
+			return errors.New("harness.web_search.provider requires OpenClaw")
+		}
+		if !h.WebSearch.Enabled {
+			return errors.New("harness.web_search.provider requires harness.web_search.enabled")
+		}
+		if !validEnvName(h.WebSearch.FirecrawlAPIKeyEnv) {
+			return errors.New("harness.web_search.provider \"firecrawl\" requires harness.web_search.firecrawl_api_key_env")
+		}
+	} else if h.WebSearch.FirecrawlAPIKeyEnv != "" {
+		return errors.New("harness.web_search.firecrawl_api_key_env requires harness.web_search.provider \"firecrawl\"")
 	}
 	if h.Subagents.Enabled != nil && h.Type != "openclaw" && h.Type != "hermes" {
 		return errors.New("harness.subagents requires OpenClaw or Hermes")

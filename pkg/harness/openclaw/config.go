@@ -33,6 +33,12 @@ const (
 	searxngBaseURL = "http://task-sandbox:8888"
 	tavilyKeyPath  = "/run/aries/tavily.key"
 	tavilyAPIKeyEnv = "TAVILY_API_KEY"
+	// firecrawlKeyPath/firecrawlAPIKeyEnv mirror tavilyKeyPath/tavilyAPIKeyEnv:
+	// firecrawlAPIKeyEnv is the fixed *container-side* exported variable name
+	// the Firecrawl plugin auto-detects its key from, independent of whatever
+	// host environment variable a profile's firecrawl_api_key_env names.
+	firecrawlKeyPath   = "/run/aries/firecrawl.key"
+	firecrawlAPIKeyEnv = "FIRECRAWL_API_KEY"
 )
 
 type openClawConfig struct {
@@ -177,7 +183,7 @@ type sshConfig struct {
 	KnownHostsFile        string `json:"knownHostsFile"`
 }
 
-func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchEnabled, extractEnabled, subagentsEnabled bool, maxConcurrentSubagents int) ([]byte, error) {
+func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchEnabled, firecrawlEnabled, extractEnabled, subagentsEnabled bool, maxConcurrentSubagents int) ([]byte, error) {
 	if err := validateModel(model); err != nil {
 		return nil, err
 	}
@@ -225,12 +231,26 @@ func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchE
 		configuration.Agents.Defaults.Subagents = &subagentsConfig{MaxConcurrent: maxConcurrentSubagents}
 	}
 	if webSearchEnabled {
-		configuration.Tools.Web = &webToolsConfig{Search: &webSearchToolConfig{Provider: "searxng"}}
 		alsoAllow := []string{"web_search", "web_fetch"}
-		entries := map[string]pluginEntry{
-			"searxng": {Config: &pluginConfigBlock{WebSearch: webSearchPluginConfig{BaseURL: searxngBaseURL}}},
+		var entries map[string]pluginEntry
+		var allow []string
+		if firecrawlEnabled {
+			// Firecrawl fully replaces SearXNG as the active search provider
+			// (not layered alongside it the way Tavily's extract-only entry
+			// is below): no searxng entry is registered at all. The plugin
+			// entry carries no Config/apiKey — same "secret never touches
+			// JSON" approach as tavily's entry — it auto-detects its key from
+			// the ambient FIRECRAWL_API_KEY env var the launcher exports.
+			configuration.Tools.Web = &webToolsConfig{Search: &webSearchToolConfig{Provider: "firecrawl"}}
+			entries = map[string]pluginEntry{"firecrawl": {Enabled: true}}
+			allow = []string{"firecrawl"}
+		} else {
+			configuration.Tools.Web = &webToolsConfig{Search: &webSearchToolConfig{Provider: "searxng"}}
+			entries = map[string]pluginEntry{
+				"searxng": {Config: &pluginConfigBlock{WebSearch: webSearchPluginConfig{BaseURL: searxngBaseURL}}},
+			}
+			allow = []string{"searxng"}
 		}
-		allow := []string{"searxng"}
 		if extractEnabled {
 			// tavily_extract only: the entry deliberately carries no apiKey
 			// (the launcher exports it as TAVILY_API_KEY instead, so it
@@ -346,13 +366,16 @@ func validEnvironmentName(value string) bool {
 	return value != ""
 }
 
-func launcherScript(apiKeyEnv, realtimeAPIKeyEnv string, extractEnabled bool) []byte {
+func launcherScript(apiKeyEnv, realtimeAPIKeyEnv string, extractEnabled, firecrawlEnabled bool) []byte {
 	script := "#!/bin/sh\nset -eu\nmodel_key=$(cat " + modelKeyPath + ")\ngateway_key=$(cat " + gatewayKeyPath + ")\nexport " + apiKeyEnv + "=\"$model_key\"\nexport " + gatewayTokenEnv + "=\"$gateway_key\"\n"
 	if realtimeAPIKeyEnv != "" {
 		script += "realtime_key=$(cat " + realtimeKeyPath + ")\nexport " + realtimeAPIKeyEnv + "=\"$realtime_key\"\nunset realtime_key\n"
 	}
 	if extractEnabled {
 		script += "tavily_key=$(cat " + tavilyKeyPath + ")\nexport " + tavilyAPIKeyEnv + "=\"$tavily_key\"\nunset tavily_key\n"
+	}
+	if firecrawlEnabled {
+		script += "firecrawl_key=$(cat " + firecrawlKeyPath + ")\nexport " + firecrawlAPIKeyEnv + "=\"$firecrawl_key\"\nunset firecrawl_key\n"
 	}
 	script += "unset model_key gateway_key\nexec \"$@\"\n"
 	return []byte(script)

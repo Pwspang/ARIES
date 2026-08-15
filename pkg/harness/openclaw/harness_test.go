@@ -932,6 +932,111 @@ func TestStartFallsBackToNativeWebFetchWhenExtractCredentialMissing(t *testing.T
 	}
 }
 
+// When provider is configured as firecrawl, the Firecrawl key must be staged
+// in its own file, exported under OpenClaw's fixed FIRECRAWL_API_KEY name by
+// the launcher, enable the firecrawl plugin entry (with no searxng entry) in
+// the retained config, and stay out of Docker metadata and the retained
+// config — the same guarantees the model and Tavily extract keys already
+// have.
+func TestStartStagesFirecrawlKeyWhenConfigured(t *testing.T) {
+	modelSecret := []byte("model-secret")
+	firecrawlSecret := []byte("fc-super-secret")
+	fake := newFakeDocker()
+	manager, err := New(Options{
+		Image: testOpenClawImage, OutputDir: t.TempDir(), StartTimeout: time.Second, AgentTimeout: time.Second,
+		WebSearchEnabled: true, SearchProvider: "firecrawl", FirecrawlAPIKeyEnv: "FIRECRAWL_API_KEY",
+		APIKeyLookup: func(name string) ([]byte, bool) {
+			if name == "FIRECRAWL_API_KEY" {
+				return bytes.Clone(firecrawlSecret), true
+			}
+			return bytes.Clone(modelSecret), true
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.client = fake
+	manager.newID = func() (string, error) { return "attempt", nil }
+
+	request := core.HarnessRequest{RunID: "run-1", TaskID: "fix-git", Endpoint: endpointFiles(t), Model: testModel(), Timeout: 37 * time.Second}
+	if err := manager.Start(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(context.Background())
+
+	files := readArchive(t, fake.archive)
+	firecrawlFile, ok := files["run/aries/firecrawl.key"]
+	if !ok || firecrawlFile.mode != 0o600 || string(firecrawlFile.content) != string(firecrawlSecret) {
+		t.Fatalf("staged firecrawl key = %#v", firecrawlFile)
+	}
+	launchScript := string(files["run/aries/launch"].content)
+	for _, required := range []string{"firecrawl_key=$(cat /run/aries/firecrawl.key)", "export FIRECRAWL_API_KEY=\"$firecrawl_key\""} {
+		if !strings.Contains(launchScript, required) {
+			t.Fatalf("launcher missing %q: %s", required, launchScript)
+		}
+	}
+
+	serialized := strings.Join(append(append([]string{}, fake.created.Config.Env...), fake.created.Config.Cmd...), "\n")
+	for _, value := range fake.created.Config.Labels {
+		serialized += "\n" + value
+	}
+	if strings.Contains(serialized, string(firecrawlSecret)) {
+		t.Fatal("firecrawl secret entered Docker config")
+	}
+	retained, err := os.ReadFile(filepath.Join(manager.outputDir, request.TaskID, "harness-turn-01", "openclaw.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(retained, firecrawlSecret) {
+		t.Fatalf("firecrawl secret leaked into the retained config:\n%s", retained)
+	}
+	var configuration openClawConfig
+	if err := json.Unmarshal(retained, &configuration); err != nil {
+		t.Fatal(err)
+	}
+	if configuration.Tools.Web.Search.Provider != "firecrawl" {
+		t.Fatalf("tools.web.search.provider = %q, want firecrawl", configuration.Tools.Web.Search.Provider)
+	}
+	if _, ok := configuration.Plugins.Entries["searxng"]; ok {
+		t.Fatalf("plugins.entries = %#v, want no searxng entry when firecrawl is the provider", configuration.Plugins.Entries)
+	}
+	firecrawlEntry, ok := configuration.Plugins.Entries["firecrawl"]
+	if !ok || !firecrawlEntry.Enabled {
+		t.Fatalf("plugins.entries.firecrawl = %#v", configuration.Plugins.Entries)
+	}
+}
+
+// Unlike ExtractAPIKeyEnv's non-fatal degrade above, a missing Firecrawl
+// credential must fail Start outright: the profile explicitly requested
+// Firecrawl as its only search provider, so silently falling back to SearXNG
+// would mask the misconfiguration for an entire run.
+func TestStartFailsWhenFirecrawlCredentialMissing(t *testing.T) {
+	fake := newFakeDocker()
+	manager, err := New(Options{
+		Image: testOpenClawImage, OutputDir: t.TempDir(), StartTimeout: time.Second, AgentTimeout: time.Second,
+		WebSearchEnabled: true, SearchProvider: "firecrawl", FirecrawlAPIKeyEnv: "FIRECRAWL_API_KEY",
+		APIKeyLookup: func(name string) ([]byte, bool) {
+			if name == "FIRECRAWL_API_KEY" {
+				return nil, false
+			}
+			return []byte("model-secret"), true
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.client = fake
+	manager.newID = func() (string, error) { return "attempt", nil }
+
+	request := core.HarnessRequest{RunID: "run-1", TaskID: "fix-git", Endpoint: endpointFiles(t), Model: testModel(), Timeout: 37 * time.Second}
+	if err := manager.Start(context.Background(), request); err == nil {
+		t.Fatal("expected Start to fail when the Firecrawl credential is missing")
+	}
+	if fake.created.Name != "" {
+		t.Fatal("container was created despite the missing Firecrawl credential")
+	}
+}
+
 func TestAgentRunUsesGatewayOnceWithExactParameters(t *testing.T) {
 	fake := newFakeDocker()
 	manager := newTestManager(t, fake, []byte("model-secret"))

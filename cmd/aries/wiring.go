@@ -249,6 +249,8 @@ func newHarness(cfg config.Config, outputRoot string, lookup func(string) ([]byt
 			Image: cfg.Versions.OpenClaw.Image, OutputDir: outputRoot, APIKeyLookup: lookup, Logger: logger,
 			Mode: cfg.Harness.Mode, Realtime: realtime, WebSearchEnabled: cfg.Harness.WebSearch.Enabled,
 			ExtractAPIKeyEnv:       cfg.Harness.WebSearch.ExtractAPIKeyEnv,
+			SearchProvider:         cfg.Harness.WebSearch.Provider,
+			FirecrawlAPIKeyEnv:     cfg.Harness.WebSearch.FirecrawlAPIKeyEnv,
 			SubagentsEnabled:       cfg.Harness.Subagents.Enabled != nil && *cfg.Harness.Subagents.Enabled,
 			MaxConcurrentSubagents: cfg.Harness.Subagents.MaxConcurrent,
 		})

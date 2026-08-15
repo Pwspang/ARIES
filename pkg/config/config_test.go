@@ -145,6 +145,48 @@ func TestExtractAPIKeyEnvValidation(t *testing.T) {
 	}
 }
 
+func TestFirecrawlProviderValidation(t *testing.T) {
+	firecrawlBase := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","web_search":{"enabled":true,"provider":"firecrawl","firecrawl_api_key_env":"FIRECRAWL_API_KEY"}}`, 1)
+	cfg, err := Decode(strings.NewReader(firecrawlBase))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Harness.WebSearch.Provider != "firecrawl" || cfg.Harness.WebSearch.FirecrawlAPIKeyEnv != "FIRECRAWL_API_KEY" {
+		t.Fatalf("harness web_search = %#v, want firecrawl provider set", cfg.Harness.WebSearch)
+	}
+
+	badProvider := strings.Replace(firecrawlBase, `"provider":"firecrawl"`, `"provider":"brave"`, 1)
+	if _, err := Decode(strings.NewReader(badProvider)); err == nil {
+		t.Fatal("expected rejection of an unsupported web_search.provider value")
+	}
+
+	hermesProvider := strings.Replace(firecrawlBase, `"type":"openclaw"`, `"type":"hermes"`, 1)
+	hermesProvider = strings.Replace(hermesProvider, `"bridge":{"type":"openclaw-ssh"}`, `"bridge":{"type":"hermes-ssh"}`, 1)
+	if _, err := Decode(strings.NewReader(hermesProvider)); err == nil {
+		t.Fatal("expected rejection of web_search.provider under Hermes (OpenClaw-only for now)")
+	}
+
+	notEnabled := strings.Replace(firecrawlBase, `"enabled":true`, `"enabled":false`, 1)
+	if _, err := Decode(strings.NewReader(notEnabled)); err == nil {
+		t.Fatal("expected rejection of web_search.provider without web_search.enabled")
+	}
+
+	missingKeyEnv := strings.Replace(firecrawlBase, `,"firecrawl_api_key_env":"FIRECRAWL_API_KEY"`, ``, 1)
+	if _, err := Decode(strings.NewReader(missingKeyEnv)); err == nil {
+		t.Fatal("expected rejection of provider \"firecrawl\" without firecrawl_api_key_env")
+	}
+
+	badKeyName := strings.Replace(firecrawlBase, `"firecrawl_api_key_env":"FIRECRAWL_API_KEY"`, `"firecrawl_api_key_env":"1BAD"`, 1)
+	if _, err := Decode(strings.NewReader(badKeyName)); err == nil {
+		t.Fatal("expected rejection of an invalid firecrawl_api_key_env name")
+	}
+
+	keyEnvWithoutProvider := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","web_search":{"enabled":true,"firecrawl_api_key_env":"FIRECRAWL_API_KEY"}}`, 1)
+	if _, err := Decode(strings.NewReader(keyEnvWithoutProvider)); err == nil {
+		t.Fatal("expected rejection of firecrawl_api_key_env without provider \"firecrawl\"")
+	}
+}
+
 func TestSubagentsHarnessConfigValidation(t *testing.T) {
 	// validConfig's harness is already {"type":"openclaw"} with no subagents
 	// block, so leaving it untouched exercises the default.
@@ -566,7 +608,7 @@ func TestCheckedInProfilesLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 18 {
+	if len(paths) != 21 {
 		t.Fatalf("profiles=%v", paths)
 	}
 	for _, path := range paths {
