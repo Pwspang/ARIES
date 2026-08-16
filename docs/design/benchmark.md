@@ -52,16 +52,15 @@ against the fetched content with its own judge model. FACT is strictly
 additive — configuring it (or not) never changes the RACE-derived score,
 reward, or status.
 
-SWE-Atlas QA combines both existing patterns: like Terminal-Bench 2, each
-task has a sandbox-resident private verifier tree, injected only after both
-isolation gates; like Deep Research Bench, grading is done by an LLM judge
-against a rubric rather than a deterministic pass/fail script — except here
-the judge-calling verifier script itself runs inside the sandbox rather than
-host-side. It also works around one dataset-shape hazard neither existing
-benchmark faces: its task file's declared verifier environment holds
-shell-style template placeholders rather than literal secrets, so `Evaluate`
-synthesizes the verifier's real environment fresh from the profile's judge
-config instead of copying the task file's values through unmodified.
+SWE-Atlas QA follows the Deep Research Bench pattern directly: it has no
+sandbox-resident private verifier tree either. Its private material (the
+task's rubric and prompts) is read from the pinned host checkout and never
+uploaded into the sandbox; the LLM judge call happens entirely host-side.
+`PrepareSandbox` confirms the agent's designated answer-output path starts
+absent, and `Evaluate` downloads the agent's answer from that path after both
+isolation gates, then scores it rubric-by-rubric against the host-resident
+judge before writing `reward.txt`/`evaluation_results.json` to the run's
+output directory.
 
 ## Customization & Contribution Guide
 

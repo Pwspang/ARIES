@@ -16,10 +16,10 @@ import (
 )
 
 const (
-	qaTaskID       = "task-6905333b74f22949d97ba998"
-	qaTaskWorkdir  = "/"
-	qaTaskImage    = "example.invalid/swe-atlas-qa:fixture"
-	qaInstruction  = "I am onboarding on a codebase. Write your answer to /logs/agent/answer.txt.\n"
+	qaTaskID        = "task-6905333b74f22949d97ba998"
+	qaTaskWorkdir   = "/"
+	qaTaskImage     = "example.invalid/swe-atlas-qa:fixture"
+	qaInstruction   = "I am onboarding on a codebase. Write your answer to /logs/agent/answer.txt.\n"
 	fixtureRevision = "cccccccccccccccccccccccccccccccccccccccc"
 )
 
@@ -63,6 +63,20 @@ EVAL_MODEL = "${EVAL_MODEL:-anthropic/claude-opus-4-5-20251101}"
 [solution.env]
 `
 
+// r1 is explicitly "must have"; r2 is explicitly "nice to have" so tests can
+// exercise reward's must-have-only gating distinctly from agg_score's
+// mean-over-all-scored math. The real vendored dataset never actually sets a
+// top-level "importance" field (see rubric's doc comment), but the struct
+// supports it and this fixture exercises that code path directly.
+const fixtureRubrics = `[
+  {"id": "r1", "title": "1.1: States the port number", "importance": "must have", "annotations": {"type": "positive"}},
+  {"id": "r2", "title": "1.2: States a secondary detail", "importance": "nice to have", "annotations": {"type": "positive"}}
+]`
+
+const fixtureSystemPrompt = "You are a strict grader.\n"
+
+const fixtureUserPromptTemplate = "# Prompt\n{problem_statement}\n\n# Response\n{model_answer}\n\n#Rubric Criteria\n{{\n  \"rubric_statement\": {title}\n}}"
+
 func writeFixture(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
@@ -70,9 +84,10 @@ func writeFixture(t *testing.T) string {
 	writeFile(t, filepath.Join(taskDir, "task.toml"), fixtureTaskTOML)
 	writeFile(t, filepath.Join(taskDir, "instruction.md"), qaInstruction)
 	writeFile(t, filepath.Join(taskDir, "environment", "Dockerfile"), "FROM python:3.13-slim-bookworm\n")
-	writeFile(t, filepath.Join(taskDir, "tests", "test.sh"), "#!/bin/bash\n")
-	writeFile(t, filepath.Join(taskDir, "tests", "evaluate_answer.py"), "# evaluator\n")
-	writeFile(t, filepath.Join(taskDir, "tests", "rubrics.json"), "[]\n")
+	writeFile(t, filepath.Join(taskDir, "tests", "rubrics.json"), fixtureRubrics)
+	writeFile(t, filepath.Join(taskDir, "tests", "system_prompt.txt"), fixtureSystemPrompt)
+	writeFile(t, filepath.Join(taskDir, "tests", "user_prompt_template.txt"), fixtureUserPromptTemplate)
+	writeFile(t, filepath.Join(taskDir, "tests", "prompt.txt"), "What port does the dev server use?\n")
 	writeFile(t, filepath.Join(taskDir, "solution", "answer.txt"), "reference answer\n")
 	commitFixture(t, root)
 	return root
@@ -119,15 +134,18 @@ func TestLoadTaskMapsGenericFieldsAndKeepsVerifierPrivate(t *testing.T) {
 	if details.timeout != 15*time.Minute {
 		t.Fatalf("verifier timeout = %s, want 15m", details.timeout)
 	}
-	if len(details.verifierFiles) != 3 {
-		t.Fatalf("private verifier files = %#v", details.verifierFiles)
+	if details.testsDir == "" {
+		t.Fatal("testsDir is empty")
+	}
+	if _, err := os.Stat(filepath.Join(details.testsDir, "rubrics.json")); err != nil {
+		t.Fatalf("testsDir does not contain rubrics.json: %v", err)
 	}
 
 	encoded, err := json.Marshal(task)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, private := range []string{"rubrics", "evaluate_answer", "reference answer"} {
+	for _, private := range []string{"rubrics", "1.1: States", "reference answer"} {
 		if strings.Contains(string(encoded), private) {
 			t.Fatalf("generic task JSON exposes private value %q: %s", private, encoded)
 		}
@@ -145,50 +163,28 @@ func TestLoadTaskRejectsWrongNamePrefix(t *testing.T) {
 	}
 }
 
-func TestLoadTaskRejectsUnexpectedVerifierEnvKeySet(t *testing.T) {
-	tests := []struct {
-		name string
-		old  string
-		new  string
-	}{
-		{"missing key", `EVAL_MODEL = "${EVAL_MODEL:-anthropic/claude-opus-4-5-20251101}"`, ""},
-		{"extra key", "[verifier.env]", "[verifier.env]\nEXTRA_KEY = \"value\""},
-		{"empty", `EVAL_API_KEY = "${OPENAI_API_KEY}"
-EVAL_BASE_URL = "${OPENAI_API_BASE}"
-EVAL_MODEL = "${EVAL_MODEL:-anthropic/claude-opus-4-5-20251101}"`, ""},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
+func TestLoadTaskRequiresRubricsAndPrompts(t *testing.T) {
+	for _, name := range []string{"rubrics.json", "system_prompt.txt", "user_prompt_template.txt"} {
+		t.Run(name, func(t *testing.T) {
 			root := writeFixture(t)
-			path := filepath.Join(root, qaSubdirectory, qaTaskID, "task.toml")
-			content := strings.Replace(fixtureTaskTOML, test.old, test.new, 1)
-			writeFile(t, path, content)
-
-			if _, _, err := loadTask(root, qaTaskID); err == nil || !strings.Contains(err.Error(), "verifier.env") {
-				t.Fatalf("loadTask() error = %v, want verifier.env key set mismatch", err)
+			if err := os.Remove(filepath.Join(root, qaSubdirectory, qaTaskID, "tests", name)); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := loadTask(root, qaTaskID); err == nil || !strings.Contains(err.Error(), name) {
+				t.Fatalf("loadTask() error = %v, want missing %s", err, name)
 			}
 		})
-	}
-}
-
-func TestLoadTaskRequiresTestScript(t *testing.T) {
-	root := writeFixture(t)
-	if err := os.Remove(filepath.Join(root, qaSubdirectory, qaTaskID, "tests", "test.sh")); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := loadTask(root, qaTaskID); err == nil || !strings.Contains(err.Error(), "test.sh") {
-		t.Fatalf("loadTask() error = %v, want missing test.sh", err)
 	}
 }
 
 func TestNewRequiresJudgeAndAPIKeyLookup(t *testing.T) {
 	base := testOptions("root", []string{qaTaskID}, "out")
 	for name, mutate := range map[string]func(*Options){
-		"empty provider":  func(o *Options) { o.Judge.Provider = "" },
-		"empty base url":  func(o *Options) { o.Judge.BaseURL = "" },
-		"empty model":     func(o *Options) { o.Judge.Model = "" },
-		"empty api key":   func(o *Options) { o.Judge.APIKeyEnv = "" },
-		"nil lookup":      func(o *Options) { o.APIKeyLookup = nil },
+		"empty provider": func(o *Options) { o.Judge.Provider = "" },
+		"empty base url": func(o *Options) { o.Judge.BaseURL = "" },
+		"empty model":    func(o *Options) { o.Judge.Model = "" },
+		"empty api key":  func(o *Options) { o.Judge.APIKeyEnv = "" },
+		"nil lookup":     func(o *Options) { o.APIKeyLookup = nil },
 	} {
 		t.Run(name, func(t *testing.T) {
 			options := base
@@ -200,7 +196,7 @@ func TestNewRequiresJudgeAndAPIKeyLookup(t *testing.T) {
 	}
 }
 
-func TestPrepareSandboxRemovesThenProvesVerifierPathsAbsent(t *testing.T) {
+func TestPrepareSandboxRemovesThenProvesAnswerPathAbsent(t *testing.T) {
 	benchmark := &Benchmark{details: map[string]taskDetails{"task": {}}}
 	sandbox := &prepareSandboxFake{}
 	if err := benchmark.PrepareSandbox(context.Background(), core.Task{ID: "task"}, sandbox); err != nil {
@@ -210,11 +206,13 @@ func TestPrepareSandboxRemovesThenProvesVerifierPathsAbsent(t *testing.T) {
 		t.Fatalf("commands = %#v", sandbox.commands)
 	}
 	remove := sandbox.commands[0]
-	if remove.Path != "/bin/rm" || !reflect.DeepEqual(remove.Args, []string{"-rf", "--", testsPath, verifierLogPath}) {
+	if remove.Path != "/bin/rm" || !reflect.DeepEqual(remove.Args, []string{"-rf", "--", answerPath}) {
 		t.Fatalf("remove command = %#v", remove)
 	}
 	probe := sandbox.commands[1]
-	if probe.Path != "/bin/sh" || len(probe.Args) != 5 || probe.Args[0] != "-c" || !strings.Contains(probe.Args[1], `! -e "$path"`) || !strings.Contains(probe.Args[1], `! -L "$path"`) {
+	if probe.Path != "/bin/sh" || len(probe.Args) != 4 || probe.Args[0] != "-c" ||
+		!strings.Contains(probe.Args[1], `! -e "$path"`) || !strings.Contains(probe.Args[1], `! -L "$path"`) ||
+		probe.Args[2] != "aries-answer-absence" || probe.Args[3] != answerPath {
 		t.Fatalf("absence probe = %#v", probe)
 	}
 	if sandbox.uploads != 0 {

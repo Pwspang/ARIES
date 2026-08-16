@@ -5,11 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"os"
-	"path"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
@@ -17,19 +14,16 @@ import (
 	"github.com/hyscale-lab/aries/pkg/runner"
 )
 
-// evaluationResults is the informational rubric breakdown SWE-Atlas QA's
-// verifier writes to /logs/verifier/evaluation_results.json alongside
-// reward.txt. Only AggScore is consumed for core.Evaluation.Score; reward.txt
-// alone drives core.Evaluation.Reward and Status, exactly as
-// terminalbench's ctrf.json is a secondary cross-check relative to its own
-// reward.txt.
-type evaluationResults struct {
-	AggScore float64 `json:"agg_score"`
-}
+// finalAnswerTag is the marker instruction.md tells the agent to wrap its
+// final answer in, mirroring evaluate_answer.py's own "<<FINAL_ANSWER>>"
+// split.
+const finalAnswerTag = "<<FINAL_ANSWER>>"
 
-// Evaluate injects private verifier material (the tests/ tree) and the
-// resolved judge model environment into the still-live sandbox, and runs the
-// LLM-judge-backed verifier independently of the harness.
+// Evaluate downloads the agent's answer file from the still-live sandbox,
+// then — unless it's missing or empty — grades it host-side against the
+// task's rubric using an LLM judge, exactly like Deep Research Bench's RACE
+// grading: no code runs inside the sandbox during evaluation, only one file
+// download.
 func (b *Benchmark) Evaluate(ctx context.Context, task core.Task, sandbox runner.Sandbox) (core.Evaluation, error) {
 	started := time.Now()
 	evaluation := core.Evaluation{Status: core.StatusFailed, VerifierStatus: core.StatusFailed}
@@ -54,150 +48,141 @@ func (b *Benchmark) Evaluate(ctx context.Context, task core.Task, sandbox runner
 		return finish(fmt.Errorf("reverify sweatlas checkout before evaluation: %w", err))
 	}
 
-	apiKey, ok := b.apiKeyLookup(b.judge.APIKeyEnv)
-	if !ok {
-		return finish(fmt.Errorf("resolve sweatlas judge API key %q", b.judge.APIKeyEnv))
-	}
-	verifierEnv := map[string]string{
-		"EVAL_API_KEY":  string(apiKey),
-		"EVAL_BASE_URL": b.judge.BaseURL,
-		"EVAL_MODEL":    b.judge.Model,
-	}
-
 	artifactDir := filepath.Join(b.outputDir, task.ID, "evaluation")
 	if err := os.MkdirAll(artifactDir, 0o700); err != nil {
 		return finish(fmt.Errorf("create evaluator artifact directory: %w", err))
 	}
-	stdoutPath := filepath.Join(artifactDir, "stdout.log")
-	stderrPath := filepath.Join(artifactDir, "stderr.log")
+	answerArtifactPath := filepath.Join(artifactDir, "answer.txt")
 	rewardPath := filepath.Join(artifactDir, "reward.txt")
 	resultsPath := filepath.Join(artifactDir, "evaluation_results.json")
-	evaluation.LogPaths = []string{stdoutPath, stderrPath, rewardPath, resultsPath}
+	evaluation.LogPaths = []string{answerArtifactPath, rewardPath, resultsPath}
 	for _, path := range evaluation.LogPaths {
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return finish(fmt.Errorf("remove stale evaluator artifact %q: %w", path, err))
 		}
 	}
 
-	resetResult, err := sandbox.Exec(ctx, core.Command{
-		Path: "/bin/rm",
-		Args: []string{"-rf", "--", testsPath, verifierLogPath},
-	})
+	// A missing answer file is a legitimate (bad) task outcome, not a
+	// plumbing failure: an agent that times out or gives up mid-task never
+	// writes it. Score it as a fail without surfacing a Go error, exactly
+	// like evaluate_answer.py's own "no answer file" early return.
+	if err := sandbox.Download(ctx, answerPath, answerArtifactPath); err != nil {
+		return scoreNoAnswer(evaluation, started, rewardPath)
+	}
+
+	answerBytes, err := os.ReadFile(answerArtifactPath)
 	if err != nil {
-		return finish(fmt.Errorf("remove stale verifier paths: %w", err))
+		return finish(fmt.Errorf("read downloaded answer: %w", err))
 	}
-	if resetResult.ExitCode != 0 {
-		return finish(fmt.Errorf("remove stale verifier paths: exit code %d", resetResult.ExitCode))
+	answer := extractFinalAnswer(string(answerBytes))
+	if answer == "" {
+		return scoreNoAnswer(evaluation, started, rewardPath)
 	}
-	directories := []string{testsPath, verifierLogPath}
-	seenDirectories := map[string]struct{}{testsPath: {}, verifierLogPath: {}}
-	for _, file := range details.verifierFiles {
-		for directory := path.Dir(file.destination); directory != testsPath; directory = path.Dir(directory) {
-			if _, seen := seenDirectories[directory]; !seen {
-				seenDirectories[directory] = struct{}{}
-				directories = append(directories, directory)
+
+	rubrics, err := loadRubrics(filepath.Join(details.testsDir, "rubrics.json"))
+	if err != nil {
+		return finish(err)
+	}
+	systemPromptBytes, err := os.ReadFile(filepath.Join(details.testsDir, "system_prompt.txt"))
+	if err != nil {
+		return finish(fmt.Errorf("read system prompt: %w", err))
+	}
+	userPromptTemplateBytes, err := os.ReadFile(filepath.Join(details.testsDir, "user_prompt_template.txt"))
+	if err != nil {
+		return finish(fmt.Errorf("read user prompt template: %w", err))
+	}
+	problemStatement := ""
+	if promptBytes, err := os.ReadFile(filepath.Join(details.testsDir, "prompt.txt")); err == nil {
+		problemStatement = strings.TrimSpace(string(promptBytes))
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return finish(fmt.Errorf("read problem statement: %w", err))
+	}
+
+	evalCtx := ctx
+	if details.timeout > 0 {
+		var cancel context.CancelFunc
+		evalCtx, cancel = context.WithTimeout(ctx, details.timeout)
+		defer cancel()
+	}
+
+	scores := make([]*canonicalResult, len(rubrics))
+	rubricErrs := make([]error, len(rubrics))
+	unscoredCount := 0
+	for index, r := range rubrics {
+		scores[index], rubricErrs[index] = evaluateSingleRubric(evalCtx, b.judge, string(systemPromptBytes), string(userPromptTemplateBytes), problemStatement, answer, r)
+		if scores[index] == nil {
+			unscoredCount++
+		}
+	}
+	results := aggregateRubricResults(rubrics, scores)
+
+	// Every unscored rubric has a non-nil rubricErrs entry (evaluateSingleRubric
+	// never returns (nil, nil)); write them out so a systemic judge failure —
+	// e.g. every call getting a 401, or the judge model never returning a
+	// parsable rating — is diagnosable from the run's artifacts instead of
+	// silently looking identical to a legitimately-scored 0.
+	if unscoredCount > 0 {
+		var diagnostics strings.Builder
+		for index, r := range rubrics {
+			if rubricErrs[index] != nil {
+				fmt.Fprintf(&diagnostics, "rubric %s (%s): %v\n", r.ID, r.Title, rubricErrs[index])
 			}
 		}
-	}
-	slices.Sort(directories[2:])
-	createResult, err := sandbox.Exec(ctx, core.Command{
-		Path: "/bin/mkdir",
-		Args: append([]string{"-p", "--"}, directories...),
-	})
-	if err != nil {
-		return finish(fmt.Errorf("create clean verifier directories: %w", err))
-	}
-	if createResult.ExitCode != 0 {
-		return finish(fmt.Errorf("create clean verifier directories: exit code %d", createResult.ExitCode))
-	}
-	for _, file := range details.verifierFiles {
-		if err := sandbox.Upload(ctx, file.source, file.destination); err != nil {
-			return finish(fmt.Errorf("inject private verifier file %q: %w", file.name, err))
+		errorsPath := filepath.Join(artifactDir, "judge_errors.log")
+		if err := os.WriteFile(errorsPath, []byte(diagnostics.String()), 0o600); err == nil {
+			evaluation.LogPaths = append(evaluation.LogPaths, errorsPath)
+		}
+		if unscoredCount == len(rubrics) {
+			evaluation.Error = fmt.Sprintf("all %d rubrics could not be judged; see judge_errors.log", len(rubrics))
 		}
 	}
 
-	commandResult, commandErr := sandbox.Exec(ctx, core.Command{
-		Path:    "/bin/bash",
-		Args:    []string{filepath.Join(testsPath, "test.sh")},
-		Dir:     details.workdir,
-		Env:     verifierEnv,
-		Timeout: details.timeout,
-	})
-	var artifactErrors []error
-	if err := os.WriteFile(stdoutPath, []byte(commandResult.Stdout), 0o600); err != nil {
-		artifactErrors = append(artifactErrors, fmt.Errorf("write verifier stdout: %w", err))
+	if err := os.WriteFile(rewardPath, []byte(fmt.Sprintf("%d\n", results.Reward)), 0o600); err != nil {
+		return finish(fmt.Errorf("write verifier reward: %w", err))
 	}
-	if err := os.WriteFile(stderrPath, []byte(commandResult.Stderr), 0o600); err != nil {
-		artifactErrors = append(artifactErrors, fmt.Errorf("write verifier stderr: %w", err))
-	}
-	if err := sandbox.Download(ctx, filepath.Join(verifierLogPath, "reward.txt"), rewardPath); err != nil {
-		artifactErrors = append(artifactErrors, fmt.Errorf("download verifier reward: %w", err))
-	}
-	if err := sandbox.Download(ctx, filepath.Join(verifierLogPath, "evaluation_results.json"), resultsPath); err != nil {
-		artifactErrors = append(artifactErrors, fmt.Errorf("download verifier evaluation results: %w", err))
-	}
-
-	if commandErr != nil {
-		artifactErrors = append(artifactErrors, fmt.Errorf("run verifier: %w", commandErr))
-	}
-	if commandResult.ExitCode != 0 {
-		artifactErrors = append(artifactErrors, fmt.Errorf("run verifier: exit code %d", commandResult.ExitCode))
-	}
-	if len(artifactErrors) != 0 {
-		return finish(errors.Join(artifactErrors...))
-	}
-
-	reward, err := parseRewardFile(rewardPath)
+	resultsBytes, err := json.MarshalIndent(results, "", "  ")
 	if err != nil {
-		return finish(err)
+		return finish(fmt.Errorf("encode verifier evaluation results: %w", err))
 	}
-	evaluation.Reward = reward
-
-	aggScore, err := parseAggScore(resultsPath)
-	if err != nil {
-		return finish(err)
+	if err := os.WriteFile(resultsPath, resultsBytes, 0o600); err != nil {
+		return finish(fmt.Errorf("write verifier evaluation results: %w", err))
 	}
-	evaluation.Score = aggScore
 
-	if reward == 1 {
+	evaluation.Reward = float64(results.Reward)
+	evaluation.Score = results.AggScore
+	if results.Reward == 1 {
 		evaluation.Status = core.StatusSucceeded
 		evaluation.VerifierStatus = core.StatusSucceeded
-		return finish(nil)
 	}
 	return finish(nil)
 }
 
-func parseRewardFile(path string) (float64, error) {
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return 0, fmt.Errorf("read verifier reward: %w", err)
+// scoreNoAnswer mirrors evaluate_answer.py's own "no answer file" / "empty
+// answer" early return: only reward.txt is written (as "0"), no
+// evaluation_results.json, and no Go error is surfaced — a missing or empty
+// answer is a legitimate task outcome, not a plumbing fault.
+func scoreNoAnswer(evaluation core.Evaluation, started time.Time, rewardPath string) (core.Evaluation, error) {
+	if err := os.WriteFile(rewardPath, []byte("0\n"), 0o600); err != nil {
+		evaluation.Duration = time.Since(started)
+		evaluation.Error = fmt.Sprintf("write verifier reward: %v", err)
+		return evaluation, err
 	}
-	switch strings.TrimSpace(string(content)) {
-	case "1":
-		return 1, nil
-	case "0":
-		return 0, nil
-	default:
-		return 0, fmt.Errorf("malformed verifier reward in %q: expected 1 or 0", path)
-	}
+	evaluation.Reward = 0
+	evaluation.Score = 0
+	evaluation.Duration = time.Since(started)
+	return evaluation, nil
 }
 
-// parseAggScore decodes the verifier's evaluation_results.json and validates
-// its agg_score is a finite value in [0, 1] (the mathematically guaranteed
-// range for an average of per-rubric 0/1 scores, per evaluate_answer.py). A
-// badly-behaved judge script producing an out-of-range score is a real fault
-// that must surface as an evaluation error rather than be silently clamped.
-func parseAggScore(path string) (float64, error) {
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return 0, fmt.Errorf("read verifier evaluation results: %w", err)
+// extractFinalAnswer mirrors evaluate_answer.py's answer extraction: read
+// the file, trim whitespace, and — if the <<FINAL_ANSWER>> tag is present —
+// keep only the content after its first occurrence.
+func extractFinalAnswer(content string) string {
+	answer := strings.TrimSpace(content)
+	if strings.Contains(answer, finalAnswerTag) {
+		parts := strings.SplitN(answer, finalAnswerTag, 2)
+		if len(parts) == 2 {
+			answer = strings.TrimSpace(parts[1])
+		}
 	}
-	var results evaluationResults
-	if err := json.Unmarshal(content, &results); err != nil {
-		return 0, fmt.Errorf("parse verifier evaluation results %q: %w", path, err)
-	}
-	if math.IsNaN(results.AggScore) || math.IsInf(results.AggScore, 0) || results.AggScore < 0 || results.AggScore > 1 {
-		return 0, fmt.Errorf("malformed verifier agg_score in %q: %g is not finite and in [0, 1]", path, results.AggScore)
-	}
-	return results.AggScore, nil
+	return answer
 }
