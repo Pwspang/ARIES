@@ -31,10 +31,10 @@ flowchart TB
     A --> HO --> O
 ```
 
-The current implementations are Terminal-Bench 2 and Deep Research Bench, both
-from an exact pinned checkout. Terminal-Bench 2's task environment images and
-workdirs are derived from the selected task data; setup verifies the pinned
-checkout and selected task inputs before a run.
+The current implementations are Terminal-Bench 2, Deep Research Bench, and
+SWE-Atlas QA, all from an exact pinned checkout. Terminal-Bench 2's task
+environment images and workdirs are derived from the selected task data;
+setup verifies the pinned checkout and selected task inputs before a run.
 
 Deep Research Bench has no sandbox-resident private verifier tree. Its private
 material is a reference report and RACE-dimension rubric compared by an
@@ -51,6 +51,17 @@ cited URL host-side through the Jina AI Reader API, and validates the claim
 against the fetched content with its own judge model. FACT is strictly
 additive — configuring it (or not) never changes the RACE-derived score,
 reward, or status.
+
+SWE-Atlas QA combines both existing patterns: like Terminal-Bench 2, each
+task has a sandbox-resident private verifier tree, injected only after both
+isolation gates; like Deep Research Bench, grading is done by an LLM judge
+against a rubric rather than a deterministic pass/fail script — except here
+the judge-calling verifier script itself runs inside the sandbox rather than
+host-side. It also works around one dataset-shape hazard neither existing
+benchmark faces: its task file's declared verifier environment holds
+shell-style template placeholders rather than literal secrets, so `Evaluate`
+synthesizes the verifier's real environment fresh from the profile's judge
+config instead of copying the task file's values through unmodified.
 
 ## Customization & Contribution Guide
 
