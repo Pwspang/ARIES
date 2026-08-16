@@ -2,302 +2,339 @@ package sweatlas
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hyscale-lab/aries/pkg/core"
 )
 
-func benchmarkWithFixture(t *testing.T, outputDir string) (*Benchmark, core.Task, taskDetails) {
+type evaluateFake struct {
+	downloadErr     error
+	downloadContent string
+	downloadSource  string
+	downloads       int
+	uploads         int
+}
+
+func (s *evaluateFake) Exec(context.Context, core.Command) (core.CommandResult, error) {
+	return core.CommandResult{}, nil
+}
+
+func (s *evaluateFake) Upload(context.Context, string, string) error {
+	s.uploads++
+	return nil
+}
+
+func (s *evaluateFake) Download(_ context.Context, source, destination string) error {
+	s.downloads++
+	s.downloadSource = source
+	if s.downloadErr != nil {
+		return s.downloadErr
+	}
+	return os.WriteFile(destination, []byte(s.downloadContent), 0o600)
+}
+
+// stubChat is a chatter fake driven by a per-call response/error queue, in
+// the order chat is invoked (across all rubrics and retries).
+type stubChat struct {
+	responses []string
+	errs      []error
+	calls     int
+	prompts   []string
+}
+
+func (s *stubChat) chat(_ context.Context, _ string, userPrompt string) (string, error) {
+	index := s.calls
+	s.calls++
+	s.prompts = append(s.prompts, userPrompt)
+	var err error
+	if index < len(s.errs) {
+		err = s.errs[index]
+	}
+	if err != nil {
+		return "", err
+	}
+	if index < len(s.responses) {
+		return s.responses[index], nil
+	}
+	return "", errors.New("stubChat: no more canned responses")
+}
+
+func ratingResponse(status string) string {
+	return fmt.Sprintf(`{"ratings":[{"rubric_statement":"stmt","status":%q,"justification":"j"}]}`, status)
+}
+
+func benchmarkWithFixtureAndChat(t *testing.T, chat chatter) (*Benchmark, core.Task) {
 	t.Helper()
 	root := writeFixture(t)
 	task, details, err := loadTask(root, qaTaskID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	benchmark, err := New(testOptions(root, []string{qaTaskID}, outputDir))
+	benchmark, err := New(testOptions(root, []string{qaTaskID}, filepath.Join(t.TempDir(), "runs")))
 	if err != nil {
 		t.Fatal(err)
 	}
 	benchmark.details[qaTaskID] = details
-	return benchmark, task, details
+	benchmark.judge = chat
+	return benchmark, task
 }
 
-func TestEvaluateSynthesizesJudgeEnvironmentRatherThanTaskFileTemplateValues(t *testing.T) {
-	benchmark, task, details := benchmarkWithFixture(t, filepath.Join(t.TempDir(), "runs"))
-	sandbox := &fakeSandbox{verifierOutputs: map[string][]byte{
-		filepath.Join(verifierLogPath, "reward.txt"):              []byte("1\n"),
-		filepath.Join(verifierLogPath, "evaluation_results.json"): []byte(`{"agg_score":1.0}`),
-	}}
+func TestEvaluateRequiresLiveSandbox(t *testing.T) {
+	benchmark, task := benchmarkWithFixtureAndChat(t, &stubChat{})
+	if _, err := benchmark.Evaluate(context.Background(), task, nil); err == nil {
+		t.Fatal("Evaluate accepted a nil sandbox")
+	}
+}
+
+func TestEvaluateMissingAnswerScoresZeroWithoutError(t *testing.T) {
+	chat := &stubChat{}
+	benchmark, task := benchmarkWithFixtureAndChat(t, chat)
+	sandbox := &evaluateFake{downloadErr: errors.New("no such file")}
 
 	evaluation, err := benchmark.Evaluate(context.Background(), task, sandbox)
 	if err != nil {
-		t.Fatalf("Evaluate() error = %v", err)
+		t.Fatalf("Evaluate returned an error for a missing answer: %v", err)
 	}
-	if evaluation.Status != core.StatusSucceeded || evaluation.Reward != 1 || evaluation.Score != 1 {
-		t.Fatalf("Evaluation = %#v", evaluation)
+	if evaluation.Status != core.StatusFailed || evaluation.Reward != 0 || evaluation.Score != 0 {
+		t.Fatalf("evaluation = %#v, want zero score/reward and failed status", evaluation)
 	}
-	wantEnv := map[string]string{
-		"EVAL_API_KEY":  "fake-key",
-		"EVAL_BASE_URL": "https://api.deepseek.com",
-		"EVAL_MODEL":    "deepseek-v4-flash",
+	if chat.calls != 0 {
+		t.Fatalf("judge called %d times, want 0 when no answer was produced", chat.calls)
 	}
-	if !reflect.DeepEqual(sandbox.verifierCommand.Env, wantEnv) {
-		t.Fatalf("verifier environment = %#v, want %#v", sandbox.verifierCommand.Env, wantEnv)
+	reward, err := os.ReadFile(filepath.Join(benchmark.outputDir, task.ID, "evaluation", "reward.txt"))
+	if err != nil || strings.TrimSpace(string(reward)) != "0" {
+		t.Fatalf("reward.txt = %q, err = %v", reward, err)
 	}
-	for _, literal := range []string{"${OPENAI_API_KEY}", "${OPENAI_API_BASE}", "${EVAL_MODEL"} {
-		for _, value := range sandbox.verifierCommand.Env {
-			if strings.Contains(value, literal) {
-				t.Fatalf("verifier environment leaked task.toml template literal %q: %#v", literal, sandbox.verifierCommand.Env)
-			}
-		}
-	}
-	if sandbox.verifierCommand.Dir != details.workdir {
-		t.Fatalf("verifier dir = %q, want %q", sandbox.verifierCommand.Dir, details.workdir)
+	if _, err := os.Stat(filepath.Join(benchmark.outputDir, task.ID, "evaluation", "evaluation_results.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("evaluation_results.json exists (or errored unexpectedly) for a missing answer: %v", err)
 	}
 }
 
-func TestEvaluateFailsClosedWhenJudgeAPIKeyLookupMisses(t *testing.T) {
-	root := writeFixture(t)
-	task, details, err := loadTask(root, qaTaskID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	options := testOptions(root, []string{qaTaskID}, filepath.Join(t.TempDir(), "runs"))
-	options.APIKeyLookup = func(string) ([]byte, bool) { return nil, false }
-	benchmark, err := New(options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	benchmark.details[qaTaskID] = details
-	sandbox := &fakeSandbox{}
-
-	_, err = benchmark.Evaluate(context.Background(), task, sandbox)
-	if err == nil || !strings.Contains(err.Error(), "judge API key") {
-		t.Fatalf("Evaluate() error = %v, want judge API key resolution failure", err)
-	}
-	if len(sandbox.events) != 0 {
-		t.Fatalf("sandbox touched before judge key resolved: %v", sandbox.events)
-	}
-}
-
-func TestEvaluateRewardStates(t *testing.T) {
-	tests := []struct {
-		name       string
-		reward     []byte
-		downloadOK bool
-		wantStatus string
-		wantReward float64
-		wantErr    string
-	}{
-		{"one", []byte("1\n"), true, core.StatusSucceeded, 1, ""},
-		{"surrounding whitespace", []byte(" 1\n\n"), true, core.StatusSucceeded, 1, ""},
-		{"zero", []byte("0\n"), true, core.StatusFailed, 0, ""},
-		{"missing", nil, false, core.StatusFailed, 0, "download verifier reward"},
-		{"malformed", []byte("2\n"), true, core.StatusFailed, 0, "malformed verifier reward"},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			benchmark, task, _ := benchmarkWithFixture(t, filepath.Join(t.TempDir(), "runs"))
-			downloads := map[string][]byte{filepath.Join(verifierLogPath, "evaluation_results.json"): []byte(`{"agg_score":0.5}`)}
-			if test.downloadOK {
-				downloads[filepath.Join(verifierLogPath, "reward.txt")] = test.reward
-			}
-			sandbox := &fakeSandbox{verifierOutputs: downloads}
+func TestEvaluateEmptyAnswerScoresZeroWithoutError(t *testing.T) {
+	for name, content := range map[string]string{
+		"blank":            "   \n",
+		"tag with nothing": finalAnswerTag,
+	} {
+		t.Run(name, func(t *testing.T) {
+			chat := &stubChat{}
+			benchmark, task := benchmarkWithFixtureAndChat(t, chat)
+			sandbox := &evaluateFake{downloadContent: content}
 
 			evaluation, err := benchmark.Evaluate(context.Background(), task, sandbox)
-			if evaluation.Status != test.wantStatus || evaluation.Reward != test.wantReward {
-				t.Fatalf("Evaluation = %#v, want status %s reward %v", evaluation, test.wantStatus, test.wantReward)
-			}
-			if test.wantErr == "" && err != nil {
+			if err != nil {
 				t.Fatalf("Evaluate() error = %v", err)
 			}
-			if test.wantErr != "" && (err == nil || !strings.Contains(err.Error(), test.wantErr)) {
-				t.Fatalf("Evaluate() error = %v, want %q", err, test.wantErr)
+			if evaluation.Reward != 0 || evaluation.Score != 0 {
+				t.Fatalf("evaluation = %#v, want zero score/reward", evaluation)
+			}
+			if chat.calls != 0 {
+				t.Fatalf("judge called %d times, want 0 for an empty answer", chat.calls)
 			}
 		})
 	}
 }
 
-func TestEvaluateRejectsOutOfRangeAggScoreRatherThanClamping(t *testing.T) {
-	tests := []struct {
-		name    string
-		results string
-	}{
-		{"negative", `{"agg_score":-0.1}`},
-		{"above one", `{"agg_score":1.1}`},
-		{"nan", `{"agg_score":NaN}`},
-		{"missing field", `{}`},
-		{"malformed json", `not json`},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			benchmark, task, _ := benchmarkWithFixture(t, filepath.Join(t.TempDir(), "runs"))
-			sandbox := &fakeSandbox{verifierOutputs: map[string][]byte{
-				filepath.Join(verifierLogPath, "reward.txt"):              []byte("1\n"),
-				filepath.Join(verifierLogPath, "evaluation_results.json"): []byte(test.results),
-			}}
+func TestEvaluateExtractsFinalAnswerTag(t *testing.T) {
+	chat := &stubChat{responses: []string{ratingResponse("YES"), ratingResponse("YES")}}
+	benchmark, task := benchmarkWithFixtureAndChat(t, chat)
+	sandbox := &evaluateFake{downloadContent: "reasoning that should be discarded\n" + finalAnswerTag + "\nthe real answer\n"}
 
-			evaluation, err := benchmark.Evaluate(context.Background(), task, sandbox)
-			if test.name == "missing field" {
-				// agg_score absent decodes as the zero value 0.0, which is a
-				// legitimate in-range score, not a fault.
-				if err != nil || evaluation.Score != 0 {
-					t.Fatalf("Evaluate() = %#v, %v, want accepted zero score", evaluation, err)
-				}
-				return
-			}
-			if err == nil {
-				t.Fatalf("Evaluate() accepted malformed agg_score: %#v", evaluation)
-			}
-			if evaluation.Status != core.StatusFailed {
-				t.Fatalf("Evaluation = %#v, want failed status on malformed agg_score", evaluation)
-			}
-		})
+	if _, err := benchmark.Evaluate(context.Background(), task, sandbox); err != nil {
+		t.Fatal(err)
+	}
+	for _, prompt := range chat.prompts {
+		if strings.Contains(prompt, "reasoning that should be discarded") {
+			t.Fatalf("judge prompt leaked pre-tag content: %q", prompt)
+		}
+		if !strings.Contains(prompt, "the real answer") {
+			t.Fatalf("judge prompt missing extracted answer: %q", prompt)
+		}
 	}
 }
 
-func TestEvaluateInjectsTestsOnlyWhenCalled(t *testing.T) {
-	benchmark, task, details := benchmarkWithFixture(t, filepath.Join(t.TempDir(), "runs"))
-	sandbox := &fakeSandbox{preseededPaths: true, preseededSymlinks: true, verifierOutputs: map[string][]byte{
-		filepath.Join(verifierLogPath, "reward.txt"):              []byte("1\n"),
-		filepath.Join(verifierLogPath, "evaluation_results.json"): []byte(`{"agg_score":1.0}`),
-	}}
-	if len(sandbox.events) != 0 {
-		t.Fatal("verifier material appeared before Evaluate")
-	}
+func TestEvaluateAllMustHavesPassSucceeds(t *testing.T) {
+	// r1 is "must have" and scores YES; r2 is "nice to have" and scores NO —
+	// reward only depends on must-have rubrics, but agg_score averages both.
+	chat := &stubChat{responses: []string{ratingResponse("YES"), ratingResponse("NO")}}
+	benchmark, task := benchmarkWithFixtureAndChat(t, chat)
+	sandbox := &evaluateFake{downloadContent: finalAnswerTag + "\nthe answer\n"}
 
 	evaluation, err := benchmark.Evaluate(context.Background(), task, sandbox)
 	if err != nil {
-		t.Fatalf("Evaluate() error = %v", err)
+		t.Fatal(err)
 	}
-	if evaluation.Status != core.StatusSucceeded {
-		t.Fatalf("Evaluation = %#v", evaluation)
+	if evaluation.Status != core.StatusSucceeded || evaluation.VerifierStatus != core.StatusSucceeded {
+		t.Fatalf("evaluation = %#v, want succeeded", evaluation)
 	}
-	wantEvents := []string{
-		"exec:/bin/rm",
-		"exec:/bin/mkdir",
-		"upload:/tests/evaluate_answer.py",
-		"upload:/tests/rubrics.json",
-		"upload:/tests/test.sh",
-		"exec:/bin/bash",
-		"download:" + filepath.Join(verifierLogPath, "reward.txt"),
-		"download:" + filepath.Join(verifierLogPath, "evaluation_results.json"),
+	if evaluation.Reward != 1 {
+		t.Fatalf("Reward = %v, want 1", evaluation.Reward)
 	}
-	got := append([]string(nil), sandbox.events...)
-	if !reflect.DeepEqual(sortedCopy(got[:2]), sortedCopy(wantEvents[:2])) {
-		t.Fatalf("reset events = %v", got[:2])
-	}
-	uploadCount := len(details.verifierFiles)
-	if len(got) != len(wantEvents) {
-		t.Fatalf("events = %v, want %d events", got, len(wantEvents))
-	}
-	if uploadCount != 3 {
-		t.Fatalf("verifier files = %d, want 3", uploadCount)
-	}
-	if sandbox.preseededPaths || sandbox.preseededSymlinks {
-		t.Fatal("preseeded verifier paths or symlinks survived cleanup")
-	}
-	for _, source := range sandbox.uploadSources {
-		if strings.Contains(source, "solution") {
-			t.Fatalf("solution path uploaded as verifier: %q", source)
-		}
+	if evaluation.Score != 0.5 {
+		t.Fatalf("Score = %v, want 0.5 (mean of YES=1 and NO=0)", evaluation.Score)
 	}
 }
 
-func TestEvaluateRejectsNonzeroVerifierCommand(t *testing.T) {
-	benchmark, task, _ := benchmarkWithFixture(t, filepath.Join(t.TempDir(), "runs"))
-	sandbox := &fakeSandbox{
-		commandResult: core.CommandResult{ExitCode: 7},
-		verifierOutputs: map[string][]byte{
-			filepath.Join(verifierLogPath, "reward.txt"):              []byte("1\n"),
-			filepath.Join(verifierLogPath, "evaluation_results.json"): []byte(`{"agg_score":1.0}`),
-		},
-	}
+func TestEvaluateMustHaveFailureFailsRegardlessOfOthers(t *testing.T) {
+	chat := &stubChat{responses: []string{ratingResponse("NO"), ratingResponse("YES")}}
+	benchmark, task := benchmarkWithFixtureAndChat(t, chat)
+	sandbox := &evaluateFake{downloadContent: finalAnswerTag + "\nthe answer\n"}
 
 	evaluation, err := benchmark.Evaluate(context.Background(), task, sandbox)
-	if err == nil || !strings.Contains(err.Error(), "exit code 7") {
-		t.Fatalf("Evaluate() error = %v, want verifier exit code", err)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if evaluation.Status != core.StatusFailed || evaluation.Reward != 0 {
-		t.Fatalf("Evaluation accepted nonzero verifier command: %#v", evaluation)
+	if evaluation.Status == core.StatusSucceeded || evaluation.Reward != 0 {
+		t.Fatalf("evaluation = %#v, want failed (a must-have rubric scored NO)", evaluation)
 	}
 }
 
-func sortedCopy(values []string) []string {
-	copied := append([]string(nil), values...)
-	for i := range copied {
-		for j := i + 1; j < len(copied); j++ {
-			if copied[j] < copied[i] {
-				copied[i], copied[j] = copied[j], copied[i]
-			}
+func TestEvaluateRetriesJudgeErrorsThenSucceeds(t *testing.T) {
+	restore := rubricRetryCapForTest(t)
+	defer restore()
+	chat := &stubChat{
+		errs:      []error{errors.New("transient"), nil},
+		responses: []string{"", ratingResponse("YES"), ratingResponse("YES")},
+	}
+	benchmark, task := benchmarkWithFixtureAndChat(t, chat)
+	sandbox := &evaluateFake{downloadContent: finalAnswerTag + "\nthe answer\n"}
+
+	evaluation, err := benchmark.Evaluate(context.Background(), task, sandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evaluation.Reward != 1 {
+		t.Fatalf("Reward = %v, want 1 after a transient judge error retried successfully", evaluation.Reward)
+	}
+	if chat.calls != 3 {
+		t.Fatalf("chat.calls = %d, want 3 (1 failed + 1 retry for r1, 1 for r2)", chat.calls)
+	}
+}
+
+func TestEvaluateUnscoredRubricAfterRetryExhaustionIsExcluded(t *testing.T) {
+	responses := make([]string, maxRubricRetries)
+	for i := range responses {
+		responses[i] = "not json at all"
+	}
+	responses = append(responses, ratingResponse("YES"))
+	chat := &stubChat{responses: responses}
+	benchmark, task := benchmarkWithFixtureAndChat(t, chat)
+	sandbox := &evaluateFake{downloadContent: finalAnswerTag + "\nthe answer\n"}
+
+	evaluation, err := benchmark.Evaluate(context.Background(), task, sandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// r1 (must have) never scored -> no scored must-haves -> reward 0.
+	if evaluation.Reward != 0 {
+		t.Fatalf("Reward = %v, want 0 when the only must-have rubric never scored", evaluation.Reward)
+	}
+	// agg_score is the mean over scored rubrics only: r2 alone, scored YES=1.
+	if evaluation.Score != 1 {
+		t.Fatalf("Score = %v, want 1 (mean over the one scored rubric)", evaluation.Score)
+	}
+	if chat.calls != maxRubricRetries+1 {
+		t.Fatalf("chat.calls = %d, want %d", chat.calls, maxRubricRetries+1)
+	}
+}
+
+// TestEvaluateWritesJudgeErrorsLogWhenJudgeCallsConsistentlyFail locks in the
+// fix for a systemic judge failure (e.g. every call returning HTTP 401)
+// silently looking identical to a legitimately-scored 0: unscored rubrics
+// must leave a diagnosable trail, not just null scores.
+func TestEvaluateWritesJudgeErrorsLogWhenJudgeCallsConsistentlyFail(t *testing.T) {
+	restore := rubricRetryCapForTest(t)
+	defer restore()
+	errs := make([]error, maxRubricRetries*2)
+	for i := range errs {
+		errs[i] = errors.New("401 unauthorized")
+	}
+	chat := &stubChat{errs: errs}
+	benchmark, task := benchmarkWithFixtureAndChat(t, chat)
+	sandbox := &evaluateFake{downloadContent: finalAnswerTag + "\nthe answer\n"}
+
+	evaluation, err := benchmark.Evaluate(context.Background(), task, sandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evaluation.Reward != 0 || evaluation.Score != 0 {
+		t.Fatalf("evaluation = %#v, want zero reward/score when every judge call fails", evaluation)
+	}
+	if evaluation.Error == "" {
+		t.Fatal("evaluation.Error is empty despite every judge call failing")
+	}
+	logPath := filepath.Join(benchmark.outputDir, task.ID, "evaluation", "judge_errors.log")
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("judge_errors.log missing: %v", err)
+	}
+	if !strings.Contains(string(content), "401 unauthorized") {
+		t.Fatalf("judge_errors.log = %q, want it to contain the underlying error", content)
+	}
+	found := false
+	for _, path := range evaluation.LogPaths {
+		if path == logPath {
+			found = true
 		}
 	}
-	return copied
+	if !found {
+		t.Fatalf("LogPaths = %v, want it to include judge_errors.log", evaluation.LogPaths)
+	}
 }
 
-type fakeSandbox struct {
-	events             []string
-	commands           []core.Command
-	downloads          map[string][]byte
-	verifierOutputs    map[string][]byte
-	commandResult      core.CommandResult
-	commandErr         error
-	uploadSources      []string
-	uploadDestinations []string
-	verifierCommand    core.Command
-	preseededPaths     bool
-	preseededSymlinks  bool
-	cleanupComplete    bool
+func TestEvaluateWritesEvaluationResultsArtifact(t *testing.T) {
+	chat := &stubChat{responses: []string{ratingResponse("YES"), ratingResponse("YES")}}
+	benchmark, task := benchmarkWithFixtureAndChat(t, chat)
+	sandbox := &evaluateFake{downloadContent: finalAnswerTag + "\nthe answer\n"}
+
+	evaluation, err := benchmark.Evaluate(context.Background(), task, sandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evaluation.LogPaths) != 3 {
+		t.Fatalf("LogPaths = %v, want answer/reward/results", evaluation.LogPaths)
+	}
+	resultsBytes, err := os.ReadFile(filepath.Join(benchmark.outputDir, task.ID, "evaluation", "evaluation_results.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded evaluationResults
+	if err := json.Unmarshal(resultsBytes, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Reward != 1 || decoded.NumRubrics != 2 || decoded.NumScored != 2 || decoded.NumPassed != 2 {
+		t.Fatalf("decoded results = %#v", decoded)
+	}
 }
 
-func (s *fakeSandbox) Exec(_ context.Context, command core.Command) (core.CommandResult, error) {
-	s.events = append(s.events, "exec:"+command.Path)
-	s.commands = append(s.commands, command)
-	if command.Path == "/bin/rm" {
-		s.preseededPaths = false
-		s.preseededSymlinks = false
-		s.cleanupComplete = true
-		s.downloads = nil
+func TestEvaluateNeverUploadsToSandbox(t *testing.T) {
+	chat := &stubChat{responses: []string{ratingResponse("YES"), ratingResponse("YES")}}
+	benchmark, task := benchmarkWithFixtureAndChat(t, chat)
+	sandbox := &evaluateFake{downloadContent: finalAnswerTag + "\nthe answer\n"}
+
+	if _, err := benchmark.Evaluate(context.Background(), task, sandbox); err != nil {
+		t.Fatal(err)
 	}
-	if command.Path == "/bin/bash" {
-		if !s.cleanupComplete {
-			return core.CommandResult{}, errors.New("verifier ran before cleanup")
-		}
-		s.verifierCommand = command
-		s.downloads = cloneBytesMap(s.verifierOutputs)
-		return s.commandResult, s.commandErr
+	if sandbox.uploads != 0 {
+		t.Fatalf("Evaluate uploaded %d files; rubric/prompt material must stay host-side", sandbox.uploads)
 	}
-	return core.CommandResult{}, nil
+	if sandbox.downloads != 1 || sandbox.downloadSource != answerPath {
+		t.Fatalf("downloads = %d, source = %q, want exactly one download from %q", sandbox.downloads, sandbox.downloadSource, answerPath)
+	}
 }
 
-func (s *fakeSandbox) Upload(_ context.Context, source, destination string) error {
-	s.events = append(s.events, "upload:"+destination)
-	if !s.cleanupComplete {
-		return errors.New("upload before cleanup")
-	}
-	s.uploadSources = append(s.uploadSources, source)
-	s.uploadDestinations = append(s.uploadDestinations, destination)
-	return nil
-}
-
-func (s *fakeSandbox) Download(_ context.Context, source, destination string) error {
-	s.events = append(s.events, "download:"+source)
-	content, ok := s.downloads[source]
-	if !ok {
-		return errors.New("not found")
-	}
-	return os.WriteFile(destination, content, 0o600)
-}
-
-func cloneBytesMap(source map[string][]byte) map[string][]byte {
-	clone := make(map[string][]byte, len(source))
-	for key, value := range source {
-		clone[key] = append([]byte(nil), value...)
-	}
-	return clone
+// rubricRetryCapForTest shrinks the retry backoff so retry tests don't wait
+// out real wall-clock seconds, restoring it afterward.
+func rubricRetryCapForTest(t *testing.T) func() {
+	t.Helper()
+	restoreDelay, restoreCap := rubricRetryBaseDelay, rubricRetryCap
+	rubricRetryBaseDelay = time.Millisecond
+	rubricRetryCap = 10 * time.Millisecond
+	return func() { rubricRetryBaseDelay, rubricRetryCap = restoreDelay, restoreCap }
 }

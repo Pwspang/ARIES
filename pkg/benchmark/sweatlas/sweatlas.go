@@ -1,11 +1,11 @@
 // Package sweatlas implements the Codebase QA track of SWE-Atlas
-// (https://github.com/scaleapi/SWE-Atlas): each task carries a
-// Terminal-Bench-2-shaped private verifier tree (a sandbox-resident
-// tests/test.sh, injected only after both isolation gates), but grading is
-// done by an LLM judge against a rubric, like Deep Research Bench, rather
-// than a deterministic pass/fail script. Only the QA track is implemented;
-// SWE-Atlas's Test-Writing and Refactoring tracks have different task and
-// grading shapes and are out of scope.
+// (https://github.com/scaleapi/SWE-Atlas): grading is done host-side by an
+// LLM judge against a per-task rubric, like Deep Research Bench, rather than
+// a deterministic pass/fail script. The only sandbox material Evaluate
+// touches is the agent's own answer file (answerPath); the private rubric,
+// prompts, and judge HTTP calls never enter the sandbox. Only the QA track
+// is implemented; SWE-Atlas's Test-Writing and Refactoring tracks have
+// different task and grading shapes and are out of scope.
 package sweatlas
 
 import (
@@ -40,8 +40,11 @@ const (
 	// loading looks one level deeper.
 	qaSubdirectory = "data/qa"
 
-	testsPath       = "/tests"
-	verifierLogPath = "/logs/verifier"
+	// answerPath is the fixed location instruction.md already tells the
+	// agent to write its final answer to (wrapped in <<FINAL_ANSWER>> tags).
+	// Evaluate downloads it once; nothing else touches the sandbox during
+	// evaluation.
+	answerPath = "/logs/agent/answer.txt"
 )
 
 // Options selects tasks from one pinned SWE-Atlas checkout and names the
@@ -67,29 +70,19 @@ type Benchmark struct {
 	executionTaskIDs []string
 	outputDir        string
 	revision         string
-	judge            core.ModelConfig
-	apiKeyLookup     func(string) ([]byte, bool)
+	judge            chatter
 
 	mu      sync.RWMutex
 	details map[string]taskDetails
 }
 
-// taskDetails carries no verifier environment: task.toml's [verifier.env]
-// values are shell-style template placeholders (e.g. "${OPENAI_API_KEY}"),
-// not literal secrets — copying them into the sandbox verbatim would inject
-// the literal placeholder text. Evaluate instead synthesizes the verifier's
-// real EVAL_API_KEY/EVAL_BASE_URL/EVAL_MODEL environment fresh from the
-// Benchmark's own judge config at evaluation time (see evaluate.go).
+// taskDetails carries the host-local path to the task's private tests/
+// directory (rubrics.json, system_prompt.txt, user_prompt_template.txt,
+// optional prompt.txt) so Evaluate can load them directly from the pinned
+// checkout — none of this material is ever uploaded into the sandbox.
 type taskDetails struct {
-	verifierFiles []verifierFile
-	timeout       time.Duration
-	workdir       string
-}
-
-type verifierFile struct {
-	name        string
-	source      string
-	destination string
+	testsDir string
+	timeout  time.Duration
 }
 
 type taskFile struct {
@@ -107,6 +100,14 @@ type taskSection struct {
 	Name string `toml:"name"`
 }
 
+// verifierSection.Env is decoded but intentionally unused: task.toml's
+// [verifier.env] values are shell-style template placeholders (e.g.
+// "${OPENAI_API_KEY}"), meant for Scale's own reference harness ("Harbor")
+// to expand from its own process environment, not literal secrets. Grading
+// no longer execs anything inside the sandbox at all (see evaluate.go), so
+// this package never reads or synthesizes a verifier environment from it —
+// the field only exists so decoding [verifier.env] doesn't trip
+// rejectUnknownExecutionFields on real dataset task.toml files.
 type verifierSection struct {
 	TimeoutSeconds float64           `toml:"timeout_sec"`
 	Env            map[string]string `toml:"env"`
@@ -127,12 +128,6 @@ type environmentFile struct {
 	MCPServers          []string          `toml:"mcp_servers"`
 	Env                 map[string]string `toml:"env"`
 }
-
-// requiredVerifierEnvKeys is the exact key set the SWE-Atlas QA verifier
-// contract expects (see evaluate_answer.py's os.environ.get calls). loadTask
-// asserts task.toml declares exactly this set, then discards the literal
-// (template) values — see taskDetails's doc comment.
-var requiredVerifierEnvKeys = []string{"EVAL_API_KEY", "EVAL_BASE_URL", "EVAL_MODEL"}
 
 var _ runner.Benchmark = (*Benchmark)(nil)
 
@@ -155,6 +150,10 @@ func New(options Options) (*Benchmark, error) {
 	}
 	if options.APIKeyLookup == nil {
 		return nil, errors.New("sweatlas judge API key lookup is required")
+	}
+	judge, err := newJudgeClient(options.Judge, options.APIKeyLookup)
+	if err != nil {
+		return nil, fmt.Errorf("construct sweatlas judge: %w", err)
 	}
 
 	seen := make(map[string]struct{}, len(options.TaskIDs))
@@ -191,8 +190,7 @@ func New(options Options) (*Benchmark, error) {
 		executionTaskIDs: slices.Clone(executionIDs),
 		outputDir:        filepath.Clean(options.OutputDir),
 		revision:         options.Revision,
-		judge:            options.Judge,
-		apiKeyLookup:     options.APIKeyLookup,
+		judge:            judge,
 		details:          make(map[string]taskDetails, len(options.TaskIDs)),
 	}, nil
 }
@@ -224,9 +222,14 @@ func (b *Benchmark) Tasks(ctx context.Context) ([]core.Task, error) {
 	return tasks, nil
 }
 
-// PrepareSandbox removes verifier paths and separately proves that neither a
-// filesystem entry nor a dangling symlink remains before bridge access
-// exists.
+// PrepareSandbox confirms the agent's designated answer path starts absent
+// before the harness gets bridge access, mirroring Deep Research Bench's
+// PrepareSandbox (pkg/benchmark/deepresearchbench/sandbox.go): sweatlas has
+// no sandbox-resident private verifier tree either — its private material
+// (rubrics, prompts) never enters the sandbox at all, staying host-side for
+// the judge calls in Evaluate. This guards the one channel Evaluate trusts,
+// the answer path, against a reused or dirty sandbox pre-seeding a fake
+// answer.
 func (b *Benchmark) PrepareSandbox(ctx context.Context, task core.Task, sandbox runner.Sandbox) error {
 	if sandbox == nil {
 		return errors.New("sweatlas preparation requires a live sandbox")
@@ -237,22 +240,22 @@ func (b *Benchmark) PrepareSandbox(ctx context.Context, task core.Task, sandbox 
 	if !loaded {
 		return fmt.Errorf("sweatlas task %q was not loaded by Tasks", task.ID)
 	}
-	removed, err := sandbox.Exec(ctx, core.Command{Path: "/bin/rm", Args: []string{"-rf", "--", testsPath, verifierLogPath}})
+	removed, err := sandbox.Exec(ctx, core.Command{Path: "/bin/rm", Args: []string{"-rf", "--", answerPath}})
 	if err != nil {
-		return fmt.Errorf("remove verifier paths before harness: %w", err)
+		return fmt.Errorf("remove answer path before harness: %w", err)
 	}
 	if removed.ExitCode != 0 {
-		return fmt.Errorf("remove verifier paths before harness: exit code %d", removed.ExitCode)
+		return fmt.Errorf("remove answer path before harness: exit code %d", removed.ExitCode)
 	}
 	const absencePredicate = `for path do [ ! -e "$path" ] && [ ! -L "$path" ] || exit 1; done`
 	probed, err := sandbox.Exec(ctx, core.Command{
-		Path: "/bin/sh", Args: []string{"-c", absencePredicate, "aries-verifier-absence", testsPath, verifierLogPath},
+		Path: "/bin/sh", Args: []string{"-c", absencePredicate, "aries-answer-absence", answerPath},
 	})
 	if err != nil {
-		return fmt.Errorf("confirm verifier paths absent before harness: %w", err)
+		return fmt.Errorf("confirm answer path absent before harness: %w", err)
 	}
 	if probed.ExitCode != 0 {
-		return fmt.Errorf("confirm verifier paths absent before harness: exit code %d", probed.ExitCode)
+		return fmt.Errorf("confirm answer path absent before harness: exit code %d", probed.ExitCode)
 	}
 	return nil
 }
@@ -293,7 +296,7 @@ func loadTask(root, id string) (core.Task, taskDetails, error) {
 	if err != nil {
 		return core.Task{}, taskDetails{}, err
 	}
-	verifierFiles, err := captureVerifierTree(filepath.Join(taskDir, "tests"))
+	testsDir, err := validateTestsDir(filepath.Join(taskDir, "tests"))
 	if err != nil {
 		return core.Task{}, taskDetails{}, err
 	}
@@ -320,9 +323,8 @@ func loadTask(root, id string) (core.Task, taskDetails, error) {
 				Env:          cloneMap(parsed.Environment.Env),
 			},
 		}, taskDetails{
-			verifierFiles: verifierFiles,
-			timeout:       verifierTimeout,
-			workdir:       workdir,
+			testsDir: testsDir,
+			timeout:  verifierTimeout,
 		}, nil
 }
 
@@ -374,9 +376,6 @@ func validateTaskFile(id string, parsed taskFile) (string, error) {
 	if err := validateEnvironmentMap("environment.env", parsed.Environment.Env); err != nil {
 		return "", err
 	}
-	if err := validateVerifierEnvKeys(parsed.Verifier.Env); err != nil {
-		return "", err
-	}
 
 	image, err := containerimage.ValidateTagOnly(parsed.Environment.DockerImage)
 	if err != nil {
@@ -385,64 +384,27 @@ func validateTaskFile(id string, parsed taskFile) (string, error) {
 	return image, nil
 }
 
-// validateVerifierEnvKeys asserts task.toml's [verifier.env] declares exactly
-// the key set the SWE-Atlas QA verifier contract expects. It deliberately
-// does not validate or retain the values: they are shell-style template
-// placeholders (e.g. "${OPENAI_API_KEY}"), not literal secrets — see
-// taskDetails's doc comment. A future dataset revision that changes this
-// contract must fail loudly here rather than silently grade with a broken
-// judge environment.
-func validateVerifierEnvKeys(env map[string]string) error {
-	if len(env) != len(requiredVerifierEnvKeys) {
-		return fmt.Errorf("verifier.env has %d keys, want exactly %v", len(env), requiredVerifierEnvKeys)
+// validateTestsDir confirms the task's private tests/ directory contains the
+// files Evaluate reads directly from the host checkout (rubrics.json,
+// system_prompt.txt, user_prompt_template.txt — evaluate_answer.py's own
+// required inputs; prompt.txt is optional there too) and returns its
+// absolute path. Unlike the old sandbox-injection contract, test.sh is no
+// longer required: nothing execs it anymore.
+func validateTestsDir(root string) (string, error) {
+	absolute, err := filepath.Abs(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve tests directory: %w", err)
 	}
-	for _, key := range requiredVerifierEnvKeys {
-		if _, ok := env[key]; !ok {
-			return fmt.Errorf("verifier.env is missing required key %q; want exactly %v", key, requiredVerifierEnvKeys)
-		}
-	}
-	return nil
-}
-
-func captureVerifierTree(root string) ([]verifierFile, error) {
-	var files []verifierFile
-	foundScript := false
-	err := filepath.WalkDir(root, func(source string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		info, err := entry.Info()
+	for _, name := range []string{"rubrics.json", "system_prompt.txt", "user_prompt_template.txt"} {
+		info, err := os.Stat(filepath.Join(absolute, name))
 		if err != nil {
-			return err
+			return "", fmt.Errorf("tests/%s is required: %w", name, err)
 		}
 		if !info.Mode().IsRegular() {
-			return fmt.Errorf("verifier path %q is not a regular file", source)
+			return "", fmt.Errorf("tests/%s is not a regular file", name)
 		}
-		relative, err := filepath.Rel(root, source)
-		if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-			return fmt.Errorf("resolve verifier path %q", source)
-		}
-		containerRelative := filepath.ToSlash(relative)
-		if containerRelative == "test.sh" {
-			foundScript = true
-		}
-		files = append(files, verifierFile{
-			name:        containerRelative,
-			source:      source,
-			destination: path.Join(testsPath, containerRelative),
-		})
-		return nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("capture verifier tree: %w", err)
 	}
-	if !foundScript {
-		return nil, errors.New("capture verifier tree: tests/test.sh is required")
-	}
-	return files, nil
+	return absolute, nil
 }
 
 func finalWorkdir(filePath string) (string, error) {
