@@ -1,0 +1,46 @@
+{
+  "name": "openclaw-sweatlasqa-smoke1-sglang",
+  "versions_file": "../configs/versions.json",
+  "overrides_file": "",
+  "execution": {
+    "concurrency": 1
+  },
+  "benchmark": {
+    "type": "sweatlasqa",
+    "root": ".cache/swe-atlas-qa",
+    "tasks": [
+      "task-6905333b74f22949d97baa06"
+    ],
+    "judge": {
+      "provider": "deepseek",
+      "base_url": "https://api.deepseek.com",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "model": "deepseek-v4-flash"
+    }
+  },
+  "harness": {
+    "type": "openclaw",
+    "subagents": {
+      "enabled": false
+    }
+  },
+  "sandbox": {
+    "type": "docker"
+  },
+  "bridge": {
+    "type": "openclaw-ssh"
+  },
+  "runtime": {
+    "backend": "sglang",
+    "mode": "external",
+    "config": {
+      "file": "../configs/sglang/qwen3-8b-sweatlasqa.yaml"
+    }
+  },
+  "model": {
+    "base_url": "http://192.168.111.200:8100/v1",
+    "api_key_env": "SGLANG_API_KEY",
+    "id": "Qwen/Qwen3.6-35B-A3B-FP8"
+  },
+  "output_dir": "runs"
+}
