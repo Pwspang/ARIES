@@ -1,0 +1,58 @@
+{
+  "name": "openclaw-drb-smoke1-amem-sglang",
+  "versions_file": "../configs/versions-amem.json",
+  "overrides_file": "",
+  "execution": {
+    "concurrency": 1
+  },
+  "benchmark": {
+    "type": "deepresearchbench",
+    "root": ".cache/deep-research-bench",
+    "tasks": [
+      "61"
+    ],
+    "environment": {
+      "image": "ihasfarm/aries-deepresearchbench:latest",
+      "workdir": "/workspace"
+    },
+    "judge": {
+      "enabled": false
+    },
+    "fact": {
+      "jina_api_key_env": "JINA_API_KEY"
+    }
+  },
+  "harness": {
+    "type": "openclaw",
+    "web_search": {
+      "enabled": true,
+      "provider": "tavily",
+      "tavily_api_key_env": "TAVILY_API_KEY"
+    },
+    "subagents": {
+      "enabled": false
+    },
+    "amem": {
+      "enabled": true
+    }
+  },
+  "sandbox": {
+    "type": "docker"
+  },
+  "bridge": {
+    "type": "openclaw-ssh"
+  },
+  "runtime": {
+    "backend": "sglang",
+    "mode": "external",
+    "config": {
+      "file": "../configs/sglang/qwen3.6-35b-local.yaml"
+    }
+  },
+  "model": {
+    "base_url": "http://192.168.111.200:8100/v1",
+    "api_key_env": "SGLANG_API_KEY",
+    "id": "Qwen/Qwen3.6-35B-A3B-FP8"
+  },
+  "output_dir": "runs"
+}

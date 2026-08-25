@@ -191,6 +191,40 @@ func TestTasksAppliesTaskPromptTemplate(t *testing.T) {
 	}
 }
 
+func TestTasksOmitsAMEMBootstrapByDefault(t *testing.T) {
+	root := writeFixture(t, defaultFixtureRows(t))
+	options := baseOptions(root)
+	benchmark, err := New(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := benchmark.Tasks(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(tasks[0].Instruction, "memory_add") {
+		t.Fatalf("Instruction = %q, want no amem bootstrap text when AMEMBootstrap is unset", tasks[0].Instruction)
+	}
+}
+
+func TestTasksAppendsAMEMBootstrapWhenEnabled(t *testing.T) {
+	root := writeFixture(t, defaultFixtureRows(t))
+	options := baseOptions(root)
+	options.AMEMBootstrap = true
+	benchmark, err := New(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := benchmark.Tasks(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := applyPromptTemplate(taskPromptTemplate, "research prompt 1") + reportInstruction + amemBootstrapInstruction
+	if tasks[0].Instruction != want {
+		t.Fatalf("Instruction = %q, want %q", tasks[0].Instruction, want)
+	}
+}
+
 func TestTasksRejectsRevisionMismatch(t *testing.T) {
 	root := writeFixture(t, defaultFixtureRows(t))
 	options := baseOptions(root)

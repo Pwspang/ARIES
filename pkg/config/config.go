@@ -181,11 +181,59 @@ func (f FactConfig) CoreModel() core.ModelConfig {
 }
 
 type HarnessConfig struct {
-	Type      string                 `json:"type"`
-	Mode      string                 `json:"mode,omitempty"`
-	Realtime  HarnessRealtimeConfig  `json:"realtime,omitempty"`
-	WebSearch HarnessWebSearchConfig `json:"web_search,omitempty"`
-	Subagents HarnessSubagentsConfig `json:"subagents,omitempty"`
+	Type         string                    `json:"type"`
+	Mode         string                    `json:"mode,omitempty"`
+	Realtime     HarnessRealtimeConfig     `json:"realtime,omitempty"`
+	WebSearch    HarnessWebSearchConfig    `json:"web_search,omitempty"`
+	Subagents    HarnessSubagentsConfig    `json:"subagents,omitempty"`
+	AMEM         HarnessAMEMConfig         `json:"amem,omitempty"`
+	LosslessClaw HarnessLosslessClawConfig `json:"lossless_claw,omitempty"`
+}
+
+// HarnessAMEMConfig enables the amem memory plugin (https://amem.owo.lc, npm
+// "openclaw-amem") as an OpenClaw plugin (see pkg/harness/openclaw/config.go's
+// amemPluginConfig). OpenClaw-only, and requires a pinned OpenClaw image with
+// the plugin pre-installed (docker/openclaw-amem) plus a pinned Qdrant image
+// (Versions.AMEMQdrant) — see that image's Dockerfile comment for why.
+//
+// By default amem's own internal LLM calls (note-metadata extraction, merge/
+// contradiction adjudication) reuse the profile's primary task model and API
+// key — see amemPluginConfig's doc comment. The LLM* fields below override
+// that with a separate model/endpoint instead, e.g. because the primary
+// model doesn't reliably produce the plain JSON amem asks for (observed with
+// at least one sglang-served Qwen deployment: it prefaces answers with prose
+// instead of raw JSON, and amem's own lenient parser still fails on that,
+// silently defaulting to empty note metadata and zero merges/links). All
+// three LLM* fields must be set together or not at all — see (*HarnessConfig)
+// validate.
+type HarnessAMEMConfig struct {
+	Enabled      bool   `json:"enabled,omitempty"`
+	LLMBaseURL   string `json:"llm_base_url,omitempty"`
+	LLMModel     string `json:"llm_model,omitempty"`
+	LLMAPIKeyEnv string `json:"llm_api_key_env,omitempty"`
+}
+
+// HarnessLosslessClawConfig enables the lossless-claw context-management
+// plugin (github.com/Martian-Engineering/lossless-claw, npm
+// "@martian-engineering/lossless-claw") as an OpenClaw plugin claiming the
+// "contextEngine" slot (see pkg/harness/openclaw/config.go's
+// losslessClawPluginConfig) — mutually exclusive with AMEM (see
+// (*HarnessConfig).validate), which claims the separate "memory" slot.
+// Unlike amem, lossless-claw needs no sidecar container: it persists to a
+// SQLite file inside the OpenClaw container's own state directory, exported
+// as an artifact at harness Close() instead of scraped from a vector DB.
+//
+// By default lossless-claw's own summarization/expansion calls reuse the
+// profile's primary task model (OpenClaw's own default resolution — see
+// losslessClawPluginConfig's doc comment). The LLM* fields below override
+// that with a separate model/endpoint instead, registered as an additional
+// OpenClaw model provider. All three LLM* fields must be set together or not
+// at all — see (*HarnessConfig).validate.
+type HarnessLosslessClawConfig struct {
+	Enabled      bool   `json:"enabled,omitempty"`
+	LLMBaseURL   string `json:"llm_base_url,omitempty"`
+	LLMModel     string `json:"llm_model,omitempty"`
+	LLMAPIKeyEnv string `json:"llm_api_key_env,omitempty"`
 }
 
 // HarnessWebSearchConfig is an OpenClaw/Hermes-only concept (see
@@ -318,6 +366,7 @@ type Versions struct {
 	DeepResearchBench DeepResearchBenchVersions `json:"deepresearchbench"`
 	OpenClaw          OpenClawVersions          `json:"openclaw"`
 	Hermes            HermesVersions            `json:"hermes"`
+	AMEMQdrant        AMEMQdrantVersions        `json:"amem_qdrant"`
 }
 
 type TerminalBench2Versions struct {
@@ -335,6 +384,14 @@ type OpenClawVersions struct {
 }
 
 type HermesVersions struct {
+	Image string `json:"image"`
+}
+
+// AMEMQdrantVersions pins the Qdrant image the OpenClaw harness starts as a
+// run-scoped sidecar when harness.amem.enabled — required only in that case
+// (see (Versions).validate and (*HarnessConfig).validate), since amem's
+// plugin hardcodes its Qdrant client to reach it via a fixed alias.
+type AMEMQdrantVersions struct {
 	Image string `json:"image"`
 }
 
@@ -739,6 +796,43 @@ func (h *HarnessConfig) validate() error {
 		enabled := true
 		h.Subagents.Enabled = &enabled
 	}
+	if h.AMEM.Enabled && h.Type != "openclaw" {
+		return errors.New("harness.amem requires OpenClaw")
+	}
+	if h.AMEM.LLMBaseURL != "" || h.AMEM.LLMModel != "" || h.AMEM.LLMAPIKeyEnv != "" {
+		if !h.AMEM.Enabled {
+			return errors.New("harness.amem.llm_base_url/llm_model/llm_api_key_env require harness.amem.enabled")
+		}
+		if h.AMEM.LLMBaseURL == "" || h.AMEM.LLMModel == "" || h.AMEM.LLMAPIKeyEnv == "" {
+			return errors.New("harness.amem.llm_base_url, llm_model, and llm_api_key_env must be set together")
+		}
+		if err := validateHTTPBaseURL("harness.amem.llm_base_url", h.AMEM.LLMBaseURL); err != nil {
+			return err
+		}
+		if !validEnvName(h.AMEM.LLMAPIKeyEnv) {
+			return errors.New("harness.amem.llm_api_key_env must be an environment variable name")
+		}
+	}
+	if h.LosslessClaw.Enabled && h.Type != "openclaw" {
+		return errors.New("harness.lossless_claw requires OpenClaw")
+	}
+	if h.AMEM.Enabled && h.LosslessClaw.Enabled {
+		return errors.New("harness.amem and harness.lossless_claw are mutually exclusive")
+	}
+	if h.LosslessClaw.LLMBaseURL != "" || h.LosslessClaw.LLMModel != "" || h.LosslessClaw.LLMAPIKeyEnv != "" {
+		if !h.LosslessClaw.Enabled {
+			return errors.New("harness.lossless_claw.llm_base_url/llm_model/llm_api_key_env require harness.lossless_claw.enabled")
+		}
+		if h.LosslessClaw.LLMBaseURL == "" || h.LosslessClaw.LLMModel == "" || h.LosslessClaw.LLMAPIKeyEnv == "" {
+			return errors.New("harness.lossless_claw.llm_base_url, llm_model, and llm_api_key_env must be set together")
+		}
+		if err := validateHTTPBaseURL("harness.lossless_claw.llm_base_url", h.LosslessClaw.LLMBaseURL); err != nil {
+			return err
+		}
+		if !validEnvName(h.LosslessClaw.LLMAPIKeyEnv) {
+			return errors.New("harness.lossless_claw.llm_api_key_env must be an environment variable name")
+		}
+	}
 	switch h.Mode {
 	case "agent":
 		if h.Realtime != (HarnessRealtimeConfig{}) {
@@ -913,6 +1007,11 @@ func (c Versions) validate() error {
 	if strings.TrimSpace(c.Hermes.Image) != "" {
 		if err := containerimage.ValidatePinnedTagOnly(c.Hermes.Image); err != nil {
 			return fmt.Errorf("hermes.image: %w", err)
+		}
+	}
+	if strings.TrimSpace(c.AMEMQdrant.Image) != "" {
+		if err := containerimage.ValidatePinnedTagOnly(c.AMEMQdrant.Image); err != nil {
+			return fmt.Errorf("amem_qdrant.image: %w", err)
 		}
 	}
 	return nil

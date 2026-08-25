@@ -1,0 +1,703 @@
+<meta charset="UTF-8">
+<title>__TITLE__</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    color-scheme: light;
+    --surface-0: #eef0f4;
+    --surface-1: #f7f8fa;
+    --surface-2: #ffffff;
+    --text-primary: #14171c;
+    --text-secondary: #565f6e;
+    --text-muted: #8890a0;
+    --border: #dde1e7;
+    --border-strong: #c4cad3;
+    --focus: #2a78d6;
+    --node-fill: #ffffff;
+    --node-stroke: #8890a0;
+    --node-stroke-decision: #14171c;
+    --edge-supports: #2a78d6;
+    --edge-related: #eb6834;
+    --edge-supersedes: #1baf7a;
+    --edge-contradicts: #e34948;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --surface-0: #0e1013;
+      --surface-1: #14171c;
+      --surface-2: #1b1f26;
+      --text-primary: #eef0f3;
+      --text-secondary: #a7afbd;
+      --text-muted: #6b7280;
+      --border: #2a2f38;
+      --border-strong: #3a414d;
+      --focus: #3987e5;
+      --node-fill: #1b1f26;
+      --node-stroke: #6b7280;
+      --node-stroke-decision: #eef0f3;
+      --edge-supports: #3987e5;
+      --edge-related: #d95926;
+      --edge-supersedes: #199e70;
+      --edge-contradicts: #e66767;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface-0: #0e1013;
+    --surface-1: #14171c;
+    --surface-2: #1b1f26;
+    --text-primary: #eef0f3;
+    --text-secondary: #a7afbd;
+    --text-muted: #6b7280;
+    --border: #2a2f38;
+    --border-strong: #3a414d;
+    --focus: #3987e5;
+    --node-fill: #1b1f26;
+    --node-stroke: #6b7280;
+    --node-stroke-decision: #eef0f3;
+    --edge-supports: #3987e5;
+    --edge-related: #d95926;
+    --edge-supersedes: #199e70;
+    --edge-contradicts: #e66767;
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--surface-0);
+    color: var(--text-primary);
+    font-family: "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", -apple-system, sans-serif;
+  }
+  body {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: clamp(16px, 3vw, 32px);
+  }
+  .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+
+  header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px 24px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .titleblock h1 {
+    margin: 0 0 4px 0;
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+  }
+  .titleblock p {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 13px;
+    max-width: 62ch;
+  }
+  .stats {
+    display: flex;
+    gap: 22px;
+  }
+  .stat {
+    text-align: right;
+  }
+  .stat .n {
+    display: block;
+    font-size: 22px;
+    font-weight: 600;
+    line-height: 1.1;
+  }
+  .stat .l {
+    display: block;
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-top: 2px;
+  }
+
+  main {
+    flex: 1;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 320px;
+    gap: 16px;
+    min-height: 0;
+  }
+  @media (max-width: 820px) {
+    main { grid-template-columns: 1fr; }
+  }
+
+  .graph-panel {
+    position: relative;
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    min-height: 480px;
+  }
+  .graph-panel svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+    min-height: 480px;
+  }
+  .graph-panel svg text {
+    font-family: "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
+    fill: var(--text-primary);
+  }
+  .node-group { cursor: pointer; }
+  .node-shape {
+    fill: var(--node-fill);
+    stroke: var(--node-stroke);
+    stroke-width: 1.4;
+    transition: stroke 120ms ease, stroke-width 120ms ease, filter 120ms ease;
+  }
+  .node-shape.decision { stroke: var(--node-stroke-decision); stroke-width: 1.8; }
+  .node-group.active .node-shape { stroke: var(--focus); stroke-width: 2.6; }
+  .node-group:hover .node-shape { stroke: var(--focus); stroke-width: 2.2; }
+  .node-label {
+    font-size: 9.5px;
+    pointer-events: none;
+  }
+  .node-index {
+    font-size: 9px;
+    font-family: "IBM Plex Mono", monospace;
+    fill: var(--text-muted);
+    pointer-events: none;
+  }
+  .edge {
+    fill: none;
+    stroke-width: 1.6;
+    opacity: 0.72;
+    transition: opacity 120ms ease, stroke-width 120ms ease;
+  }
+  .edge.dim { opacity: 0.12; }
+  .edge.lit { opacity: 1; stroke-width: 2.4; }
+  /* stroke-dasharray for a given relation type is set inline per-line/legend
+     swatch by metaFor() in the script below, since the set of relation types
+     isn't fixed at author time (amem allows custom types). */
+
+  .legend {
+    position: absolute;
+    left: 14px;
+    bottom: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    background: color-mix(in srgb, var(--surface-2) 88%, transparent);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    backdrop-filter: blur(2px);
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    color: var(--text-secondary);
+  }
+  .legend-swatch {
+    width: 20px;
+    height: 0;
+    border-top-width: 2.4px;
+    border-top-style: solid;
+    flex-shrink: 0;
+  }
+  .legend-note {
+    font-size: 10px;
+    color: var(--text-muted);
+    border-top: 1px solid var(--border);
+    padding-top: 6px;
+    margin-top: 2px;
+    max-width: 200px;
+  }
+
+  .hint {
+    position: absolute;
+    right: 14px;
+    top: 14px;
+    font-size: 11px;
+    color: var(--text-muted);
+    text-align: right;
+  }
+
+  aside {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  aside .eyebrow {
+    font-size: 10px;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+  aside .placeholder {
+    color: var(--text-muted);
+    font-size: 13px;
+    line-height: 1.6;
+  }
+  .detail-type {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    padding: 3px 9px;
+    width: fit-content;
+  }
+  .detail-content {
+    font-size: 13.5px;
+    line-height: 1.65;
+    color: var(--text-primary);
+    white-space: pre-wrap;
+  }
+  .detail-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .detail-tags span {
+    font-size: 10.5px;
+    color: var(--text-secondary);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 2px 7px;
+  }
+  .detail-meta {
+    font-size: 11px;
+    color: var(--text-muted);
+    display: flex;
+    justify-content: space-between;
+    border-top: 1px solid var(--border);
+    padding-top: 8px;
+    margin-top: 2px;
+  }
+  .detail-rels {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .detail-rels .rel-row {
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    font-size: 12px;
+  }
+  .rel-tag {
+    flex-shrink: 0;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    padding: 1px 6px;
+    border-radius: 4px;
+    color: var(--surface-2);
+  }
+  .rel-row .rel-text {
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }
+  .rel-row .rel-text b { color: var(--text-primary); font-weight: 500; }
+
+  footer {
+    font-size: 11px;
+    color: var(--text-muted);
+    text-align: center;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .node-shape, .edge { transition: none; }
+  }
+</style>
+
+<header>
+  <div class="titleblock">
+    <h1>amem memory graph</h1>
+    <p>__SUBTITLE__</p>
+  </div>
+  <div class="stats">
+    <div class="stat"><span class="n mono">__MEMORY_COUNT__</span><span class="l">memories</span></div>
+    <div class="stat"><span class="n mono">__RELATION_COUNT__</span><span class="l">relations</span></div>
+    <div class="stat"><span class="n mono">__RELATION_TYPE_COUNT__</span><span class="l">relation types</span></div>
+  </div>
+</header>
+
+<main>
+  <div class="graph-panel">
+    <div class="hint">click a node for its full content · click an edge for the relation</div>
+    <svg id="graph" viewBox="0 0 900 640" role="img" aria-label="__ARIA_LABEL__"></svg>
+    <div class="legend" id="legend"></div>
+  </div>
+  <aside id="detail">
+    <div class="eyebrow">Selection</div>
+    <p class="placeholder">Click any node or edge in the graph to inspect what the agent actually stored, and how it linked it to other facts.</p>
+  </aside>
+</main>
+
+<footer>Extracted from the run's amem SQLite state (<span class="mono">.amem/memory.db</span>) — memories and memory_relations tables.</footer>
+
+<script>
+(function () {
+  "use strict";
+
+  var DATA = __DATA_JSON__;
+
+  // amem's memory_relate tool accepts any of 7 documented relation types AND
+  // arbitrary custom strings ("or define your own") — a fixed enum here
+  // crashed render() (via `undefined.color`) the moment a task used a type
+  // outside a hardcoded 4, which happens routinely ("implements", "depends_on"
+  // showed up in real runs). KNOWN_RELATION_META covers all 7 documented
+  // types (composite-encoded: 4 hues x solid/dashed, so a 5th+ type never
+  // needs a risky new hue); metaFor() below falls back safely for anything
+  // else instead of throwing.
+  var KNOWN_RELATION_META = {
+    supports:    { color: "var(--edge-supports)",    dash: null,    label: "supports" },
+    related_to:  { color: "var(--edge-related)",     dash: null,    label: "related to" },
+    contradicts: { color: "var(--edge-contradicts)", dash: "5 3",   label: "contradicts" },
+    supersedes:  { color: "var(--edge-supersedes)",  dash: "1 3",   label: "supersedes" },
+    depends_on:  { color: "var(--edge-supports)",    dash: "5 3",   label: "depends on" },
+    caused_by:   { color: "var(--edge-related)",     dash: "5 3",   label: "caused by" },
+    implements:  { color: "var(--edge-supersedes)",  dash: "5 3",   label: "implements" }
+  };
+  var relationMetaCache = {};
+  function metaFor(type) {
+    if (KNOWN_RELATION_META[type]) return KNOWN_RELATION_META[type];
+    if (!relationMetaCache[type]) {
+      relationMetaCache[type] = { color: "var(--text-muted)", dash: "2 2", label: String(type).replace(/_/g, " ") };
+    }
+    return relationMetaCache[type];
+  }
+
+  function shortLabel(content) {
+    var head = content.split(/[：:]/)[0];
+    if (head.length > 20) head = head.slice(0, 20) + "…";
+    return head;
+  }
+
+  var memories = DATA.memories.map(function (m, i) {
+    return {
+      id: m.id,
+      index: i + 1,
+      content: m.content,
+      type: m.type,
+      tags: JSON.parse(m.tags || "[]"),
+      confidence: m.confidence,
+      tier: m.tier,
+      label: shortLabel(m.content),
+      x: 450 + (Math.random() - 0.5) * 40,
+      y: 320 + (Math.random() - 0.5) * 40,
+      vx: 0, vy: 0
+    };
+  });
+  var byId = {};
+  memories.forEach(function (m) { byId[m.id] = m; });
+
+  var relations = DATA.relations.map(function (r) {
+    return {
+      id: r.id,
+      from: r.from_id,
+      to: r.to_id,
+      type: r.relationship_type,
+      strength: r.strength
+    };
+  });
+
+  // Adjacency for quick neighbor lookups (used for dim/lit interaction and detail panel).
+  var adjacency = {};
+  memories.forEach(function (m) { adjacency[m.id] = []; });
+  relations.forEach(function (r) {
+    adjacency[r.from].push({ rel: r, other: r.to, dir: "out" });
+    adjacency[r.to].push({ rel: r, other: r.from, dir: "in" });
+  });
+
+  // --- Tiny force-directed layout: O(n^2) repulsion is fine at n=13. ---
+  var W = 900, H = 640;
+  var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  function step() {
+    var i, j, a, b, dx, dy, dist, force;
+    // Repulsion between all pairs.
+    for (i = 0; i < memories.length; i++) {
+      a = memories[i];
+      for (j = i + 1; j < memories.length; j++) {
+        b = memories[j];
+        dx = a.x - b.x; dy = a.y - b.y;
+        dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
+        force = 2600 / (dist * dist);
+        var fx = (dx / dist) * force, fy = (dy / dist) * force;
+        a.vx += fx; a.vy += fy;
+        b.vx -= fx; b.vy -= fy;
+      }
+    }
+    // Spring attraction along edges.
+    relations.forEach(function (r) {
+      a = byId[r.from]; b = byId[r.to];
+      dx = b.x - a.x; dy = b.y - a.y;
+      dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
+      var target = 180;
+      var f = (dist - target) * 0.02;
+      var fx = (dx / dist) * f, fy = (dy / dist) * f;
+      a.vx += fx; a.vy += fy;
+      b.vx -= fx; b.vy -= fy;
+    });
+    // Isolated nodes (no relations) get a mild pull toward center so they don't fly off.
+    memories.forEach(function (m) {
+      var cx = W / 2, cy = H / 2;
+      m.vx += (cx - m.x) * 0.0025;
+      m.vy += (cy - m.y) * 0.0025;
+    });
+    // Integrate + damp, then clamp to canvas with margin.
+    var margin = 48;
+    memories.forEach(function (m) {
+      m.vx *= 0.82; m.vy *= 0.82;
+      m.x += m.vx; m.y += m.vy;
+      m.x = Math.max(margin, Math.min(W - margin, m.x));
+      m.y = Math.max(margin, Math.min(H - margin, m.y));
+    });
+  }
+
+  // --- Rendering ---
+  // Declared before the layout is kicked off below: step()/animate() call
+  // render(), which reads `svg` — with `var` hoisting, calling render() ahead
+  // of this assignment would run against an undefined `svg` and throw.
+  var svg = document.getElementById("graph");
+  var NS = "http://www.w3.org/2000/svg";
+  var selected = null; // memory id or relation id
+
+  function el(tag, attrs) {
+    var e = document.createElementNS(NS, tag);
+    for (var k in attrs) e.setAttribute(k, attrs[k]);
+    return e;
+  }
+
+  // Relation-type strings are agent-chosen free text (amem allows custom
+  // types), so they can't be used directly as SVG ids/classes — slug them to
+  // a safe, stable token instead.
+  function slug(type) {
+    return String(type).replace(/[^A-Za-z0-9_-]/g, "_") || "unknown";
+  }
+
+  // The full set of relation types actually present in this task's data,
+  // computed once — drives both the arrowhead markers and the legend, so
+  // neither shows a type that isn't there or crashes on one that's unknown.
+  // Declared (like svg/el above) before the layout is kicked off below,
+  // since render() — called from step()/animate() — reads it immediately.
+  var presentTypes = [];
+  (function () {
+    var seen = {};
+    relations.forEach(function (r) {
+      if (!seen[r.type]) { seen[r.type] = true; presentTypes.push(r.type); }
+    });
+  })();
+
+  var ITER = reduceMotion ? 400 : 0; // reduced motion: jump straight to settled layout
+  if (reduceMotion) {
+    for (var k = 0; k < ITER; k++) step();
+    render();
+  } else {
+    var frame = 0, MAX_FRAMES = 220;
+    (function animate() {
+      step();
+      render();
+      frame++;
+      if (frame < MAX_FRAMES) requestAnimationFrame(animate);
+    })();
+  }
+
+  function render() {
+    svg.innerHTML = "";
+    // One arrowhead marker per relation type actually present, in a fixed
+    // matching color: `fill: context-stroke` (which would let one marker
+    // inherit each line's stroke) isn't reliably supported across browsers,
+    // so each type gets its own marker id instead.
+    var defs = el("defs");
+    svg.appendChild(defs);
+    presentTypes.forEach(function (type) {
+      var marker = el("marker", { id: "arrow-" + slug(type), viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto-start-reverse" });
+      marker.appendChild(el("path", { d: "M0,0 L10,5 L0,10 z", fill: metaFor(type).color }));
+      defs.appendChild(marker);
+    });
+
+    var edgeGroup = el("g");
+    var nodeGroup = el("g");
+    svg.appendChild(edgeGroup);
+    svg.appendChild(nodeGroup);
+
+    var highlightIds = null;
+    if (selected) {
+      highlightIds = { nodes: {}, rels: {} };
+      if (byId[selected]) {
+        highlightIds.nodes[selected] = true;
+        adjacency[selected].forEach(function (link) {
+          highlightIds.nodes[link.other] = true;
+          highlightIds.rels[link.rel.id] = true;
+        });
+      } else {
+        var rel = relations.filter(function (r) { return r.id === selected; })[0];
+        if (rel) {
+          highlightIds.rels[rel.id] = true;
+          highlightIds.nodes[rel.from] = true;
+          highlightIds.nodes[rel.to] = true;
+        }
+      }
+    }
+
+    relations.forEach(function (r) {
+      var a = byId[r.from], b = byId[r.to];
+      var meta = metaFor(r.type);
+      var cls = "edge";
+      if (highlightIds) cls += highlightIds.rels[r.id] ? " lit" : " dim";
+      var lineAttrs = {
+        x1: a.x, y1: a.y, x2: b.x, y2: b.y,
+        stroke: meta.color, class: cls,
+        "marker-end": "url(#arrow-" + slug(r.type) + ")"
+      };
+      if (meta.dash) lineAttrs["stroke-dasharray"] = meta.dash;
+      var line = el("line", lineAttrs);
+      line.style.cursor = "pointer";
+      line.addEventListener("click", function (evt) {
+        evt.stopPropagation();
+        selected = selected === r.id ? null : r.id;
+        render();
+        showRelationDetail(r);
+      });
+      edgeGroup.appendChild(line);
+    });
+
+    memories.forEach(function (m) {
+      var g = el("g", { class: "node-group" + (selected === m.id ? " active" : "") , transform: "translate(" + m.x + "," + m.y + ")" });
+      var dimmed = highlightIds && !highlightIds.nodes[m.id];
+      if (dimmed) g.style.opacity = 0.28;
+
+      var r = m.type === "decision" ? 15 : 13;
+      var shape;
+      if (m.type === "decision") {
+        shape = el("rect", { x: -r, y: -r, width: r * 2, height: r * 2, rx: 4, transform: "rotate(45)", class: "node-shape decision" });
+      } else {
+        shape = el("circle", { r: r, class: "node-shape" });
+      }
+      g.appendChild(shape);
+      g.appendChild(el("text", { class: "node-index", "text-anchor": "middle", y: 3.5 })).textContent = m.index;
+
+      var label = el("text", { class: "node-label", "text-anchor": "middle", y: r + 13 });
+      label.textContent = m.label;
+      g.appendChild(label);
+
+      g.addEventListener("click", function (evt) {
+        evt.stopPropagation();
+        selected = selected === m.id ? null : m.id;
+        render();
+        showMemoryDetail(m);
+      });
+      nodeGroup.appendChild(g);
+    });
+  }
+
+  svg.addEventListener("click", function () {
+    selected = null;
+    render();
+  });
+
+  // --- Legend --- built from the relation types actually present, not a
+  // fixed list, so it never shows a type absent from this task and never
+  // omits one present but unanticipated.
+  var legend = document.getElementById("legend");
+  if (presentTypes.length === 0) {
+    var none = document.createElement("div");
+    none.className = "legend-note";
+    none.style.margin = "0";
+    none.style.paddingTop = "0";
+    none.style.border = "none";
+    none.textContent = "No relations recorded for this task.";
+    legend.appendChild(none);
+  }
+  presentTypes.forEach(function (type) {
+    var meta = metaFor(type);
+    var div = document.createElement("div");
+    div.className = "legend-item";
+    var swatch = document.createElement("span");
+    swatch.className = "legend-swatch";
+    swatch.style.borderTopColor = meta.color;
+    swatch.style.borderTopStyle = meta.dash ? (meta.dash === "1 3" ? "dotted" : "dashed") : "solid";
+    if (meta.dash === "1 3") swatch.style.borderTopWidth = "3px";
+    swatch.title = meta.dash ? "stroke-dasharray: " + meta.dash : "solid";
+    div.appendChild(swatch);
+    var span = document.createElement("span");
+    span.textContent = meta.label;
+    div.appendChild(span);
+    legend.appendChild(div);
+  });
+  var note = document.createElement("div");
+  note.className = "legend-note";
+  note.textContent = "◆ decision (task outcome)   ● fact (stored evidence)";
+  legend.appendChild(note);
+
+  // --- Detail panel ---
+  var detail = document.getElementById("detail");
+
+  function relRowHTML(link) {
+    var meta = metaFor(link.rel.type);
+    var other = byId[link.other];
+    var arrow = link.dir === "out" ? "→" : "←";
+    return '<div class="rel-row">' +
+      '<span class="rel-tag" style="background:' + meta.color + '">' + meta.label + '</span>' +
+      '<span class="rel-text">' + arrow + ' <b>#' + other.index + '</b> ' + escapeHTML(other.label) + '</span>' +
+      '</div>';
+  }
+
+  function escapeHTML(s) {
+    var d = document.createElement("div");
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  function showMemoryDetail(m) {
+    var rels = adjacency[m.id];
+    var relsHTML = rels.length
+      ? '<div class="detail-rels">' + rels.map(relRowHTML).join("") + '</div>'
+      : '<p class="placeholder">Not linked to any other memory.</p>';
+    detail.innerHTML =
+      '<div class="eyebrow">Memory #' + m.index + '</div>' +
+      '<span class="detail-type">' + m.type + ' · ' + m.tier + '</span>' +
+      '<div class="detail-content">' + escapeHTML(m.content) + '</div>' +
+      '<div class="detail-tags">' + m.tags.map(function (t) { return '<span>' + escapeHTML(t) + '</span>'; }).join("") + '</div>' +
+      '<div class="detail-meta"><span>confidence</span><span class="mono">' + m.confidence.toFixed(2) + '</span></div>' +
+      '<div class="eyebrow" style="margin-top:4px">Relations (' + rels.length + ')</div>' +
+      relsHTML;
+  }
+
+  function showRelationDetail(r) {
+    var a = byId[r.from], b = byId[r.to];
+    var meta = metaFor(r.type);
+    detail.innerHTML =
+      '<div class="eyebrow">Relation</div>' +
+      '<span class="detail-type" style="border-color:' + meta.color + '">' + meta.label + '</span>' +
+      '<div class="detail-meta"><span>strength</span><span class="mono">' + r.strength.toFixed(2) + '</span></div>' +
+      '<div class="eyebrow" style="margin-top:4px">From — #' + a.index + '</div>' +
+      '<div class="detail-content">' + escapeHTML(a.content) + '</div>' +
+      '<div class="eyebrow">To — #' + b.index + '</div>' +
+      '<div class="detail-content">' + escapeHTML(b.content) + '</div>';
+  }
+})();
+</script>

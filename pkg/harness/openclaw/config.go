@@ -23,6 +23,53 @@ const (
 	agentWrapperPath    = "/run/aries/run-agent"
 	stateContainerPath  = "/home/node/.openclaw"
 	workspaceRoot       = "/aries/openclaw"
+	// amemPluginID is the npm package / OpenClaw plugin ID for amem
+	// (https://amem.owo.lc, github.com/amemhq/amem) — a real OpenClaw plugin
+	// (installed via `openclaw plugins install`, not an MCP stdio server),
+	// pre-baked into this profile's pinned image (docker/openclaw-amem).
+	amemPluginID = "openclaw-amem"
+	// amemLLMAPIKeyEnv is the container-side env var amem's own source reads
+	// for its LLM calls (note construction/linking/evolution), confirmed
+	// against the plugin's shipped openclaw.plugin.json manifest. By default
+	// launcherScript exports it from the already-staged primary model key; if
+	// a profile configures a distinct amem LLM (harness.amem.llm_*), it's
+	// exported from amemLLMKeyPath instead — see launcherScript.
+	amemLLMAPIKeyEnv = "AMEM_LLM_API_KEY"
+	// amemLLMKeyPath stages a distinct API key for amem's own LLM calls when
+	// a profile sets harness.amem.llm_api_key_env — separate from
+	// modelKeyPath so the primary task model's key and amem's own key can
+	// differ (e.g. an sglang-served primary model alongside a DeepSeek key
+	// for amem's internal calls).
+	amemLLMKeyPath = "/run/aries/amem-llm.key"
+	// losslessClawPluginID is the OpenClaw plugin ID for lossless-claw
+	// (github.com/Martian-Engineering/lossless-claw, npm
+	// "@martian-engineering/lossless-claw") — a native OpenClaw plugin
+	// (installed via `openclaw plugins install`, not an MCP stdio server),
+	// pre-baked into this profile's pinned image (docker/openclaw-lossless-claw).
+	// Unlike amem it claims the "contextEngine" slot, not "memory" — see
+	// (*HarnessConfig).validate's mutual-exclusion check with amem.
+	losslessClawPluginID = "lossless-claw"
+	// losslessClawLLMAPIKeyEnv is the container-side env var exported for the
+	// override OpenClaw model provider lossless-claw's summaryModel/
+	// expansionModel point at when a profile configures
+	// harness.lossless_claw.llm_*. Unlike amemLLMAPIKeyEnv, this is only ever
+	// exported/referenced when an override is configured — with no override,
+	// lossless-claw's config omits summaryModel/expansionModel entirely and
+	// falls back to OpenClaw's own default model resolution, so no extra
+	// provider entry (and thus no extra key) is needed at all.
+	losslessClawLLMAPIKeyEnv = "LOSSLESS_CLAW_LLM_API_KEY"
+	// losslessClawLLMKeyPath stages the API key for the override provider
+	// above, separate from modelKeyPath so the primary task model's key and
+	// lossless-claw's own override key can differ.
+	losslessClawLLMKeyPath = "/run/aries/lossless-claw-llm.key"
+	// losslessClawProviderID names the extra models.providers entry registered
+	// only when harness.lossless_claw.llm_* is configured — lossless-claw
+	// references its summarization/expansion model as an OpenClaw model ID
+	// string ("provider/model"), not a standalone endpoint the way amem's
+	// llmProvider/llmBaseURL/llmModel does, so an override means adding a
+	// second provider entry rather than passing a raw base URL into the
+	// plugin's own config.
+	losslessClawProviderID = "lossless-claw-llm"
 	// searxngBaseURL matches the fixed network alias
 	// (pkg/sandbox/docker/docker.go's `networkAlias = "task-sandbox"`) and
 	// port (images/deep-research-bench/Dockerfile) that the DRB task
@@ -92,11 +139,46 @@ type webSearchToolConfig struct {
 type pluginsConfig struct {
 	Entries map[string]pluginEntry `json:"entries"`
 	Allow   []string               `json:"allow,omitempty"`
+	// Slots resolves an OpenClaw capability slot (e.g. "memory") to the
+	// externally-installed plugin that should own it — required for amem:
+	// without plugins.slots.memory pointing at amemPluginID, OpenClaw's
+	// bundled "memory-core" plugin keeps the memory slot and amem's own
+	// tools never activate (confirmed via `openclaw plugins inspect`
+	// against a live install: "Error: memory slot set to memory-core").
+	Slots map[string]string `json:"slots,omitempty"`
 }
 
 type pluginEntry struct {
-	Enabled bool               `json:"enabled,omitempty"`
-	Config  *pluginConfigBlock `json:"config,omitempty"`
+	Enabled bool `json:"enabled,omitempty"`
+	// Config is deliberately untyped: each plugin's config schema shape
+	// differs (searxng/tavily/firecrawl nest under a "webSearch" key via
+	// pluginConfigBlock below; amem's schema, confirmed against its shipped
+	// openclaw.plugin.json, is a flat object — see amemPluginConfig).
+	Config any               `json:"config,omitempty"`
+	Hooks  *pluginHooksBlock `json:"hooks,omitempty"`
+	// LLM/Subagent are lossless-claw-specific host trust policies (confirmed
+	// against its shipped README/docs/configuration.md — no equivalent exists
+	// for any other plugin wired here): summaryModel/expansionModel overrides
+	// are rejected by OpenClaw's runtime unless explicitly trusted here, even
+	// though the requested model is already present in models.providers. LLM
+	// gates summaryModel/largeFileSummaryModel (routed through OpenClaw's
+	// api.runtime.llm.complete capability); Subagent separately gates
+	// expansionModel (routed through OpenClaw's sub-agent delegation layer
+	// instead) — see modelOverridePolicy's doc comment.
+	LLM      *modelOverridePolicy `json:"llm,omitempty"`
+	Subagent *modelOverridePolicy `json:"subagent,omitempty"`
+}
+
+// modelOverridePolicy is lossless-claw's trust-policy shape for both the
+// "llm" and "subagent" pluginEntry blocks (confirmed identical in its README
+// examples): AllowModelOverride must be true for OpenClaw to honor the
+// plugin's requested model at all, and AllowedModels allowlists which
+// "provider/model" strings are trusted (the README explicitly notes "*"
+// trusts any target, which renderConfig never uses — it always allowlists
+// exactly the one override model a profile configured).
+type modelOverridePolicy struct {
+	AllowModelOverride bool     `json:"allowModelOverride"`
+	AllowedModels      []string `json:"allowedModels,omitempty"`
 }
 
 type pluginConfigBlock struct {
@@ -105,6 +187,56 @@ type pluginConfigBlock struct {
 
 type webSearchPluginConfig struct {
 	BaseURL string `json:"baseUrl"`
+}
+
+// pluginHooksBlock gates a plugin's access to elevated capabilities amem
+// needs: allowConversationAccess is amem's own name (confirmed in its
+// bundled dist/index.js) for permission to read conversation content in its
+// agent_end hook, which is how it captures memories at all — without it the
+// plugin registers but never actually writes anything back.
+type pluginHooksBlock struct {
+	AllowConversationAccess bool `json:"allowConversationAccess,omitempty"`
+}
+
+// amemPluginConfig is amem's plugins.entries.openclaw-amem.config shape
+// (confirmed against its shipped openclaw.plugin.json configSchema).
+// llmProvider/llmBaseURL/llmModel route amem's own note-construction/
+// linking/evolution LLM calls through an OpenAI-compatible endpoint — by
+// default the same one ARIES already configured for the primary task model,
+// or a distinct override (see renderConfig's amemLLMBaseURL/amemLLMModel
+// params, sourced from harness.amem.llm_base_url/llm_model) when a profile
+// needs amem's internal calls on a different model. "openai" always applies
+// for LLMProvider regardless: amem's enum only allows "anthropic"/"openai",
+// and every provider ARIES lets a profile point amem at (deepseek, sglang,
+// or an explicit amem LLM override) speaks the OpenAI-compatible dialect.
+// The API key is deliberately not set here (config fields land in the
+// world-readable rendered JSON); see amemLLMAPIKeyEnv, exported by
+// launcherScript instead. Every other field (agentId, topK, collection, ...)
+// is left unset to accept amem's own defaults — notably agentId defaults to
+// "main", which is what makes memory persist and link across every harness
+// turn within one task occurrence (see amem_qdrant.go's ensureAMEMQdrant:
+// the Qdrant volume itself is scoped per task occurrence, not shared across
+// separate tasks in the same run).
+type amemPluginConfig struct {
+	LLMProvider string `json:"llmProvider"`
+	LLMBaseURL  string `json:"llmBaseURL"`
+	LLMModel    string `json:"llmModel"`
+}
+
+// losslessClawPluginConfig is lossless-claw's
+// plugins.entries.lossless-claw.config shape (confirmed against the plugin's
+// README example: freshTailCount/leafChunkTokens/contextThreshold/
+// summaryModel/expansionModel). freshTailCount/leafChunkTokens/contextThreshold
+// are left unset (accepting the plugin's own defaults) — only
+// SummaryModel/ExpansionModel are ever populated, and only when
+// harness.lossless_claw.llm_* configures an override; both point at the same
+// "provider/model" string referencing losslessClawProviderID (see
+// renderConfig). Left unset, lossless-claw's own default resolves to
+// OpenClaw's configured primary agent model — the "reuse primary by default"
+// behavior, achieved here without a second endpoint the way amem needs one.
+type losslessClawPluginConfig struct {
+	SummaryModel   string `json:"summaryModel,omitempty"`
+	ExpansionModel string `json:"expansionModel,omitempty"`
 }
 
 type gatewayConfig struct {
@@ -150,9 +282,20 @@ type agentsConfig struct {
 }
 
 type agentDefaults struct {
-	Model     primaryModel     `json:"model"`
-	Sandbox   sandboxConfig    `json:"sandbox"`
-	Subagents *subagentsConfig `json:"subagents,omitempty"`
+	Model        primaryModel        `json:"model"`
+	Sandbox      sandboxConfig       `json:"sandbox"`
+	Subagents    *subagentsConfig    `json:"subagents,omitempty"`
+	MemorySearch *memorySearchConfig `json:"memorySearch,omitempty"`
+}
+
+// memorySearchConfig disables OpenClaw's unrelated, bundled "memory-core"
+// semantic-recall feature when amem is enabled — confirmed via a live
+// `openclaw doctor` run that it otherwise warns/requires its own
+// OPENAI_API_KEY independent of anything amem needs. amem owns the "memory"
+// plugin slot instead (see pluginsConfig.Slots); this just keeps the
+// unrelated bundled feature out of the way.
+type memorySearchConfig struct {
+	Enabled bool `json:"enabled"`
 }
 
 // subagentsConfig bounds sessions_spawn concurrency. Omitted entirely when no
@@ -183,7 +326,25 @@ type sshConfig struct {
 	KnownHostsFile        string `json:"knownHostsFile"`
 }
 
-func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchEnabled bool, searchProvider string, extractEnabled, subagentsEnabled bool, maxConcurrentSubagents int) ([]byte, error) {
+// amemToolNames is openclaw-amem@2.1.1's full tool surface, with no plugin-ID
+// prefix — confirmed against a live `openclaw gateway run` boot log ("[plugins]
+// openclaw-amem: memory_search, memory_add, memory_list, memory_consolidate,
+// memory_quality_scan tools registered"). A version bump could add/rename
+// tools, in which case this list needs re-capturing from a live run rather
+// than guessed, exactly like the old MCP-based amem's tool list before it.
+var amemToolNames = []string{
+	"memory_search", "memory_add", "memory_list", "memory_consolidate", "memory_quality_scan",
+}
+
+// losslessClawToolNames is lossless-claw's agent-accessible tool surface per
+// its README ("Agent Tools" section: lcm_grep, lcm_describe,
+// lcm_expand_query). Like amemToolNames, a version bump could add/rename
+// tools, requiring re-verification against a live gateway boot log.
+var losslessClawToolNames = []string{
+	"lcm_grep", "lcm_describe", "lcm_expand_query",
+}
+
+func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchEnabled bool, searchProvider string, extractEnabled, subagentsEnabled, amemEnabled bool, maxConcurrentSubagents int, amemLLMBaseURL, amemLLMModel string, losslessClawEnabled bool, losslessClawLLMBaseURL, losslessClawLLMModel string) ([]byte, error) {
 	if err := validateModel(model); err != nil {
 		return nil, err
 	}
@@ -230,8 +391,12 @@ func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchE
 	if subagentsEnabled && maxConcurrentSubagents > 0 {
 		configuration.Agents.Defaults.Subagents = &subagentsConfig{MaxConcurrent: maxConcurrentSubagents}
 	}
+	var alsoAllow []string
+	pluginEntries := map[string]pluginEntry{}
+	var pluginAllow []string
+	var pluginSlots map[string]string
 	if webSearchEnabled {
-		alsoAllow := []string{"web_search", "web_fetch"}
+		alsoAllow = append(alsoAllow, "web_search", "web_fetch")
 		var entries map[string]pluginEntry
 		var allow []string
 		switch searchProvider {
@@ -285,8 +450,114 @@ func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchE
 				allow = append(allow, "tavily")
 			}
 		}
+		for id, entry := range entries {
+			pluginEntries[id] = entry
+		}
+		pluginAllow = append(pluginAllow, allow...)
+	}
+	if amemEnabled {
+		// amem (https://amem.owo.lc, npm package "openclaw-amem", from
+		// github.com/amemhq/amem) is a real OpenClaw plugin pre-installed into
+		// this profile's pinned image (docker/openclaw-amem) via `openclaw
+		// plugins install`, not an MCP stdio server. Its tools are gated by the
+		// same sandbox tools.alsoAllow list as every other plugin here —
+		// verified against a live gateway run — so amemToolNames (see its doc
+		// comment) must be kept in sync with a version bump the same way the
+		// old MCP-based amem's tool list had to be.
+		//
+		// llmProvider/llmBaseURL/llmModel route amem's own LLM calls through an
+		// OpenAI-compatible endpoint (see amemPluginConfig's doc comment); its
+		// API key is exported separately by launcherScript under
+		// amemLLMAPIKeyEnv, never placed in this rendered JSON. Leaving
+		// config.agentId unset accepts amem's own "main" default for every
+		// task, which is what makes memory persist and link across all tasks
+		// sharing the run's Qdrant volume (see amem_qdrant.go).
+		//
+		// By default this reuses the primary task model/endpoint (empty
+		// amemLLMBaseURL/amemLLMModel). A profile can override both together
+		// (harness.amem.llm_base_url/llm_model/llm_api_key_env) to point
+		// amem's own calls at a different model — added after a live run
+		// showed the primary sglang-served Qwen model wasn't reliably
+		// producing the plain JSON amem asks for internally (it prefaced
+		// answers with prose instead of raw JSON), silently defaulting note
+		// metadata to empty and merge/link decisions to "no" every time.
+		llmBaseURL, llmModel := model.BaseURL, model.Model
+		if amemLLMBaseURL != "" {
+			llmBaseURL = amemLLMBaseURL
+		}
+		if amemLLMModel != "" {
+			llmModel = amemLLMModel
+		}
+		pluginEntries[amemPluginID] = pluginEntry{
+			Enabled: true,
+			Hooks:   &pluginHooksBlock{AllowConversationAccess: true},
+			Config: &amemPluginConfig{
+				LLMProvider: "openai",
+				LLMBaseURL:  llmBaseURL,
+				LLMModel:    llmModel,
+			},
+		}
+		pluginAllow = append(pluginAllow, amemPluginID)
+		pluginSlots = map[string]string{"memory": amemPluginID}
+		configuration.Agents.Defaults.MemorySearch = &memorySearchConfig{Enabled: false}
+		alsoAllow = append(alsoAllow, amemToolNames...)
+	}
+	if losslessClawEnabled {
+		// lossless-claw (github.com/Martian-Engineering/lossless-claw, npm
+		// "@martian-engineering/lossless-claw") is a real OpenClaw plugin
+		// pre-installed into this profile's pinned image
+		// (docker/openclaw-lossless-claw) via `openclaw plugins install`, not
+		// an MCP stdio server. Its tools are gated by the same sandbox
+		// tools.alsoAllow list as every other plugin here (losslessClawToolNames).
+		//
+		// Unlike amem, lossless-claw references its summarization/expansion
+		// model as an OpenClaw model ID string resolved through
+		// models.providers/agents.defaults.model, not a standalone endpoint —
+		// so an override means registering a second provider entry and
+		// pointing summaryModel/expansionModel at "<provider>/<model>", rather
+		// than passing a raw base URL into the plugin's own config the way
+		// amemPluginConfig does. Its API key is exported separately by
+		// launcherScript under losslessClawLLMAPIKeyEnv, never placed in this
+		// rendered JSON.
+		//
+		// By default (empty losslessClawLLMBaseURL/losslessClawLLMModel) no
+		// extra provider is registered and summaryModel/expansionModel stay
+		// unset, which lossless-claw's own default resolves to OpenClaw's
+		// configured primary agent model.
+		//
+		// An override additionally requires explicit host trust policy
+		// (confirmed against the plugin's shipped README/docs/configuration.md):
+		// OpenClaw's runtime rejects a plugin-requested summaryModel unless
+		// plugins.entries.lossless-claw.llm.allowModelOverride/allowedModels
+		// trusts it, and separately rejects expansionModel (routed through
+		// OpenClaw's sub-agent delegation layer, not api.runtime.llm.complete)
+		// unless the sibling "subagent" block trusts it — merely having the
+		// model in models.providers is not sufficient on its own.
+		entry := pluginEntry{Enabled: true}
+		cfg := losslessClawPluginConfig{}
+		if losslessClawLLMBaseURL != "" && losslessClawLLMModel != "" {
+			configuration.Models.Providers[losslessClawProviderID] = providerConfig{
+				BaseURL: losslessClawLLMBaseURL,
+				APIKey:  "${" + losslessClawLLMAPIKeyEnv + "}",
+				API:     "openai-completions",
+				Models:  []modelRecord{{ID: losslessClawLLMModel, Name: losslessClawLLMModel}},
+			}
+			modelRef := losslessClawProviderID + "/" + losslessClawLLMModel
+			cfg.SummaryModel, cfg.ExpansionModel = modelRef, modelRef
+			entry.LLM = &modelOverridePolicy{AllowModelOverride: true, AllowedModels: []string{modelRef}}
+			entry.Subagent = &modelOverridePolicy{AllowModelOverride: true, AllowedModels: []string{modelRef}}
+		}
+		entry.Config = &cfg
+		pluginEntries[losslessClawPluginID] = entry
+		pluginAllow = append(pluginAllow, losslessClawPluginID)
+		pluginSlots = map[string]string{"contextEngine": losslessClawPluginID}
+		alsoAllow = append(alsoAllow, losslessClawToolNames...)
+	}
+	if len(pluginEntries) > 0 || len(pluginAllow) > 0 || len(pluginSlots) > 0 {
+		configuration.Plugins = &pluginsConfig{Entries: pluginEntries, Allow: pluginAllow, Slots: pluginSlots}
+	}
+	if len(alsoAllow) > 0 {
 		configuration.Tools.Sandbox = &sandboxToolsGate{Tools: sandboxToolsAllowList{AlsoAllow: alsoAllow}}
-		configuration.Plugins = &pluginsConfig{Entries: entries, Allow: allow}
 	}
 	var output bytes.Buffer
 	encoder := json.NewEncoder(&output)
@@ -391,7 +662,7 @@ func validEnvironmentName(value string) bool {
 	return value != ""
 }
 
-func launcherScript(apiKeyEnv, realtimeAPIKeyEnv string, extractEnabled, firecrawlEnabled, tavilySearchEnabled bool) []byte {
+func launcherScript(apiKeyEnv, realtimeAPIKeyEnv string, extractEnabled, firecrawlEnabled, tavilySearchEnabled, amemEnabled, amemLLMOverride, losslessClawLLMOverride bool) []byte {
 	script := "#!/bin/sh\nset -eu\nmodel_key=$(cat " + modelKeyPath + ")\ngateway_key=$(cat " + gatewayKeyPath + ")\nexport " + apiKeyEnv + "=\"$model_key\"\nexport " + gatewayTokenEnv + "=\"$gateway_key\"\n"
 	if realtimeAPIKeyEnv != "" {
 		script += "realtime_key=$(cat " + realtimeKeyPath + ")\nexport " + realtimeAPIKeyEnv + "=\"$realtime_key\"\nunset realtime_key\n"
@@ -401,6 +672,27 @@ func launcherScript(apiKeyEnv, realtimeAPIKeyEnv string, extractEnabled, firecra
 	}
 	if firecrawlEnabled {
 		script += "firecrawl_key=$(cat " + firecrawlKeyPath + ")\nexport " + firecrawlAPIKeyEnv + "=\"$firecrawl_key\"\nunset firecrawl_key\n"
+	}
+	if amemLLMOverride {
+		// A profile configured a distinct LLM for amem's own internal calls
+		// (harness.amem.llm_*, see Options.AMEMLLMAPIKeyEnv) — its key is
+		// staged separately, never derived from the primary model key.
+		script += "amem_llm_key=$(cat " + amemLLMKeyPath + ")\nexport " + amemLLMAPIKeyEnv + "=\"$amem_llm_key\"\nunset amem_llm_key\n"
+	} else if amemEnabled {
+		// Default: reuses the already-loaded primary model key rather than
+		// staging a separate secret file — amem's own LLM calls are
+		// configured (see amemPluginConfig) to route through the same
+		// OpenAI-compatible endpoint as the primary task model.
+		script += "export " + amemLLMAPIKeyEnv + "=\"$model_key\"\n"
+	}
+	if losslessClawLLMOverride {
+		// A profile configured a distinct model for lossless-claw's own
+		// summarization/expansion calls (harness.lossless_claw.llm_*, see
+		// Options.LosslessClawLLMAPIKeyEnv) — its key is staged separately.
+		// Unlike amem, there is no "else" default-export branch: without an
+		// override, renderConfig never registers the extra provider entry
+		// that would reference this env var at all.
+		script += "lcm_llm_key=$(cat " + losslessClawLLMKeyPath + ")\nexport " + losslessClawLLMAPIKeyEnv + "=\"$lcm_llm_key\"\nunset lcm_llm_key\n"
 	}
 	script += "unset model_key gateway_key\nexec \"$@\"\n"
 	return []byte(script)

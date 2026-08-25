@@ -283,9 +283,9 @@ func (b *Benchmark) NextTurn(ctx context.Context, task core.Task, turnIndex int,
 
 	switch {
 	case turnIndex < subtaskCount:
-		return subtaskInstruction(subtasks[turnIndex], turnIndex+1), true, nil
+		return subtaskInstruction(subtasks[turnIndex], turnIndex+1) + amemBootstrapSuffix(b.amemBootstrap), true, nil
 	case turnIndex == subtaskCount:
-		return synthesisInstruction(), true, nil
+		return synthesisInstruction() + amemBootstrapSuffix(b.amemBootstrap), true, nil
 	default:
 		return "", false, nil
 	}

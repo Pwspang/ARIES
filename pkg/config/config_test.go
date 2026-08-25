@@ -323,6 +323,63 @@ func TestSubagentsMaxConcurrentValidation(t *testing.T) {
 	}
 }
 
+func TestAMEMHarnessConfigValidation(t *testing.T) {
+	nonOpenClaw := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"other","amem":{"enabled":true}}`, 1)
+	if _, err := Decode(strings.NewReader(nonOpenClaw)); err == nil {
+		t.Fatal("expected rejection of harness.amem under a non-OpenClaw harness type")
+	}
+
+	llmFieldsWithoutEnabled := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","amem":{"llm_base_url":"https://api.deepseek.com","llm_model":"deepseek-v4-flash","llm_api_key_env":"DEEPSEEK_API_KEY"}}`, 1)
+	if _, err := Decode(strings.NewReader(llmFieldsWithoutEnabled)); err == nil {
+		t.Fatal("expected rejection of harness.amem.llm_* without harness.amem.enabled")
+	}
+
+	partialLLMFields := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","amem":{"enabled":true,"llm_model":"deepseek-v4-flash"}}`, 1)
+	if _, err := Decode(strings.NewReader(partialLLMFields)); err == nil {
+		t.Fatal("expected rejection of harness.amem.llm_model set without llm_base_url/llm_api_key_env")
+	}
+
+	valid := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","amem":{"enabled":true,"llm_base_url":"https://api.deepseek.com","llm_model":"deepseek-v4-flash","llm_api_key_env":"DEEPSEEK_API_KEY"}}`, 1)
+	cfg, err := Decode(strings.NewReader(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Harness.AMEM.Enabled || cfg.Harness.AMEM.LLMBaseURL != "https://api.deepseek.com" || cfg.Harness.AMEM.LLMModel != "deepseek-v4-flash" || cfg.Harness.AMEM.LLMAPIKeyEnv != "DEEPSEEK_API_KEY" {
+		t.Fatalf("harness.amem = %#v", cfg.Harness.AMEM)
+	}
+}
+
+func TestLosslessClawHarnessConfigValidation(t *testing.T) {
+	nonOpenClaw := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"other","lossless_claw":{"enabled":true}}`, 1)
+	if _, err := Decode(strings.NewReader(nonOpenClaw)); err == nil {
+		t.Fatal("expected rejection of harness.lossless_claw under a non-OpenClaw harness type")
+	}
+
+	llmFieldsWithoutEnabled := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","lossless_claw":{"llm_base_url":"https://api.deepseek.com","llm_model":"deepseek-v4-flash","llm_api_key_env":"DEEPSEEK_API_KEY"}}`, 1)
+	if _, err := Decode(strings.NewReader(llmFieldsWithoutEnabled)); err == nil {
+		t.Fatal("expected rejection of harness.lossless_claw.llm_* without harness.lossless_claw.enabled")
+	}
+
+	partialLLMFields := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","lossless_claw":{"enabled":true,"llm_model":"deepseek-v4-flash"}}`, 1)
+	if _, err := Decode(strings.NewReader(partialLLMFields)); err == nil {
+		t.Fatal("expected rejection of harness.lossless_claw.llm_model set without llm_base_url/llm_api_key_env")
+	}
+
+	valid := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","lossless_claw":{"enabled":true,"llm_base_url":"https://api.deepseek.com","llm_model":"deepseek-v4-flash","llm_api_key_env":"DEEPSEEK_API_KEY"}}`, 1)
+	cfg, err := Decode(strings.NewReader(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Harness.LosslessClaw.Enabled || cfg.Harness.LosslessClaw.LLMBaseURL != "https://api.deepseek.com" || cfg.Harness.LosslessClaw.LLMModel != "deepseek-v4-flash" || cfg.Harness.LosslessClaw.LLMAPIKeyEnv != "DEEPSEEK_API_KEY" {
+		t.Fatalf("harness.lossless_claw = %#v", cfg.Harness.LosslessClaw)
+	}
+
+	both := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","amem":{"enabled":true},"lossless_claw":{"enabled":true}}`, 1)
+	if _, err := Decode(strings.NewReader(both)); err == nil {
+		t.Fatal("expected rejection of harness.amem and harness.lossless_claw enabled together")
+	}
+}
+
 func TestModelMaxOutputTokensValidation(t *testing.T) {
 	limited := strings.Replace(validConfig, `"api_key_env":"DEEPSEEK_API_KEY"}`, `"api_key_env":"DEEPSEEK_API_KEY","max_output_tokens":32000}`, 1)
 	cfg, err := Decode(strings.NewReader(limited))
@@ -656,7 +713,7 @@ func TestCheckedInProfilesLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 22 {
+	if len(paths) != 27 {
 		t.Fatalf("profiles=%v", paths)
 	}
 	for _, path := range paths {

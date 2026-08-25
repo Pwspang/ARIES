@@ -147,6 +147,7 @@ func newBenchmark(cfg config.Config, outputRoot, logicalID, occurrenceID string,
 			PlanOnly:           cfg.Benchmark.PlanOnly,
 			PlansetDir:         cfg.Benchmark.PlansetDir,
 			StructuredSubtasks: structuredSubtasksOptions(cfg),
+			AMEMBootstrap:      cfg.Harness.Type == "openclaw" && cfg.Harness.AMEM.Enabled,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("construct deepresearchbench benchmark: %w", err)
@@ -248,12 +249,21 @@ func newHarness(cfg config.Config, outputRoot string, lookup func(string) ([]byt
 		manager, err := openclawharness.New(openclawharness.Options{
 			Image: cfg.Versions.OpenClaw.Image, OutputDir: outputRoot, APIKeyLookup: lookup, Logger: logger,
 			Mode: cfg.Harness.Mode, Realtime: realtime, WebSearchEnabled: cfg.Harness.WebSearch.Enabled,
-			ExtractAPIKeyEnv:       cfg.Harness.WebSearch.ExtractAPIKeyEnv,
-			SearchProvider:         cfg.Harness.WebSearch.Provider,
-			FirecrawlAPIKeyEnv:     cfg.Harness.WebSearch.FirecrawlAPIKeyEnv,
-			TavilyAPIKeyEnv:        cfg.Harness.WebSearch.TavilyAPIKeyEnv,
-			SubagentsEnabled:       cfg.Harness.Subagents.Enabled != nil && *cfg.Harness.Subagents.Enabled,
-			MaxConcurrentSubagents: cfg.Harness.Subagents.MaxConcurrent,
+			ExtractAPIKeyEnv:         cfg.Harness.WebSearch.ExtractAPIKeyEnv,
+			SearchProvider:           cfg.Harness.WebSearch.Provider,
+			FirecrawlAPIKeyEnv:       cfg.Harness.WebSearch.FirecrawlAPIKeyEnv,
+			TavilyAPIKeyEnv:          cfg.Harness.WebSearch.TavilyAPIKeyEnv,
+			SubagentsEnabled:         cfg.Harness.Subagents.Enabled != nil && *cfg.Harness.Subagents.Enabled,
+			MaxConcurrentSubagents:   cfg.Harness.Subagents.MaxConcurrent,
+			AMEMEnabled:              cfg.Harness.AMEM.Enabled,
+			AMEMQdrantImage:          cfg.Versions.AMEMQdrant.Image,
+			AMEMLLMBaseURL:           cfg.Harness.AMEM.LLMBaseURL,
+			AMEMLLMModel:             cfg.Harness.AMEM.LLMModel,
+			AMEMLLMAPIKeyEnv:         cfg.Harness.AMEM.LLMAPIKeyEnv,
+			LosslessClawEnabled:      cfg.Harness.LosslessClaw.Enabled,
+			LosslessClawLLMBaseURL:   cfg.Harness.LosslessClaw.LLMBaseURL,
+			LosslessClawLLMModel:     cfg.Harness.LosslessClaw.LLMModel,
+			LosslessClawLLMAPIKeyEnv: cfg.Harness.LosslessClaw.LLMAPIKeyEnv,
 		})
 		if err != nil {
 			return app.HarnessInstance{}, fmt.Errorf("construct OpenClaw harness: %w", err)
@@ -374,6 +384,7 @@ func loadPreparationTasks(ctx context.Context, cfg config.Config, taskIDs []stri
 			PlanOnly:           cfg.Benchmark.PlanOnly,
 			PlansetDir:         cfg.Benchmark.PlansetDir,
 			StructuredSubtasks: structuredSubtasksOptions(cfg),
+			AMEMBootstrap:      cfg.Harness.Type == "openclaw" && cfg.Harness.AMEM.Enabled,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("validate deepresearchbench profile: %w", err)
