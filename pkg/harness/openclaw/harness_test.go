@@ -4,7 +4,9 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -47,6 +49,7 @@ type fakeDocker struct {
 	copyToErr        error
 	containerLogsErr error
 	copyFromErr      error
+	copyFromArchive  []byte
 	inspectErr       error
 	stopErr          error
 	killErr          error
@@ -61,6 +64,71 @@ type fakeDocker struct {
 	createCalls      int
 	closeCalls       int
 	closeErr         error
+
+	networksCreated     []client.NetworkCreateOptions
+	networkConnections  []client.NetworkConnectOptions
+	networkConnectedIDs []string
+	networksRemoved     []string
+	volumesCreated      []client.VolumeCreateOptions
+	volumesRemoved      []string
+	networkCreateErr    error
+	networkConnectErr   error
+	networkRemoveErr    error
+	volumeCreateErr     error
+	volumeRemoveErr     error
+	nextNetworkID       int
+}
+
+func (fake *fakeDocker) NetworkCreate(_ context.Context, name string, options client.NetworkCreateOptions) (client.NetworkCreateResult, error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if fake.networkCreateErr != nil {
+		return client.NetworkCreateResult{}, fake.networkCreateErr
+	}
+	fake.nextNetworkID++
+	fake.networksCreated = append(fake.networksCreated, options)
+	return client.NetworkCreateResult{ID: fmt.Sprintf("network-%s-%d", name, fake.nextNetworkID)}, nil
+}
+
+func (fake *fakeDocker) NetworkConnect(_ context.Context, networkID string, options client.NetworkConnectOptions) (client.NetworkConnectResult, error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if fake.networkConnectErr != nil {
+		return client.NetworkConnectResult{}, fake.networkConnectErr
+	}
+	fake.networkConnections = append(fake.networkConnections, options)
+	fake.networkConnectedIDs = append(fake.networkConnectedIDs, networkID)
+	return client.NetworkConnectResult{}, nil
+}
+
+func (fake *fakeDocker) NetworkRemove(_ context.Context, networkID string, _ client.NetworkRemoveOptions) (client.NetworkRemoveResult, error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if fake.networkRemoveErr != nil {
+		return client.NetworkRemoveResult{}, fake.networkRemoveErr
+	}
+	fake.networksRemoved = append(fake.networksRemoved, networkID)
+	return client.NetworkRemoveResult{}, nil
+}
+
+func (fake *fakeDocker) VolumeCreate(_ context.Context, options client.VolumeCreateOptions) (client.VolumeCreateResult, error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if fake.volumeCreateErr != nil {
+		return client.VolumeCreateResult{}, fake.volumeCreateErr
+	}
+	fake.volumesCreated = append(fake.volumesCreated, options)
+	return client.VolumeCreateResult{}, nil
+}
+
+func (fake *fakeDocker) VolumeRemove(_ context.Context, volumeID string, _ client.VolumeRemoveOptions) (client.VolumeRemoveResult, error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if fake.volumeRemoveErr != nil {
+		return client.VolumeRemoveResult{}, fake.volumeRemoveErr
+	}
+	fake.volumesRemoved = append(fake.volumesRemoved, volumeID)
+	return client.VolumeRemoveResult{}, nil
 }
 
 func (fake *fakeDocker) Close() error {
@@ -99,6 +167,25 @@ func TestHarnessAppliesOnlyPresentCheckedResources(t *testing.T) {
 	}
 	if err := manager.Stop(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestStartSetsDNSResultOrderIPv4First(t *testing.T) {
+	fake := newFakeDocker()
+	manager := newTestManager(t, fake, []byte("model-secret"))
+	request := core.HarnessRequest{RunID: "run-1", TaskID: "fix-git", Endpoint: endpointFiles(t), Model: testModel()}
+	if err := manager.Start(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(context.Background())
+	found := false
+	for _, env := range fake.created.Config.Env {
+		if env == "NODE_OPTIONS=--dns-result-order=ipv4first" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("container Env = %#v, want NODE_OPTIONS=--dns-result-order=ipv4first", fake.created.Config.Env)
 	}
 }
 
@@ -292,6 +379,9 @@ func (fake *fakeDocker) ContainerLogs(context.Context, string, client.ContainerL
 func (fake *fakeDocker) CopyFromContainer(context.Context, string, client.CopyFromContainerOptions) (client.CopyFromContainerResult, error) {
 	if fake.copyFromErr != nil {
 		return client.CopyFromContainerResult{}, fake.copyFromErr
+	}
+	if fake.copyFromArchive != nil {
+		return client.CopyFromContainerResult{Content: io.NopCloser(bytes.NewReader(fake.copyFromArchive))}, nil
 	}
 	var archive bytes.Buffer
 	writer := tar.NewWriter(&archive)
@@ -649,6 +739,120 @@ func TestNewRequiresExactNonLatestTaggedImage(t *testing.T) {
 	}
 }
 
+func TestNewRequiresAMEMQdrantImageWhenAMEMEnabled(t *testing.T) {
+	if _, err := New(Options{Image: testOpenClawImage, OutputDir: t.TempDir(), AMEMEnabled: true}); err == nil || !strings.Contains(err.Error(), "amem Qdrant image") {
+		t.Fatalf("New() with amem enabled and no Qdrant image, error = %v", err)
+	}
+	manager, err := New(Options{Image: testOpenClawImage, OutputDir: t.TempDir(), AMEMEnabled: true, AMEMQdrantImage: "qdrant/qdrant:v1.19.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExportAMEMMemoryIsNoopWithoutQdrant(t *testing.T) {
+	manager := newTestManager(t, newFakeDocker(), []byte("model-secret"))
+	if err := manager.exportAMEMMemory(context.Background()); err != nil {
+		t.Fatalf("exportAMEMMemory() with no amem Qdrant = %v, want nil", err)
+	}
+	if _, err := os.Stat(filepath.Join(manager.outputDir, "amem-memory.json")); !os.IsNotExist(err) {
+		t.Fatalf("exportAMEMMemory() wrote a file with nothing to export: %v", err)
+	}
+}
+
+func TestExportAMEMMemoryFailsWithoutNetworkAddress(t *testing.T) {
+	fake := newFakeDocker()
+	manager, err := New(Options{
+		Image: testOpenClawImage, OutputDir: t.TempDir(), AMEMEnabled: true, AMEMQdrantImage: "qdrant/qdrant:v1.19.0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.client = fake
+
+	ctx := context.Background()
+	if err := manager.ensureAMEMQdrant(ctx, "run-1", "task-1"); err != nil {
+		t.Fatal(err)
+	}
+	// The fake's ContainerInspect (from ContainerCreate) never populates a
+	// NetworkSettings.Networks entry keyed by the amem network's name, so
+	// this must fail loudly rather than silently skip the export.
+	if err := manager.exportAMEMMemory(ctx); err == nil {
+		t.Fatal("expected an error exporting amem memory without a network address")
+	}
+}
+
+func TestAMEMQdrantLifecycleIsTaskScopedAndIdempotent(t *testing.T) {
+	fake := newFakeDocker()
+	manager, err := New(Options{
+		Image: testOpenClawImage, OutputDir: t.TempDir(), AMEMEnabled: true, AMEMQdrantImage: "qdrant/qdrant:v1.19.0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.client = fake
+
+	ctx := context.Background()
+	if err := manager.ensureAMEMQdrant(ctx, "run-1", "task-1"); err != nil {
+		t.Fatal(err)
+	}
+	scopeHash := sha256.Sum256([]byte("run-1" + "\x00" + "task-1"))
+	wantVolumeName := "aries-amem-data-" + hex.EncodeToString(scopeHash[:])[:16]
+	if len(fake.volumesCreated) != 1 || fake.volumesCreated[0].Name != wantVolumeName {
+		t.Fatalf("volumesCreated = %#v, want name %q", fake.volumesCreated, wantVolumeName)
+	}
+	if len(fake.networksCreated) != 1 {
+		t.Fatalf("networksCreated = %#v", fake.networksCreated)
+	}
+	if fake.createCalls != 1 {
+		t.Fatalf("createCalls = %d, want 1 Qdrant container create", fake.createCalls)
+	}
+	if fake.startCalls != 1 {
+		t.Fatalf("startCalls = %d, want the Qdrant container started", fake.startCalls)
+	}
+
+	// A second call against the same Manager (same task occurrence) must be
+	// a no-op: each task occurrence gets exactly one Qdrant instance/volume,
+	// reused across every harness turn within that one task attempt.
+	if err := manager.ensureAMEMQdrant(ctx, "run-1", "task-1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.volumesCreated) != 1 || len(fake.networksCreated) != 1 || fake.createCalls != 1 {
+		t.Fatalf("ensureAMEMQdrant was not idempotent: volumes=%d networks=%d creates=%d", len(fake.volumesCreated), len(fake.networksCreated), fake.createCalls)
+	}
+
+	if err := manager.joinAMEMNetwork(ctx, "openclaw-task-id"); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.networkConnections) != 1 || fake.networkConnections[0].Container != "openclaw-task-id" {
+		t.Fatalf("networkConnections = %#v", fake.networkConnections)
+	}
+
+	if err := manager.teardownAMEMQdrant(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if fake.stopCalls != 1 || fake.removeCalls != 1 || len(fake.networksRemoved) != 1 || len(fake.volumesRemoved) != 1 {
+		t.Fatalf("teardown calls: stop=%d remove=%d networksRemoved=%v volumesRemoved=%v", fake.stopCalls, fake.removeCalls, fake.networksRemoved, fake.volumesRemoved)
+	}
+	// Teardown must also be idempotent (Close only ever calls it once via
+	// sync.Once, but the method itself should tolerate being nil-state).
+	if err := manager.teardownAMEMQdrant(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if fake.stopCalls != 1 {
+		t.Fatalf("teardownAMEMQdrant re-ran against an already-torn-down state: stopCalls = %d", fake.stopCalls)
+	}
+}
+
+func TestJoinAMEMNetworkFailsBeforeQdrantExists(t *testing.T) {
+	manager := newTestManager(t, newFakeDocker(), []byte("model-secret"))
+	if err := manager.joinAMEMNetwork(context.Background(), "some-container"); err == nil {
+		t.Fatal("expected an error joining the amem network before ensureAMEMQdrant ran")
+	}
+}
+
 func endpointFiles(t *testing.T) core.ToolEndpoint {
 	t.Helper()
 	root := t.TempDir()
@@ -1003,6 +1207,266 @@ func TestStartStagesFirecrawlKeyWhenConfigured(t *testing.T) {
 	firecrawlEntry, ok := configuration.Plugins.Entries["firecrawl"]
 	if !ok || !firecrawlEntry.Enabled {
 		t.Fatalf("plugins.entries.firecrawl = %#v", configuration.Plugins.Entries)
+	}
+}
+
+// When a profile configures a distinct LLM for amem's own internal calls
+// (AMEMLLMBaseURL/AMEMLLMModel/AMEMLLMAPIKeyEnv), that key must be staged in
+// its own file, exported under AMEM_LLM_API_KEY by the launcher, and the
+// rendered amem plugin config must carry the overridden base URL/model
+// rather than the primary task model's — mirroring the same guarantees
+// Firecrawl/Tavily keys already have.
+func TestStartStagesAMEMLLMKeyWhenConfigured(t *testing.T) {
+	modelSecret := []byte("model-secret")
+	amemLLMSecret := []byte("deepseek-super-secret")
+	fake := newFakeDocker()
+	manager, err := New(Options{
+		Image: testOpenClawImage, OutputDir: t.TempDir(), StartTimeout: time.Second, AgentTimeout: time.Second,
+		AMEMEnabled: true, AMEMQdrantImage: "qdrant/qdrant:v1.19.0",
+		AMEMLLMBaseURL: "https://api.deepseek.com", AMEMLLMModel: "deepseek-v4-flash", AMEMLLMAPIKeyEnv: "DEEPSEEK_API_KEY",
+		APIKeyLookup: func(name string) ([]byte, bool) {
+			if name == "DEEPSEEK_API_KEY" {
+				return bytes.Clone(amemLLMSecret), true
+			}
+			return bytes.Clone(modelSecret), true
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.client = fake
+	manager.newID = func() (string, error) { return "attempt", nil }
+
+	request := core.HarnessRequest{RunID: "run-1", TaskID: "fix-git", Endpoint: endpointFiles(t), Model: testModel(), Timeout: 37 * time.Second}
+	if err := manager.Start(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(context.Background())
+
+	files := readArchive(t, fake.archive)
+	amemLLMFile, ok := files["run/aries/amem-llm.key"]
+	if !ok || amemLLMFile.mode != 0o600 || string(amemLLMFile.content) != string(amemLLMSecret) {
+		t.Fatalf("staged amem LLM key = %#v", amemLLMFile)
+	}
+	launchScript := string(files["run/aries/launch"].content)
+	for _, required := range []string{"amem_llm_key=$(cat /run/aries/amem-llm.key)", "export AMEM_LLM_API_KEY=\"$amem_llm_key\""} {
+		if !strings.Contains(launchScript, required) {
+			t.Fatalf("launcher missing %q: %s", required, launchScript)
+		}
+	}
+
+	serialized := strings.Join(append(append([]string{}, fake.created.Config.Env...), fake.created.Config.Cmd...), "\n")
+	for _, value := range fake.created.Config.Labels {
+		serialized += "\n" + value
+	}
+	if strings.Contains(serialized, string(amemLLMSecret)) {
+		t.Fatal("amem LLM secret entered Docker config")
+	}
+	retained, err := os.ReadFile(filepath.Join(manager.outputDir, request.TaskID, "harness-turn-01", "openclaw.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(retained, amemLLMSecret) {
+		t.Fatalf("amem LLM secret leaked into the retained config:\n%s", retained)
+	}
+	var configuration openClawConfig
+	if err := json.Unmarshal(retained, &configuration); err != nil {
+		t.Fatal(err)
+	}
+	entry := configuration.Plugins.Entries[amemPluginID]
+	block, blockOK := entry.Config.(map[string]any)
+	if !blockOK || block["llmBaseURL"] != "https://api.deepseek.com" || block["llmModel"] != "deepseek-v4-flash" {
+		t.Fatalf("plugins.entries[%q].config = %#v, want the overridden LLM", amemPluginID, entry.Config)
+	}
+}
+
+// A missing amem LLM credential must fail Start outright, same rationale as
+// Firecrawl/Tavily: the profile explicitly requested a distinct model for
+// amem, so silently falling back to the primary model would mask the
+// misconfiguration for an entire run.
+func TestStartFailsWhenAMEMLLMCredentialMissing(t *testing.T) {
+	fake := newFakeDocker()
+	manager, err := New(Options{
+		Image: testOpenClawImage, OutputDir: t.TempDir(), StartTimeout: time.Second, AgentTimeout: time.Second,
+		AMEMEnabled: true, AMEMQdrantImage: "qdrant/qdrant:v1.19.0",
+		AMEMLLMBaseURL: "https://api.deepseek.com", AMEMLLMModel: "deepseek-v4-flash", AMEMLLMAPIKeyEnv: "DEEPSEEK_API_KEY",
+		APIKeyLookup: func(name string) ([]byte, bool) {
+			if name == "DEEPSEEK_API_KEY" {
+				return nil, false
+			}
+			return []byte("model-secret"), true
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.client = fake
+	manager.newID = func() (string, error) { return "attempt", nil }
+
+	request := core.HarnessRequest{RunID: "run-1", TaskID: "fix-git", Endpoint: endpointFiles(t), Model: testModel(), Timeout: 37 * time.Second}
+	err = manager.Start(context.Background(), request)
+	if err == nil || !strings.Contains(err.Error(), "amem LLM API-key environment") {
+		t.Fatalf("Start() error = %v, want a fatal amem LLM credential error", err)
+	}
+}
+
+func TestStartStagesLosslessClawLLMKeyWhenConfigured(t *testing.T) {
+	modelSecret := []byte("model-secret")
+	lcmLLMSecret := []byte("deepseek-super-secret")
+	fake := newFakeDocker()
+	manager, err := New(Options{
+		Image: testOpenClawImage, OutputDir: t.TempDir(), StartTimeout: time.Second, AgentTimeout: time.Second,
+		LosslessClawEnabled:      true,
+		LosslessClawLLMBaseURL:   "https://api.deepseek.com",
+		LosslessClawLLMModel:     "deepseek-v4-flash",
+		LosslessClawLLMAPIKeyEnv: "DEEPSEEK_API_KEY",
+		APIKeyLookup: func(name string) ([]byte, bool) {
+			if name == "DEEPSEEK_API_KEY" {
+				return bytes.Clone(lcmLLMSecret), true
+			}
+			return bytes.Clone(modelSecret), true
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.client = fake
+	manager.newID = func() (string, error) { return "attempt", nil }
+
+	request := core.HarnessRequest{RunID: "run-1", TaskID: "fix-git", Endpoint: endpointFiles(t), Model: testModel(), Timeout: 37 * time.Second}
+	if err := manager.Start(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(context.Background())
+
+	files := readArchive(t, fake.archive)
+	lcmLLMFile, ok := files["run/aries/lossless-claw-llm.key"]
+	if !ok || lcmLLMFile.mode != 0o600 || string(lcmLLMFile.content) != string(lcmLLMSecret) {
+		t.Fatalf("staged lossless-claw LLM key = %#v", lcmLLMFile)
+	}
+	launchScript := string(files["run/aries/launch"].content)
+	for _, required := range []string{"lcm_llm_key=$(cat /run/aries/lossless-claw-llm.key)", "export LOSSLESS_CLAW_LLM_API_KEY=\"$lcm_llm_key\""} {
+		if !strings.Contains(launchScript, required) {
+			t.Fatalf("launcher missing %q: %s", required, launchScript)
+		}
+	}
+
+	serialized := strings.Join(append(append([]string{}, fake.created.Config.Env...), fake.created.Config.Cmd...), "\n")
+	for _, value := range fake.created.Config.Labels {
+		serialized += "\n" + value
+	}
+	if strings.Contains(serialized, string(lcmLLMSecret)) {
+		t.Fatal("lossless-claw LLM secret entered Docker config")
+	}
+	retained, err := os.ReadFile(filepath.Join(manager.outputDir, request.TaskID, "harness-turn-01", "openclaw.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(retained, lcmLLMSecret) {
+		t.Fatalf("lossless-claw LLM secret leaked into the retained config:\n%s", retained)
+	}
+	var configuration openClawConfig
+	if err := json.Unmarshal(retained, &configuration); err != nil {
+		t.Fatal(err)
+	}
+	entry := configuration.Plugins.Entries[losslessClawPluginID]
+	block, blockOK := entry.Config.(map[string]any)
+	if !blockOK || block["summaryModel"] != losslessClawProviderID+"/deepseek-v4-flash" {
+		t.Fatalf("plugins.entries[%q].config = %#v, want the overridden LLM", losslessClawPluginID, entry.Config)
+	}
+	if entry.LLM == nil || !entry.LLM.AllowModelOverride || entry.Subagent == nil || !entry.Subagent.AllowModelOverride {
+		t.Fatalf("plugins.entries[%q].llm/subagent = %#v/%#v, want both trusting the override", losslessClawPluginID, entry.LLM, entry.Subagent)
+	}
+}
+
+// A missing lossless-claw LLM credential must fail Start outright, same
+// rationale as amem/Firecrawl/Tavily: the profile explicitly requested a
+// distinct model for lossless-claw, so silently falling back to the primary
+// model would mask the misconfiguration for an entire run.
+func TestStartFailsWhenLosslessClawLLMCredentialMissing(t *testing.T) {
+	fake := newFakeDocker()
+	manager, err := New(Options{
+		Image: testOpenClawImage, OutputDir: t.TempDir(), StartTimeout: time.Second, AgentTimeout: time.Second,
+		LosslessClawEnabled:      true,
+		LosslessClawLLMBaseURL:   "https://api.deepseek.com",
+		LosslessClawLLMModel:     "deepseek-v4-flash",
+		LosslessClawLLMAPIKeyEnv: "DEEPSEEK_API_KEY",
+		APIKeyLookup: func(name string) ([]byte, bool) {
+			if name == "DEEPSEEK_API_KEY" {
+				return nil, false
+			}
+			return []byte("model-secret"), true
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.client = fake
+	manager.newID = func() (string, error) { return "attempt", nil }
+
+	request := core.HarnessRequest{RunID: "run-1", TaskID: "fix-git", Endpoint: endpointFiles(t), Model: testModel(), Timeout: 37 * time.Second}
+	err = manager.Start(context.Background(), request)
+	if err == nil || !strings.Contains(err.Error(), "lossless-claw LLM API-key environment") {
+		t.Fatalf("Start() error = %v, want a fatal lossless-claw LLM credential error", err)
+	}
+}
+
+func TestExportLosslessClawMemoryWritesFileFromContainer(t *testing.T) {
+	fake := newFakeDocker()
+	var archive bytes.Buffer
+	writer := tar.NewWriter(&archive)
+	content := []byte("sqlite-state")
+	_ = writer.WriteHeader(&tar.Header{Name: "lcm.db", Mode: 0o600, Size: int64(len(content))})
+	_, _ = writer.Write(content)
+	_ = writer.Close()
+	fake.copyFromArchive = archive.Bytes()
+
+	manager := newTestManager(t, fake, []byte("model-secret"))
+	manager.losslessClawExportDir = t.TempDir()
+	active := &session{containerID: "openclaw-id"}
+
+	if err := manager.exportLosslessClawMemory(context.Background(), active); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(manager.losslessClawExportDir, "lcm.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(content) {
+		t.Fatalf("exported lcm.db content = %q, want %q", got, content)
+	}
+}
+
+func TestExportLosslessClawMemoryToleratesMissingFile(t *testing.T) {
+	fake := newFakeDocker()
+	fake.copyFromErr = fmt.Errorf("path absent: %w", errdefs.ErrNotFound)
+	manager := newTestManager(t, fake, []byte("model-secret"))
+	manager.losslessClawExportDir = t.TempDir()
+	active := &session{containerID: "openclaw-id"}
+
+	if err := manager.exportLosslessClawMemory(context.Background(), active); err != nil {
+		t.Fatalf("expected a missing lcm.db to be tolerated, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(manager.losslessClawExportDir, "lcm.db")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected no lcm.db to be written, stat err = %v", err)
+	}
+}
+
+func TestExportLosslessClawMemoryNoOpWhenNoMatchingEntry(t *testing.T) {
+	// The default fakeDocker.CopyFromContainer archive doesn't contain
+	// lcm.db (it returns a trajectory.jsonl entry, same as telemetry
+	// collection uses) — confirms exportLosslessClawMemory doesn't error or
+	// write a spurious file when the archive simply doesn't have the entry.
+	fake := newFakeDocker()
+	manager := newTestManager(t, fake, []byte("model-secret"))
+	manager.losslessClawExportDir = t.TempDir()
+	active := &session{containerID: "openclaw-id"}
+
+	if err := manager.exportLosslessClawMemory(context.Background(), active); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(manager.losslessClawExportDir, "lcm.db")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected no lcm.db to be written, stat err = %v", err)
 	}
 }
 

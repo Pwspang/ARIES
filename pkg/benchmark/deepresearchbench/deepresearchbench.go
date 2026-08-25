@@ -58,6 +58,62 @@ const reportInstruction = "\n\nWrite your final, complete research report to " +
 	"in this same turn — a message that only states an intention to write the report, without a " +
 	"tool call that performs it, does not satisfy this requirement and will be scored as a failure."
 
+// amemBootstrapInstruction requires the agent to actually use amem's memory
+// tools (see pkg/harness/openclaw/config.go's amemToolNames) when
+// Options.AMEMBootstrap is set. This was originally written against a
+// different amem (an MCP stdio server, github.com/amanasmuei/amem) whose
+// tool surface was amem__memory_store/relate/reflect/recall, requiring the
+// agent to manually build the memory graph (store each fact, then a separate
+// call to relate any that corroborate/contradict, then a separate reflect
+// pass). A softer, non-mandatory phrasing was tried first and verified
+// end-to-end (tool visible, instruction delivered verbatim) but two live runs
+// showed the agent completing the whole task without ever calling an amem
+// tool: having a tool available and being nudged toward it doesn't mean the
+// model reaches for it unprompted — hence "required"/"must" phrasing
+// mirroring reportInstruction's pattern above.
+//
+// The current amem (npm "openclaw-amem", github.com/amemhq/amem) is a
+// different plugin with a different tool surface — memory_search, memory_add,
+// memory_list, memory_consolidate, memory_quality_scan (confirmed against a
+// live gateway boot log) — and a different capture model: an automatic
+// agent_end hook (once plugins.entries.openclaw-amem.hooks.
+// allowConversationAccess is set — see config.go) runs a lightweight CRUD
+// decision after every turn, catching some near-duplicate merges as notes
+// are added (confirmed in a live gateway.log: "[add] dedup: borderline sim
+// ..., marking pending_merge=true"). But the actual graph-linking pass —
+// consolidateMemories plus, if enabled, the contradiction sweep — is only
+// ever run on a scheduled nightly timer inside the plugin itself (confirmed
+// by inspecting its bundled dist/index.js: a setTimeout scheduled for
+// 02:30 local time, rescheduling itself daily) or by explicitly calling the
+// memory_consolidate tool; nothing about the agent_end hook triggers it.
+// A benchmark run lasting minutes never reaches that nightly timer, so
+// without an explicit mandate here the collected memories are never linked
+// into a graph at all — confirmed by running a real smoke task and finding
+// every stored note's "links" field empty. Hence the final required
+// memory_consolidate call below, once at the end of the task (not per
+// web_fetch — consolidation is a batch pass over everything stored so far,
+// not a per-fact operation like memory_add).
+const amemBootstrapInstruction = "\n\nMemory protocol (required): before starting your research, you must call " +
+	"memory_search to check whether anything relevant was already stored from earlier work. Every time you call " +
+	"web_fetch to read a source, you must call memory_add immediately afterward, in the same sub-step, to " +
+	"persist the structured facts and hypotheses you extracted from it — this applies to every single web_fetch " +
+	"call in this task, not just some of them; skipping it for any fetched source does not satisfy this " +
+	"requirement. Before writing your final conclusions, you must call memory_search once more to retrieve what " +
+	"you stored and ground the report in it. Finally, immediately before you finish the task, you must call " +
+	"memory_consolidate exactly once — this is the tool that actually links related and contradicting stored " +
+	"facts into a graph; without this call, everything you stored with memory_add stays isolated with no links " +
+	"between them, so skipping it does not satisfy this requirement."
+
+// amemBootstrapSuffix returns amemBootstrapInstruction when enabled, or ""
+// otherwise — a small helper so Tasks() and NextTurn's per-subtask
+// instructions can append it identically without duplicating the condition.
+func amemBootstrapSuffix(enabled bool) string {
+	if !enabled {
+		return ""
+	}
+	return amemBootstrapInstruction
+}
+
 // taskPromptTemplate is the fixed instruction every Deep Research Bench task
 // is wrapped in before being sent to the harness. It is intentionally not
 // configurable: the citation format it mandates is a hard requirement of the
@@ -278,6 +334,15 @@ type Options struct {
 	// produced by an earlier PlanOnly pass) followed by a final synthesis
 	// turn. Mutually exclusive with PlanOnly.
 	StructuredSubtasks *StructuredSubtasksOptions
+
+	// AMEMBootstrap appends amemBootstrapInstruction to every research-pass
+	// task/subtask instruction (not the plan-generation pass), nudging the
+	// agent to actually call amem's memory tools instead of just having them
+	// available. Set this from harness.amem.enabled — it's meaningless
+	// without the OpenClaw harness's amem MCP server also enabled, but
+	// deepresearchbench has no visibility into harness config, so callers
+	// (cmd/aries/wiring.go) are responsible for keeping the two in sync.
+	AMEMBootstrap bool
 }
 
 // StructuredSubtasksOptions configures the structured execution pass (see
@@ -325,6 +390,7 @@ type Benchmark struct {
 	planOnly           bool
 	plansetDir         string
 	structuredSubtasks *StructuredSubtasksOptions
+	amemBootstrap      bool
 
 	mu           sync.RWMutex
 	numericIDs   map[string]int
@@ -513,6 +579,7 @@ func New(options Options) (*Benchmark, error) {
 		planOnly:           options.PlanOnly,
 		plansetDir:         cleanOptionalDir(options.PlansetDir),
 		structuredSubtasks: structuredSubtasks,
+		amemBootstrap:      options.AMEMBootstrap,
 	}, nil
 }
 
@@ -582,11 +649,12 @@ func (b *Benchmark) Tasks(ctx context.Context) ([]core.Task, error) {
 		}
 		executionID := b.executionTaskIDs[index]
 		numericIDs[executionID] = numericID
-		instruction := applyPromptTemplate(taskPromptTemplate, prompt) + reportInstruction
+		instruction := applyPromptTemplate(taskPromptTemplate, prompt) + reportInstruction + amemBootstrapSuffix(b.amemBootstrap)
 		if b.planOnly {
-			// Plan-generation instructions deliberately omit reportInstruction
-			// and the citation-format rules: this pass never touches
-			// reportPath at all, only planPath.
+			// Plan-generation instructions deliberately omit reportInstruction,
+			// the citation-format rules, and the amem nudge: this pass never
+			// touches reportPath at all, only planPath, and never uses amem's
+			// tools (no multi-step research happens during plan generation).
 			instruction = applyPromptTemplate(planPromptTemplate, prompt)
 		}
 		tasks = append(tasks, core.Task{
