@@ -29,6 +29,7 @@ class Chunk:
 class Turn:
     index: int
     node_id: str
+    timestamp: str
     system_prompt: str
     tools: list  # OpenAI-format tool schemas
     chunks: list  # ordered list[Chunk], oldest first, up to but excluding this turn
@@ -210,6 +211,7 @@ def extract_turns(telemetry_dir):
             Turn(
                 index=idx,
                 node_id=anode["id"],
+                timestamp=anode["timestamp"],
                 system_prompt=system_prompt,
                 tools=tools,
                 chunks=chunks,
