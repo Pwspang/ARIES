@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -713,7 +714,7 @@ func TestCheckedInProfilesLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 29 {
+	if len(paths) != 31 {
 		t.Fatalf("profiles=%v", paths)
 	}
 	for _, path := range paths {
@@ -867,5 +868,40 @@ func TestCheckedInVersionCatalogsLoad(t *testing.T) {
 		if versions.SWEAtlas.RepositoryURL == "" || versions.SWEAtlas.Revision == "" {
 			t.Fatalf("%s: sweatlasqa pin = %#v", path, versions.SWEAtlas)
 		}
+	}
+}
+
+// The subset20 amem/no-amem pair is only interpretable as an A/B if the two
+// arms differ in exactly one thing: whether the amem plugin is switched on.
+// Same task list, same OpenClaw image, same model, same judge — otherwise a
+// score gap could just as easily be a different task mix or a different image.
+// Editing one profile and forgetting the other is the easy mistake, so the
+// invariant is asserted rather than left to review.
+func TestSWEAtlasQASubset20ArmsDifferOnlyInAMEM(t *testing.T) {
+	amem, err := Load(filepath.Join("..", "..", "profiles", "openclaw-sweatlasqa-subset20-amem-deepseek.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	control, err := Load(filepath.Join("..", "..", "profiles", "openclaw-sweatlasqa-subset20-deepseek.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(amem.Benchmark.Tasks) != 20 {
+		t.Fatalf("subset20 has %d tasks", len(amem.Benchmark.Tasks))
+	}
+	if !reflect.DeepEqual(amem.Benchmark.Tasks, control.Benchmark.Tasks) {
+		t.Fatalf("task lists diverged:\n amem=%v\n ctrl=%v", amem.Benchmark.Tasks, control.Benchmark.Tasks)
+	}
+	if amem.Versions.OpenClaw.Image != control.Versions.OpenClaw.Image {
+		t.Fatalf("OpenClaw image differs: %q vs %q", amem.Versions.OpenClaw.Image, control.Versions.OpenClaw.Image)
+	}
+	if !reflect.DeepEqual(amem.Model, control.Model) || !reflect.DeepEqual(amem.Benchmark.Judge, control.Benchmark.Judge) {
+		t.Fatal("model or judge configuration differs between arms")
+	}
+	if amem.Execution.Concurrency != control.Execution.Concurrency {
+		t.Fatalf("concurrency differs: %d vs %d", amem.Execution.Concurrency, control.Execution.Concurrency)
+	}
+	if !amem.Harness.AMEM.Enabled || control.Harness.AMEM.Enabled {
+		t.Fatalf("amem arm enabled=%v, control arm enabled=%v", amem.Harness.AMEM.Enabled, control.Harness.AMEM.Enabled)
 	}
 }

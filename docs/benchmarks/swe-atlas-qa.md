@@ -132,3 +132,56 @@ across questions within a run. At the end of each occurrence the store is
 exported to `runs/<run>/<task>/amem-memory.json` and torn down; non-empty
 `links` fields in that export are the signal that `memory_consolidate` was
 actually called.
+
+### The subset20 amem A/B
+
+Two profiles run the same 20 tasks so amem can be measured against a control:
+
+- `profiles/openclaw-sweatlasqa-subset20-amem-deepseek.json` — plugin on.
+- `profiles/openclaw-sweatlasqa-subset20-deepseek.json` — plugin off.
+
+Both point at `configs/versions-amem.json`, so both run the *same* OpenClaw
+image; the control simply never gets `plugins.entries`, `plugins.slots.memory`
+or the memory tool names in its sandbox allow-list, leaving OpenClaw's bundled
+`memory-core` in the memory slot. The comparison is therefore "amem vs stock
+OpenClaw memory", not "amem vs no memory at all". Task list, model, judge and
+concurrency are identical between the two;
+`TestSWEAtlasQASubset20ArmsDifferOnlyInAMEM` asserts that, since editing one
+profile and forgetting the other would quietly turn the A/B into two unrelated
+runs.
+
+The 20 were drawn from the 124 QA tasks by stratifying on category
+proportionally to the full set (Architecture 7, Root-cause 6, Onboarding 4,
+Security 2, API 1) and then spreading across repositories and languages by
+largest deficit, which lands within one task of the proportional share on all
+three axes and covers all 11 repositories. The smoke task is deliberately
+included as a known-good anchor.
+
+| task | repo | lang | category |
+| --- | --- | --- | --- |
+| `task-6905333b74f22949d97ba998` | Automattic/wp-calypso | ts | Code Onboarding |
+| `task-6905333b74f22949d97ba9ab` | simple-login/app | ts | Architecture & system design |
+| `task-6905333b74f22949d97ba9ae` | simple-login/app | ts | Root-cause analysis |
+| `task-6905333b74f22949d97ba9bc` | grafana/grafana | ts | Root-cause analysis |
+| `task-6905333b74f22949d97ba9cc` | secdev/scapy | python | Architecture & system design |
+| `task-6905333b74f22949d97ba9cd` | secdev/scapy | python | Root-cause analysis |
+| `task-6905333b74f22949d97ba9d7` | paperless-ngx/paperless-ngx | python | API & library usage / integration |
+| `task-6905333b74f22949d97ba9dd` | paperless-ngx/paperless-ngx | python | Architecture & system design |
+| `task-6905333b74f22949d97ba9e0` | paperless-ngx/paperless-ngx | python | Root-cause analysis |
+| `task-6905333b74f22949d97baa02` | kovidgoyal/kitty | c | Root-cause analysis |
+| `task-6905333b74f22949d97baa04` | kovidgoyal/kitty | c | Architecture & system design |
+| `task-6905333b74f22949d97baa06` | kovidgoyal/kitty | c | Architecture & system design |
+| `task-6905333b74f22949d97baa07` | kovidgoyal/kitty | c | Architecture & system design |
+| `task-6905333b74f22949d97baa0f` | trufflesecurity/trufflehog | go | Root-cause analysis |
+| `task-6905333b74f22949d97baa14` | foxcpp/maddy | go | Architecture & system design |
+| `task-6905333b74f22949d97baa1c` | minio/minio | go | Code Onboarding |
+| `task-6905333b74f22949d97baa1d` | simple-login/app | ts | Security |
+| `task-6905333b74f22949d97baa21` | foxcpp/maddy | go | Security |
+| `task-6905333b74f22949d97baa25` | grafana/k6 | go | Code Onboarding |
+| `task-6905333b74f22949d97baa2d` | drakkan/sftpgo | go | Code Onboarding |
+
+Note that covering all 11 repositories means pulling all 11 task images, which
+are large (wp-calypso alone is ~14 GB); budget disk before the first run. The
+`execution.concurrency` of 3 oversubscribes CPU on a 32-core host, since each
+task requests 16 CPUs, but these tasks are dominated by model latency rather
+than local compute.
