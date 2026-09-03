@@ -713,7 +713,7 @@ func TestCheckedInProfilesLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 28 {
+	if len(paths) != 29 {
 		t.Fatalf("profiles=%v", paths)
 	}
 	for _, path := range paths {
@@ -842,5 +842,30 @@ func TestBridgeRawLogDefaultsToDropped(t *testing.T) {
 	}
 	if !enabled.RetainBridgeRawLog() {
 		t.Fatal("retain_raw_log:true must retain the raw log")
+	}
+}
+
+// (Versions).validate requires the sweatlasqa pin unconditionally, so a
+// version catalog that omits it fails to load for *every* profile pointing at
+// it, not just sweatlasqa ones. The alternate catalogs added alongside the
+// amem and lossless-claw OpenClaw images predate the sweatlasqa benchmark and
+// hit exactly that, so every checked-in catalog is asserted loadable here
+// rather than only the default one.
+func TestCheckedInVersionCatalogsLoad(t *testing.T) {
+	paths, err := filepath.Glob(filepath.Join("..", "..", "configs", "versions*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 3 {
+		t.Fatalf("catalogs=%v", paths)
+	}
+	for _, path := range paths {
+		versions, err := LoadVersions(path)
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		if versions.SWEAtlas.RepositoryURL == "" || versions.SWEAtlas.Revision == "" {
+			t.Fatalf("%s: sweatlasqa pin = %#v", path, versions.SWEAtlas)
+		}
 	}
 }

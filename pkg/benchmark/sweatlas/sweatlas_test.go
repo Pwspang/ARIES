@@ -325,3 +325,43 @@ func (s *prepareSandboxFake) Upload(context.Context, string, string) error {
 }
 
 func (*prepareSandboxFake) Download(context.Context, string, string) error { return nil }
+
+func TestTasksAppendsAMEMBootstrapOnlyWhenEnabled(t *testing.T) {
+	root := writeFixture(t)
+
+	for _, testCase := range []struct {
+		name    string
+		enabled bool
+	}{{name: "disabled"}, {name: "enabled", enabled: true}} {
+		t.Run(testCase.name, func(t *testing.T) {
+			options := testOptions(root, []string{qaTaskID}, t.TempDir())
+			options.AMEMBootstrap = testCase.enabled
+			benchmark, err := New(options)
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			tasks, err := benchmark.Tasks(context.Background())
+			if err != nil {
+				t.Fatalf("Tasks() error = %v", err)
+			}
+			if len(tasks) != 1 {
+				t.Fatalf("tasks = %#v", tasks)
+			}
+			want := strings.TrimSpace(qaInstruction) + amemBootstrapSuffix(testCase.enabled)
+			if tasks[0].Instruction != want {
+				t.Fatalf("Instruction = %q, want %q", tasks[0].Instruction, want)
+			}
+			// The dataset's own instruction.md must survive verbatim as the
+			// prefix either way: the suffix is additive, never a rewrite.
+			if !strings.HasPrefix(tasks[0].Instruction, strings.TrimSpace(qaInstruction)) {
+				t.Fatalf("instruction.md not preserved verbatim: %q", tasks[0].Instruction)
+			}
+			mentionsMemoryTools := strings.Contains(tasks[0].Instruction, "memory_search") &&
+				strings.Contains(tasks[0].Instruction, "memory_add") &&
+				strings.Contains(tasks[0].Instruction, "memory_consolidate")
+			if mentionsMemoryTools != testCase.enabled {
+				t.Fatalf("memory tools mentioned = %v, want %v", mentionsMemoryTools, testCase.enabled)
+			}
+		})
+	}
+}

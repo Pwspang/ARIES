@@ -47,6 +47,54 @@ const (
 	answerPath = "/logs/agent/answer.txt"
 )
 
+// amemBootstrapInstruction is appended to every task instruction when
+// Options.AMEMBootstrap is set, requiring the agent to actually use the
+// openclaw-amem plugin's memory tools (memory_search, memory_add,
+// memory_consolidate — see pkg/harness/openclaw/config.go's amemToolNames)
+// instead of merely having them available. Deep Research Bench established
+// both the need and the phrasing: see that package's amemBootstrapInstruction
+// for the full history, in short that a soft, non-mandatory nudge was
+// verified end-to-end (tool visible, instruction delivered verbatim) and
+// still produced two live runs where the agent finished the task without
+// calling a single memory tool, and that the plugin's graph-linking pass only
+// ever runs on an internal nightly timer or an explicit memory_consolidate
+// call, so a benchmark run that never calls it leaves every stored note with
+// an empty "links" field.
+//
+// The wording below is SWE-Atlas-specific rather than a copy of Deep Research
+// Bench's: there is no web_fetch here to anchor the "store after every
+// source" rule to, so the per-step trigger is codebase investigation
+// (reading a file, tracing a call path, running a command that reveals
+// structure). The consolidate call is ordered explicitly *before* writing the
+// answer file, because unlike Deep Research Bench — where the report write is
+// just another tool call — SWE-Atlas grading depends entirely on the
+// <<FINAL_ANSWER>> block reaching answerPath, and instruction.md is passed to
+// the agent verbatim (see loadTask), making this suffix the only ARIES-added
+// text that could disturb that contract.
+const amemBootstrapInstruction = "\n\nMemory protocol (required): before you begin exploring the codebase, you must " +
+	"call memory_search to check whether anything relevant was already stored from earlier work on this " +
+	"repository. Every time you learn something substantive about the codebase — reading a file, tracing a " +
+	"call path, or running a command that reveals structure or behaviour — you must call memory_add " +
+	"immediately afterward, in the same sub-step, to persist what you found; this applies to every such step, " +
+	"not just some of them, and skipping it does not satisfy this requirement. Before you compose your final " +
+	"answer, you must call memory_search once more to retrieve what you stored and ground the answer in it. " +
+	"Then, before you write the answer file, you must call memory_consolidate exactly once — this is the tool " +
+	"that actually links related and contradicting stored facts into a graph, and without it everything you " +
+	"stored with memory_add stays isolated with no links between them, so skipping it does not satisfy this " +
+	"requirement. Writing the answer file remains the last thing you do: this memory protocol adds steps " +
+	"before it, and never replaces or excuses it."
+
+// amemBootstrapSuffix returns amemBootstrapInstruction when enabled, or ""
+// otherwise — a small helper so Tasks() reads the same way whether or not
+// amem is in play, mirroring the identically named helper in
+// pkg/benchmark/deepresearchbench.
+func amemBootstrapSuffix(enabled bool) string {
+	if !enabled {
+		return ""
+	}
+	return amemBootstrapInstruction
+}
+
 // Options selects tasks from one pinned SWE-Atlas checkout and names the
 // judge model the injected verifier grades with. Judge and APIKeyLookup are
 // both mandatory: unlike Deep Research Bench, there is no default judge (no
@@ -60,6 +108,15 @@ type Options struct {
 	Revision         string
 	Judge            core.ModelConfig
 	APIKeyLookup     func(string) ([]byte, bool)
+
+	// AMEMBootstrap appends amemBootstrapInstruction to every task
+	// instruction, nudging the agent to actually call the amem plugin's
+	// memory tools instead of just having them available. Set this from
+	// harness.amem.enabled — it is meaningless without the OpenClaw harness's
+	// amem plugin also enabled, but this package has no visibility into
+	// harness config, so callers (cmd/aries/wiring.go) are responsible for
+	// keeping the two in sync.
+	AMEMBootstrap bool
 }
 
 // Benchmark discovers selected SWE-Atlas QA tasks and retains their private
@@ -71,6 +128,7 @@ type Benchmark struct {
 	outputDir        string
 	revision         string
 	judge            chatter
+	amemBootstrap    bool
 
 	mu      sync.RWMutex
 	details map[string]taskDetails
@@ -191,6 +249,7 @@ func New(options Options) (*Benchmark, error) {
 		outputDir:        filepath.Clean(options.OutputDir),
 		revision:         options.Revision,
 		judge:            judge,
+		amemBootstrap:    options.AMEMBootstrap,
 		details:          make(map[string]taskDetails, len(options.TaskIDs)),
 	}, nil
 }
@@ -212,6 +271,7 @@ func (b *Benchmark) Tasks(ctx context.Context) ([]core.Task, error) {
 		}
 		executionID := b.executionTaskIDs[index]
 		task.ID = executionID
+		task.Instruction += amemBootstrapSuffix(b.amemBootstrap)
 		tasks = append(tasks, task)
 		details[executionID] = private
 	}

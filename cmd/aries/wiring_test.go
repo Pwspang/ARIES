@@ -342,3 +342,32 @@ mem-fraction-static: 0.85
 reasoning-parser: qwen3
 tool-call-parser: qwen
 `
+
+// The benchmark packages have no visibility into harness config, so wiring.go
+// is the single place where the amem plugin being enabled on the harness and
+// the benchmark's amem prompt bootstrap are kept in sync (see
+// sweatlas.Options.AMEMBootstrap). Both sweatlas.New call sites — newBenchmark
+// and loadPreparationTasks — must set it, and both must derive it from the
+// same expression, or a profile would validate its tasks with one instruction
+// and then run them with another.
+func TestSWEAtlasQAWiringPropagatesAMEMBootstrap(t *testing.T) {
+	source, err := os.ReadFile("wiring.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	const wantExpression = `AMEMBootstrap: cfg.Harness.Type == "openclaw" && cfg.Harness.AMEM.Enabled,`
+	sites := strings.Count(text, "sweatlas.New(sweatlas.Options{")
+	if sites != 2 {
+		t.Fatalf("sweatlas.New call sites = %d, want 2", sites)
+	}
+	for _, block := range strings.Split(text, "sweatlas.New(sweatlas.Options{")[1:] {
+		literal, _, found := strings.Cut(block, "})")
+		if !found {
+			t.Fatal("unterminated sweatlas.Options literal")
+		}
+		if !strings.Contains(literal, wantExpression) {
+			t.Fatalf("sweatlas.Options literal missing %q:\n%s", wantExpression, literal)
+		}
+	}
+}

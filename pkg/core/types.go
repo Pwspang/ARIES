@@ -179,9 +179,9 @@ type CleanupResult struct {
 
 // TaskResult preserves each outcome even when several operations fail.
 type TaskResult struct {
-	TaskID       string          `json:"task_id"`
-	ToolLogPaths []string        `json:"tool_log_paths,omitempty"`
-	Harness      HarnessResult   `json:"harness"`
+	TaskID       string        `json:"task_id"`
+	ToolLogPaths []string      `json:"tool_log_paths,omitempty"`
+	Harness      HarnessResult `json:"harness"`
 	// Turns records every agent-session turn's HarnessResult for multi-turn
 	// benchmarks (see runner.MultiTurnBenchmark), in execution order. Harness
 	// always holds the *last* turn's result (or the only turn's result for

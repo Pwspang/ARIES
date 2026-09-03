@@ -99,3 +99,36 @@ means picking a `judge.model` string that endpoint actually accepts.
 `./bin/aries setup profiles/openclaw-sweatlasqa-smoke1-deepseek.json` (or
 `profiles/openclaw-sweatlasqa-smoke1-sglang.json`, or the equivalent setup
 entry point) before the first run.
+
+### Agent memory (amem)
+
+`profiles/openclaw-sweatlasqa-smoke1-amem-deepseek.json` runs the same smoke
+task with the `openclaw-amem` memory plugin enabled. Two things have to line
+up, and both come from the profile:
+
+- `versions_file` must point at `configs/versions-amem.json`, which pins the
+  OpenClaw image with the plugin pre-installed plus the Qdrant image the
+  harness starts as a per-task sidecar. The default `configs/versions.json`
+  pins neither, so amem cannot run against it.
+- `harness.amem.enabled` turns the plugin on. Its `llm_base_url` / `llm_model`
+  / `llm_api_key_env` are optional as a group and override the model amem uses
+  for its *own* internal calls (note-metadata extraction, merge decisions);
+  omitted, it reuses the harness's primary model and key.
+
+Enabling amem also changes the task instruction. `instruction.md` is otherwise
+passed to the agent verbatim, but when `harness.amem.enabled` is set,
+`cmd/aries/wiring.go` sets `sweatlas.Options.AMEMBootstrap`, which appends a
+required memory protocol: `memory_search` before exploring, `memory_add` after
+each substantive finding, `memory_search` again before answering, and exactly
+one `memory_consolidate` before the answer file is written. Deep Research
+Bench established that this mandate is necessary — with the tools merely
+available, the agent finished whole tasks without calling any of them — and
+that the final `memory_consolidate` is what actually links stored notes into a
+graph, since the plugin's own linking pass otherwise only fires on a nightly
+timer no benchmark run reaches.
+
+Each task occurrence gets its own Qdrant store, so memory does not carry
+across questions within a run. At the end of each occurrence the store is
+exported to `runs/<run>/<task>/amem-memory.json` and torn down; non-empty
+`links` fields in that export are the signal that `memory_consolidate` was
+actually called.

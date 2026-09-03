@@ -69,9 +69,11 @@ func TestConcreteManagedRuntimeWrapsPreflightAndTaskLifecycle(t *testing.T) {
 			concrete, err = runtimesglang.New(runtimesglang.Options{Executable: cfg.Runtime.Config.Executable, ConfigPath: cfg.Runtime.Config.ResolvedFile, OutputDir: outputDir, BaseURL: cfg.Model.BaseURL})
 			return PreparedBackend{Model: cfg.CoreModel(), Runtime: concrete}, err
 		},
-		SetupBenchmark:       func(context.Context, config.Config) error { record("prepare"); return nil },
-		LoadPreparationTasks: func(context.Context, config.Config, []string, func(string) ([]byte, bool)) ([]core.Task, error) { return nil, nil },
-		PullImages:           func(context.Context, []string) error { return nil },
+		SetupBenchmark: func(context.Context, config.Config) error { record("prepare"); return nil },
+		LoadPreparationTasks: func(context.Context, config.Config, []string, func(string) ([]byte, bool)) ([]core.Task, error) {
+			return nil, nil
+		},
+		PullImages: func(context.Context, []string) error { return nil },
 		NewBenchmark: func(_ config.Config, _, _, occurrenceID string, _ func(string) ([]byte, bool)) (runner.Benchmark, error) {
 			record("compose")
 			return &managedIntegrationBenchmark{id: occurrenceID}, nil
@@ -157,9 +159,11 @@ func TestConcreteManagedRuntimeNaturalExitLogsStoppedAfterUnexpectedExit(t *test
 			concrete, err = runtimesglang.New(runtimesglang.Options{Executable: cfg.Runtime.Config.Executable, ConfigPath: cfg.Runtime.Config.ResolvedFile, OutputDir: outputDir, BaseURL: cfg.Model.BaseURL, CredentialEnv: cfg.Model.APIKeyEnv})
 			return PreparedBackend{Model: cfg.CoreModel(), Runtime: concrete}, err
 		},
-		SetupBenchmark:       func(context.Context, config.Config) error { return nil },
-		LoadPreparationTasks: func(context.Context, config.Config, []string, func(string) ([]byte, bool)) ([]core.Task, error) { return nil, nil },
-		PullImages:           func(context.Context, []string) error { return nil },
+		SetupBenchmark: func(context.Context, config.Config) error { return nil },
+		LoadPreparationTasks: func(context.Context, config.Config, []string, func(string) ([]byte, bool)) ([]core.Task, error) {
+			return nil, nil
+		},
+		PullImages: func(context.Context, []string) error { return nil },
 		NewBenchmark: func(_ config.Config, _, _, occurrenceID string, _ func(string) ([]byte, bool)) (runner.Benchmark, error) {
 			if err := os.WriteFile(exitNow, []byte("exit"), 0o600); err != nil {
 				return nil, err
