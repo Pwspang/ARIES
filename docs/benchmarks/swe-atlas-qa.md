@@ -11,11 +11,10 @@ SWE-Atlas QA profile against one real task
 Automattic's `wp-calypso`), with DeepSeek as both the harness model and the
 judge. `profiles/openclaw-sweatlasqa-smoke1-sglang.json` runs the same task
 against an external SGLang-served harness model instead
-(`configs/sglang/qwen3-8b-local.yaml`), while keeping DeepSeek as the judge —
-the runtime backend that serves the agent and the model that grades its
-answer are independent choices; nothing requires them to match.
-`profiles/openclaw-sweatlasqa-subset20-deepseek.json` runs a fixed 20-task
-subset of `data/qa` with DeepSeek as both the harness model and the judge, at
+(`configs/sglang/qwen3.6-35b-local.yaml`), while keeping DeepSeek as the
+judge — the runtime backend that serves the agent and the model that grades
+its answer are independent choices; nothing requires them to match. The
+`subset20` pair described below runs a fixed 20-task subset of `data/qa` at
 `execution.concurrency: 3`.
 
 ### Task shape
@@ -137,8 +136,8 @@ actually called.
 
 Two profiles run the same 20 tasks so amem can be measured against a control:
 
-- `profiles/openclaw-sweatlasqa-subset20-amem-deepseek.json` — plugin on.
-- `profiles/openclaw-sweatlasqa-subset20-deepseek.json` — plugin off.
+- `profiles/openclaw-sweatlasqa-subset20-amem-sglang.json` — plugin on.
+- `profiles/openclaw-sweatlasqa-subset20-sglang.json` — plugin off.
 
 Both point at `configs/versions-amem.json`, so both run the *same* OpenClaw
 image; the control simply never gets `plugins.entries`, `plugins.slots.memory`
@@ -185,3 +184,19 @@ are large (wp-calypso alone is ~14 GB); budget disk before the first run. The
 `execution.concurrency` of 3 oversubscribes CPU on a 32-core host, since each
 task requests 16 CPUs, but these tasks are dominated by model latency rather
 than local compute.
+
+Both arms run the locally served `Qwen/Qwen3.6-35B-A3B-FP8` over SGLang in
+`external` mode — the model the endpoint in these profiles actually serves.
+Two things stay on DeepSeek deliberately:
+
+- `benchmark.judge`, so the model under test never grades its own answers and
+  grading stays comparable across harness backends.
+- `harness.amem.llm_*`, which is the model amem uses for its *own* internal
+  calls (note-metadata extraction, merge and link decisions). A locally served
+  Qwen was found not to reliably emit the raw JSON amem parses there, silently
+  defaulting note metadata to empty and every merge decision to "no" — see
+  `HarnessAMEMConfig`'s doc comment. Pointing it at DeepSeek keeps the memory
+  graph meaningful; leaving it on the primary model would make the amem arm
+  look inert for reasons that have nothing to do with whether memory helps.
+
+Both arms therefore need `SGLANG_API_KEY` *and* `DEEPSEEK_API_KEY` set.

@@ -714,7 +714,7 @@ func TestCheckedInProfilesLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 31 {
+	if len(paths) != 32 {
 		t.Fatalf("profiles=%v", paths)
 	}
 	for _, path := range paths {
@@ -878,11 +878,11 @@ func TestCheckedInVersionCatalogsLoad(t *testing.T) {
 // Editing one profile and forgetting the other is the easy mistake, so the
 // invariant is asserted rather than left to review.
 func TestSWEAtlasQASubset20ArmsDifferOnlyInAMEM(t *testing.T) {
-	amem, err := Load(filepath.Join("..", "..", "profiles", "openclaw-sweatlasqa-subset20-amem-deepseek.json"))
+	amem, err := Load(filepath.Join("..", "..", "profiles", "openclaw-sweatlasqa-subset20-amem-sglang.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	control, err := Load(filepath.Join("..", "..", "profiles", "openclaw-sweatlasqa-subset20-deepseek.json"))
+	control, err := Load(filepath.Join("..", "..", "profiles", "openclaw-sweatlasqa-subset20-sglang.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -900,6 +900,15 @@ func TestSWEAtlasQASubset20ArmsDifferOnlyInAMEM(t *testing.T) {
 	}
 	if amem.Execution.Concurrency != control.Execution.Concurrency {
 		t.Fatalf("concurrency differs: %d vs %d", amem.Execution.Concurrency, control.Execution.Concurrency)
+	}
+	// The harness model is the thing under test; it must be the same locally
+	// served model on both arms, and distinct from the judge so the model
+	// never grades its own answers.
+	if !reflect.DeepEqual(amem.Runtime, control.Runtime) {
+		t.Fatal("runtime configuration differs between arms")
+	}
+	if amem.Model.BaseURL == amem.Benchmark.Judge.BaseURL {
+		t.Fatalf("harness model and judge share an endpoint %q", amem.Model.BaseURL)
 	}
 	if !amem.Harness.AMEM.Enabled || control.Harness.AMEM.Enabled {
 		t.Fatalf("amem arm enabled=%v, control arm enabled=%v", amem.Harness.AMEM.Enabled, control.Harness.AMEM.Enabled)
