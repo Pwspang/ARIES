@@ -90,6 +90,16 @@ type ModelConfig struct {
 	// explicit value, so this exists to let a profile ask for a larger
 	// budget than that undocumented default.
 	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
+	// ContextWindow tells the harness the model's real native context size
+	// (in tokens), independent of any completion-length cap. Zero means
+	// unset: the harness applies its own default context-window assumption
+	// for a custom model entry, which is unrelated to whatever context
+	// length the serving engine (e.g. sglang's --context-length) actually
+	// enforces. Set this to match the serving engine's real limit so the
+	// harness's own context-budget accounting and preflight checks agree
+	// with what the backend will actually accept, instead of silently
+	// overrunning it.
+	ContextWindow int `json:"context_window,omitempty"`
 }
 
 // ToolEndpoint is the bridge endpoint and task-local file contract given to a

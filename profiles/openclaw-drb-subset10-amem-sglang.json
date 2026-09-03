@@ -61,13 +61,13 @@
     "backend": "sglang",
     "mode": "external",
     "config": {
-      "file": "../configs/sglang/qwen3.6-35b-local.yaml"
+      "file": "../configs/sglang/qwen3.8-27b-local.yaml"
     }
   },
   "model": {
     "base_url": "http://192.168.111.200:8100/v1",
     "api_key_env": "SGLANG_API_KEY",
-    "id": "Qwen/Qwen3.6-35B-A3B-FP8"
+    "id": "Qwen/Qwen3.8-27B"
   },
   "output_dir": "runs"
 }

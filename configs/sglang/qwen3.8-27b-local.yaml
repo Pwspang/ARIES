@@ -1,0 +1,10 @@
+model-path: Qwen/Qwen3.8-27B
+served-model-name: Qwen/Qwen3.8-27B
+host: 0.0.0.0
+port: 8100
+device: cuda
+tensor-parallel-size: 2
+context-length: 262000
+mem-fraction-static: 0.95
+reasoning-parser: qwen3
+tool-call-parser: qwen

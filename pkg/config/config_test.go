@@ -399,6 +399,25 @@ func TestModelMaxOutputTokensValidation(t *testing.T) {
 	}
 }
 
+func TestModelContextWindowValidation(t *testing.T) {
+	limited := strings.Replace(validConfig, `"api_key_env":"DEEPSEEK_API_KEY"}`, `"api_key_env":"DEEPSEEK_API_KEY","context_window":32768}`, 1)
+	cfg, err := Decode(strings.NewReader(limited))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Model.ContextWindow != 32768 {
+		t.Fatalf("model.context_window = %d, want 32768", cfg.Model.ContextWindow)
+	}
+	if cfg.CoreModel().ContextWindow != 32768 {
+		t.Fatalf("CoreModel().ContextWindow = %d, want 32768", cfg.CoreModel().ContextWindow)
+	}
+
+	negative := strings.Replace(validConfig, `"api_key_env":"DEEPSEEK_API_KEY"}`, `"api_key_env":"DEEPSEEK_API_KEY","context_window":-1}`, 1)
+	if _, err := Decode(strings.NewReader(negative)); err == nil {
+		t.Fatal("expected rejection of a negative model.context_window")
+	}
+}
+
 func TestRejectsLegacyRuntimeFields(t *testing.T) {
 	cases := map[string]string{
 		"sglang_file":    strings.Replace(validConfig, `"versions_file":"../configs/versions.json",`, `"versions_file":"../configs/versions.json","sglang_file":"native.yaml",`, 1),
