@@ -597,7 +597,11 @@ func (c *Config) validateBenchmarkType() error {
 		if judge == nil {
 			return errors.New("benchmark.judge is required for sweatlasqa")
 		}
-		if judge.Enabled != nil {
+		if judge.Enabled != nil && !*judge.Enabled {
+			if judge.Provider != "" || judge.BaseURL != "" || judge.ID != "" || judge.APIKeyEnv != "" {
+				return errors.New("judge fields must not be set when judge.enabled is false for sweatlasqa")
+			}
+		} else {
 			if strings.TrimSpace(judge.Provider) == "" {
 				return errors.New("judge.provider is required for sweatlasqa")
 			}
