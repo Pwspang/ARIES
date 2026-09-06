@@ -368,6 +368,36 @@ func TestJudgeDisabledValidation(t *testing.T) {
 	}
 }
 
+const validSweatlasqaConfig = `{
+  "name":"test-run","versions_file":"../configs/versions.json",
+  "benchmark":{"type":"sweatlasqa","root":".cache/swe-atlas-qa","tasks":["task-1"],
+    "judge":{"provider":"deepseek","base_url":"https://api.deepseek.com","model":"deepseek-v4-flash","api_key_env":"DEEPSEEK_API_KEY"}},
+  "harness":{"type":"openclaw"},"sandbox":{"type":"docker"},"bridge":{"type":"openclaw-ssh"},
+  "runtime":{"backend":"deepseek","mode":"external"},
+  "model":{"id":"fake","base_url":"http://127.0.0.1:8080","api_key_env":"DEEPSEEK_API_KEY"}
+}`
+
+func TestSweatlasqaJudgeDisabledValidation(t *testing.T) {
+	if _, err := Decode(strings.NewReader(validSweatlasqaConfig)); err != nil {
+		t.Fatal(err)
+	}
+
+	judgeDisabled := strings.Replace(validSweatlasqaConfig, `"judge":{"provider":"deepseek","base_url":"https://api.deepseek.com","model":"deepseek-v4-flash","api_key_env":"DEEPSEEK_API_KEY"}`, `"judge":{"enabled":false}`, 1)
+	if _, err := Decode(strings.NewReader(judgeDisabled)); err != nil {
+		t.Fatalf("judge.enabled:false alone rejected: %v", err)
+	}
+
+	judgeDisabledWithFields := strings.Replace(validSweatlasqaConfig, `"judge":{"provider":"deepseek"`, `"judge":{"enabled":false,"provider":"deepseek"`, 1)
+	if _, err := Decode(strings.NewReader(judgeDisabledWithFields)); err == nil {
+		t.Fatal("expected rejection of judge model fields set alongside judge.enabled:false")
+	}
+
+	missingJudge := strings.Replace(validSweatlasqaConfig, ",\n    \"judge\":{\"provider\":\"deepseek\",\"base_url\":\"https://api.deepseek.com\",\"model\":\"deepseek-v4-flash\",\"api_key_env\":\"DEEPSEEK_API_KEY\"}", ``, 1)
+	if _, err := Decode(strings.NewReader(missingJudge)); err == nil {
+		t.Fatal("expected rejection of a missing judge block for sweatlasqa")
+	}
+}
+
 func TestTerminalBench2RejectsEnvironmentAndJudge(t *testing.T) {
 	cases := map[string]struct {
 		input   string

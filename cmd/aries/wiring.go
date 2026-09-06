@@ -158,13 +158,13 @@ func newBenchmark(cfg config.Config, outputRoot, logicalID, occurrenceID string,
 		if occurrenceID != logicalID {
 			executionIDs = []string{occurrenceID}
 		}
-		// validateBenchmarkType already guarantees cfg.Benchmark.Judge is
-		// non-nil for this type by the time wiring runs.
+		judgeModel, judgeDisabled := sweatlasModels(cfg)
 		benchmark, err := sweatlas.New(sweatlas.Options{
 			Root: cfg.Benchmark.Root, TaskIDs: []string{logicalID}, ExecutionTaskIDs: executionIDs, OutputDir: outputRoot,
-			Revision:     cfg.Versions.SWEAtlas.Revision,
-			Judge:        cfg.Benchmark.Judge.CoreModel(),
-			APIKeyLookup: lookup,
+			Revision:      cfg.Versions.SWEAtlas.Revision,
+			Judge:         judgeModel,
+			JudgeDisabled: judgeDisabled,
+			APIKeyLookup:  lookup,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("construct sweatlasqa benchmark: %w", err)
@@ -201,6 +201,14 @@ func deepresearchbenchModels(cfg config.Config) (judge, fact core.ModelConfig, j
 		}
 	}
 	return judge, fact, jinaAPIKeyEnv, judgeDisabled
+}
+
+func sweatlasModels(cfg config.Config) (judge core.ModelConfig, judgeDisabled bool) {
+	judgeCfg := cfg.Benchmark.Judge
+	if judgeCfg.Enabled != nil && !*judgeCfg.Enabled {
+		return core.ModelConfig{}, true
+	}
+	return judgeCfg.CoreModel(), false
 }
 
 // environmentFromConfig converts a profile's benchmark.environment block into
@@ -384,13 +392,13 @@ func loadPreparationTasks(ctx context.Context, cfg config.Config, taskIDs []stri
 		}
 		return tasks, nil
 	case "sweatlasqa":
-		// validateBenchmarkType already guarantees cfg.Benchmark.Judge is
-		// non-nil for this type by the time wiring runs.
+		judgeModel, judgeDisabled := sweatlasModels(cfg)
 		benchmark, err := sweatlas.New(sweatlas.Options{
 			Root: cfg.Benchmark.Root, TaskIDs: taskIDs, OutputDir: cfg.OutputDir,
-			Revision:     cfg.Versions.SWEAtlas.Revision,
-			Judge:        cfg.Benchmark.Judge.CoreModel(),
-			APIKeyLookup: lookup,
+			Revision:      cfg.Versions.SWEAtlas.Revision,
+			Judge:         judgeModel,
+			JudgeDisabled: judgeDisabled,
+			APIKeyLookup:  lookup,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("validate sweatlasqa profile: %w", err)

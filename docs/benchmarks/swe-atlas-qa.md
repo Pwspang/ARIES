@@ -60,8 +60,7 @@ construction.
 A `benchmark.judge` block is **required** (unlike Deep Research Bench, where
 it is optional and falls back to the profile's own model) — judge-graded
 rubric scoring is this benchmark's entire output, so there is no sensible
-default and no way to disable grading; `judge.enabled` must not be set at
-all for this type.
+default judge.
 
 ```json
 "benchmark": {
@@ -74,6 +73,22 @@ all for this type.
     "api_key_env": "DEEPSEEK_API_KEY",
     "model": "deepseek-v4-flash"
   }
+}
+```
+
+Grading can be turned off entirely with `judge.enabled: false`, mirroring
+Deep Research Bench's judge-disable switch: no judge LLM call happens for
+any task, `evaluation.status`/`evaluation.verifier_status` become
+`"not_enabled"` (distinct from a graded task that failed), and
+`evaluation.score`/`evaluation.reward` are `0`. This is useful for
+collecting agent answers without paying for any judge calls, e.g. to grade
+them separately offline. `judge.enabled: false` requires every other
+`judge` field (`provider`/`base_url`/`model`/`api_key_env`) to be left
+unset — they would otherwise name a judge that never gets used:
+
+```json
+"judge": {
+  "enabled": false
 }
 ```
 

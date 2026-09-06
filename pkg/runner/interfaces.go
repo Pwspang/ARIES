@@ -2,9 +2,16 @@ package runner
 
 import (
 	"context"
+	"errors"
 
 	"github.com/hyscale-lab/aries/pkg/core"
 )
+
+// ErrNotFound is returned (wrapped) by Sandbox.Download when the requested
+// source path does not exist in the sandbox, distinguishing a legitimately
+// absent file from a genuine download failure (network/daemon/permission
+// errors, disk issues, etc.).
+var ErrNotFound = errors.New("sandbox path not found")
 
 // Benchmark owns task discovery and evaluation.
 type Benchmark interface {

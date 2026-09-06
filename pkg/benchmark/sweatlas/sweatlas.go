@@ -48,10 +48,11 @@ const (
 )
 
 // Options selects tasks from one pinned SWE-Atlas checkout and names the
-// judge model the injected verifier grades with. Judge and APIKeyLookup are
-// both mandatory: unlike Deep Research Bench, there is no default judge (no
-// benchmark model call happens otherwise) and no "disabled" grading mode —
-// judge-graded rubric scoring is this benchmark's entire output.
+// judge model the injected verifier grades with. Unlike Deep Research
+// Bench, there is no default judge (no benchmark model call happens
+// otherwise); judge-graded rubric scoring is this benchmark's entire
+// output, so Judge and APIKeyLookup are mandatory unless JudgeDisabled is
+// set, in which case Evaluate skips grading entirely (see evaluate.go).
 type Options struct {
 	Root             string
 	TaskIDs          []string
@@ -59,6 +60,7 @@ type Options struct {
 	OutputDir        string
 	Revision         string
 	Judge            core.ModelConfig
+	JudgeDisabled    bool
 	APIKeyLookup     func(string) ([]byte, bool)
 }
 
@@ -144,16 +146,22 @@ func New(options Options) (*Benchmark, error) {
 	if strings.TrimSpace(options.Revision) == "" {
 		return nil, errors.New("sweatlas revision is required")
 	}
-	if strings.TrimSpace(options.Judge.Provider) == "" || strings.TrimSpace(options.Judge.BaseURL) == "" ||
-		strings.TrimSpace(options.Judge.Model) == "" || strings.TrimSpace(options.Judge.APIKeyEnv) == "" {
-		return nil, errors.New("sweatlas judge model is required")
-	}
-	if options.APIKeyLookup == nil {
-		return nil, errors.New("sweatlas judge API key lookup is required")
-	}
-	judge, err := newJudgeClient(options.Judge, options.APIKeyLookup)
-	if err != nil {
-		return nil, fmt.Errorf("construct sweatlas judge: %w", err)
+	var judge chatter
+	if !options.JudgeDisabled {
+		if strings.TrimSpace(options.Judge.Provider) == "" || strings.TrimSpace(options.Judge.BaseURL) == "" ||
+			strings.TrimSpace(options.Judge.Model) == "" || strings.TrimSpace(options.Judge.APIKeyEnv) == "" {
+			return nil, errors.New("sweatlas judge model is required")
+		}
+		if options.APIKeyLookup == nil {
+			return nil, errors.New("sweatlas judge API key lookup is required")
+		}
+		var err error
+		judge, err = newJudgeClient(options.Judge, options.APIKeyLookup)
+		if err != nil {
+			return nil, fmt.Errorf("construct sweatlas judge: %w", err)
+		}
+	} else if options.Judge != (core.ModelConfig{}) {
+		return nil, errors.New("sweatlas judge model config must not be set when the judge is disabled")
 	}
 
 	seen := make(map[string]struct{}, len(options.TaskIDs))
@@ -318,6 +326,7 @@ func loadTask(root, id string) (core.Task, taskDetails, error) {
 				Workdir:      workdir,
 				CPU:          parsed.Environment.CPUs,
 				MemoryMB:     parsed.Environment.MemoryMB,
+				StorageMB:    parsed.Environment.StorageMB,
 				GPUs:         parsed.Environment.GPUs,
 				AllowNetwork: parsed.Environment.AllowInternet,
 				Env:          cloneMap(parsed.Environment.Env),

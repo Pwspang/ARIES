@@ -833,6 +833,9 @@ func (s *Sandbox) Download(ctx context.Context, source, destination string) erro
 	}
 	result, err := s.client.CopyFromContainer(ctx, s.containerID, client.CopyFromContainerOptions{SourcePath: source})
 	if err != nil {
+		if cerrdefs.IsNotFound(err) {
+			return fmt.Errorf("download file from Docker task container: %w: %w", runner.ErrNotFound, err)
+		}
 		return fmt.Errorf("download file from Docker task container: %w", err)
 	}
 	defer result.Content.Close()

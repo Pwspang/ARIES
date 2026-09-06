@@ -20,10 +20,13 @@ import (
 const finalAnswerTag = "<<FINAL_ANSWER>>"
 
 // Evaluate downloads the agent's answer file from the still-live sandbox,
-// then — unless it's missing or empty — grades it host-side against the
-// task's rubric using an LLM judge, exactly like Deep Research Bench's RACE
-// grading: no code runs inside the sandbox during evaluation, only one file
-// download.
+// then — unless it's missing or empty, or the judge is disabled
+// (Options.JudgeDisabled) — grades it host-side against the task's rubric
+// using an LLM judge, exactly like Deep Research Bench's RACE grading: no
+// code runs inside the sandbox during evaluation, only one file download.
+// When the judge is disabled, no LLM grading happens at all: Status and
+// VerifierStatus become core.StatusNotEnabled and Score/Reward are 0,
+// distinct from a run that was graded and failed.
 func (b *Benchmark) Evaluate(ctx context.Context, task core.Task, sandbox runner.Sandbox) (core.Evaluation, error) {
 	started := time.Now()
 	evaluation := core.Evaluation{Status: core.StatusFailed, VerifierStatus: core.StatusFailed}
@@ -65,8 +68,14 @@ func (b *Benchmark) Evaluate(ctx context.Context, task core.Task, sandbox runner
 	// A missing answer file is a legitimate (bad) task outcome, not a
 	// plumbing failure: an agent that times out or gives up mid-task never
 	// writes it. Score it as a fail without surfacing a Go error, exactly
-	// like evaluate_answer.py's own "no answer file" early return.
+	// like evaluate_answer.py's own "no answer file" early return. Any other
+	// download failure (network/daemon/permission errors) is a genuine
+	// plumbing fault and must surface, not be silently scored as a no-answer.
 	if err := sandbox.Download(ctx, answerPath, answerArtifactPath); err != nil {
+		if !errors.Is(err, runner.ErrNotFound) {
+			return finish(fmt.Errorf("download answer from sandbox: %w", err))
+		}
+		evaluation.LogPaths = []string{rewardPath}
 		return scoreNoAnswer(evaluation, started, rewardPath)
 	}
 
@@ -76,7 +85,16 @@ func (b *Benchmark) Evaluate(ctx context.Context, task core.Task, sandbox runner
 	}
 	answer := extractFinalAnswer(string(answerBytes))
 	if answer == "" {
+		evaluation.LogPaths = []string{answerArtifactPath, rewardPath}
 		return scoreNoAnswer(evaluation, started, rewardPath)
+	}
+
+	if b.judge == nil {
+		evaluation.Score = 0
+		evaluation.Reward = 0
+		evaluation.Status = core.StatusNotEnabled
+		evaluation.VerifierStatus = core.StatusNotEnabled
+		return finish(nil)
 	}
 
 	rubrics, err := loadRubrics(filepath.Join(details.testsDir, "rubrics.json"))

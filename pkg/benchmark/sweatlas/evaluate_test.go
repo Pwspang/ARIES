@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/hyscale-lab/aries/pkg/core"
+	"github.com/hyscale-lab/aries/pkg/runner"
 )
 
 type evaluateFake struct {
@@ -86,6 +87,31 @@ func benchmarkWithFixtureAndChat(t *testing.T, chat chatter) (*Benchmark, core.T
 	return benchmark, task
 }
 
+// When the judge is disabled, Evaluate must skip rubric grading entirely —
+// no chat calls, no judge_errors.log, no evaluation_results.json — and
+// Status/VerifierStatus report core.StatusNotEnabled (not succeeded or
+// failed) with Score/Reward left at zero.
+func TestEvaluateReportsNotEnabledWhenJudgeDisabled(t *testing.T) {
+	chat := &stubChat{}
+	benchmark, task := benchmarkWithFixtureAndChat(t, chat)
+	benchmark.judge = nil
+	sandbox := &evaluateFake{downloadContent: "<<FINAL_ANSWER>>\nthe answer\n"}
+
+	evaluation, err := benchmark.Evaluate(context.Background(), task, sandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evaluation.Status != core.StatusNotEnabled || evaluation.VerifierStatus != core.StatusNotEnabled {
+		t.Fatalf("evaluation status = %+v, want not_enabled", evaluation)
+	}
+	if evaluation.Score != 0 || evaluation.Reward != 0 {
+		t.Fatalf("evaluation = %+v, want Score=0 Reward=0", evaluation)
+	}
+	if chat.calls != 0 {
+		t.Fatalf("chat calls = %d, want 0 when judge is disabled", chat.calls)
+	}
+}
+
 func TestEvaluateRequiresLiveSandbox(t *testing.T) {
 	benchmark, task := benchmarkWithFixtureAndChat(t, &stubChat{})
 	if _, err := benchmark.Evaluate(context.Background(), task, nil); err == nil {
@@ -96,7 +122,7 @@ func TestEvaluateRequiresLiveSandbox(t *testing.T) {
 func TestEvaluateMissingAnswerScoresZeroWithoutError(t *testing.T) {
 	chat := &stubChat{}
 	benchmark, task := benchmarkWithFixtureAndChat(t, chat)
-	sandbox := &evaluateFake{downloadErr: errors.New("no such file")}
+	sandbox := &evaluateFake{downloadErr: fmt.Errorf("no such file: %w", runner.ErrNotFound)}
 
 	evaluation, err := benchmark.Evaluate(context.Background(), task, sandbox)
 	if err != nil {
@@ -155,6 +181,24 @@ func TestEvaluateExtractsFinalAnswerTag(t *testing.T) {
 		}
 		if !strings.Contains(prompt, "the real answer") {
 			t.Fatalf("judge prompt missing extracted answer: %q", prompt)
+		}
+	}
+}
+
+func TestEvaluateAnswerWithLiteralBracesIsPreservedInJudgePrompt(t *testing.T) {
+	chat := &stubChat{responses: []string{ratingResponse("YES"), ratingResponse("YES")}}
+	benchmark, task := benchmarkWithFixtureAndChat(t, chat)
+	sandbox := &evaluateFake{downloadContent: finalAnswerTag + "\n{{value}}\n"}
+
+	if _, err := benchmark.Evaluate(context.Background(), task, sandbox); err != nil {
+		t.Fatal(err)
+	}
+	if len(chat.prompts) == 0 {
+		t.Fatal("no judge prompts were rendered")
+	}
+	for _, prompt := range chat.prompts {
+		if !strings.Contains(prompt, "{{value}}") {
+			t.Fatalf("judge prompt altered literal braces in answer: %q", prompt)
 		}
 	}
 }

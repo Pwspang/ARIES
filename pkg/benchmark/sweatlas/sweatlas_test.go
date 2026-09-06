@@ -122,6 +122,7 @@ func TestLoadTaskMapsGenericFieldsAndKeepsVerifierPrivate(t *testing.T) {
 		Workdir:      qaTaskWorkdir,
 		CPU:          16,
 		MemoryMB:     16384,
+		StorageMB:    20480,
 		GPUs:         0,
 		AllowNetwork: true,
 	}
@@ -193,6 +194,29 @@ func TestNewRequiresJudgeAndAPIKeyLookup(t *testing.T) {
 				t.Fatalf("New() accepted invalid options %#v", options)
 			}
 		})
+	}
+}
+
+func TestNewAllowsEmptyJudgeWhenJudgeDisabled(t *testing.T) {
+	root := writeFixture(t)
+	options := testOptions(root, []string{qaTaskID}, "out")
+	options.Judge = core.ModelConfig{}
+	options.JudgeDisabled = true
+	benchmark, err := New(options)
+	if err != nil {
+		t.Fatalf("New() error = %v, want an empty judge model config accepted when JudgeDisabled is true", err)
+	}
+	if benchmark.judge != nil {
+		t.Fatal("judge is non-nil, want grading disabled when JudgeDisabled is true")
+	}
+}
+
+func TestNewRejectsJudgeConfigWhenJudgeDisabled(t *testing.T) {
+	root := writeFixture(t)
+	options := testOptions(root, []string{qaTaskID}, "out")
+	options.JudgeDisabled = true
+	if _, err := New(options); err == nil {
+		t.Fatal("accepted a non-empty judge model config alongside JudgeDisabled")
 	}
 }
 
