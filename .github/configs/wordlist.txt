@@ -17,6 +17,7 @@ codebase
 config
 controlmaster
 cpu
+cpus
 csv
 ctrf
 deduplicates
@@ -30,6 +31,8 @@ edu
 entrypoint
 filesystem
 ghcr
+gib
+gid
 github
 gpu
 hermes
@@ -78,7 +81,9 @@ Qwen
 qa's
 prewarm
 Realtime
+reflogs
 reimplement
+relicense
 replayable
 roadmap
 runnable
@@ -119,6 +124,8 @@ tpot
 ttft
 tts
 tty
+uid
+untracked
 upstream's
 url's
 utf
@@ -129,5 +136,6 @@ verifier
 websocket
 workdir
 workdirs
+worktree
 xfs
 yaml

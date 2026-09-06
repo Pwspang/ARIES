@@ -92,7 +92,8 @@ type BenchmarkConfig struct {
 
 // BenchmarkEnvironment describes the task sandbox for benchmarks (currently
 // only Deep Research Bench) that have no per-task environment source of
-// their own, unlike Terminal-Bench 2's task.toml. AllowNetwork is
+// their own, unlike Terminal-Bench 2's task.toml and SWE-bench Pro's dataset
+// rows. AllowNetwork is
 // deliberately not configurable here: Deep Research Bench forces it on
 // unconditionally because its tasks are open-ended web research.
 type BenchmarkEnvironment struct {
@@ -250,6 +251,7 @@ type Versions struct {
 	TerminalBench2    TerminalBench2Versions    `json:"terminalbench2"`
 	DeepResearchBench DeepResearchBenchVersions `json:"deepresearchbench"`
 	SWEAtlas          SWEAtlasVersions          `json:"sweatlasqa"`
+	SWEbenchPro       SWEbenchProVersions       `json:"swebenchpro"`
 	OpenClaw          OpenClawVersions          `json:"openclaw"`
 	Hermes            HermesVersions            `json:"hermes"`
 }
@@ -267,6 +269,13 @@ type DeepResearchBenchVersions struct {
 type SWEAtlasVersions struct {
 	RepositoryURL string `json:"repository_url"`
 	Revision      string `json:"revision"`
+}
+
+type SWEbenchProVersions struct {
+	DatasetRepositoryURL   string `json:"dataset_repository_url"`
+	DatasetRevision        string `json:"dataset_revision"`
+	EvaluatorRepositoryURL string `json:"evaluator_repository_url"`
+	EvaluatorRevision      string `json:"evaluator_revision"`
 }
 
 type OpenClawVersions struct {
@@ -609,6 +618,17 @@ func (c *Config) validateBenchmarkType() error {
 			return errors.New("fact must not be set for sweatlasqa")
 		}
 		return nil
+	case "swebenchpro":
+		if c.Benchmark.Environment != nil {
+			return errors.New("benchmark.environment must not be set for swebenchpro")
+		}
+		if c.Benchmark.Judge != nil {
+			return errors.New("judge must not be set for swebenchpro")
+		}
+		if c.Benchmark.Fact != nil {
+			return errors.New("fact must not be set for swebenchpro")
+		}
+		return nil
 	default:
 		return nil
 	}
@@ -812,6 +832,12 @@ func (c Versions) validate() error {
 		return err
 	}
 	if err := validateRepositoryPin("sweatlasqa", c.SWEAtlas.RepositoryURL, c.SWEAtlas.Revision); err != nil {
+		return err
+	}
+	if err := validateRepositoryPin("swebenchpro.dataset", c.SWEbenchPro.DatasetRepositoryURL, c.SWEbenchPro.DatasetRevision); err != nil {
+		return err
+	}
+	if err := validateRepositoryPin("swebenchpro.evaluator", c.SWEbenchPro.EvaluatorRepositoryURL, c.SWEbenchPro.EvaluatorRevision); err != nil {
 		return err
 	}
 	if err := containerimage.ValidatePinnedTagOnly(c.OpenClaw.Image); err != nil {
