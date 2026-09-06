@@ -235,14 +235,16 @@ func (r *Runner) runTask(ctx context.Context, task core.Task) (core.TaskResult, 
 			result.ToolLogPaths = append(result.ToolLogPaths, turnEndpoint.LogPaths...)
 
 			turnErr = r.harness.Start(ctx, core.HarnessRequest{
-				RunID:     r.runID,
-				TaskID:    task.ID,
-				Endpoint:  turnEndpoint,
-				Model:     r.model,
-				Timeout:   harnessTimeout,
-				CPU:       harnessCPU,
-				MemoryMB:  harnessMemory,
-				OutputDir: r.outputDir,
+				RunID:      r.runID,
+				TaskID:     task.ID,
+				Endpoint:   turnEndpoint,
+				Model:      r.model,
+				Timeout:    harnessTimeout,
+				CPU:        harnessCPU,
+				MemoryMB:   harnessMemory,
+				OutputDir:  r.outputDir,
+				Repository: task.Repository,
+				BaseCommit: task.BaseCommit,
 			})
 			harnessActive = true
 			var turnResult core.HarnessResult
@@ -333,14 +335,16 @@ func (r *Runner) runTask(ctx context.Context, task core.Task) (core.TaskResult, 
 	result.ToolLogPaths = append([]string(nil), endpoint.LogPaths...)
 
 	err = r.harness.Start(ctx, core.HarnessRequest{
-		RunID:     r.runID,
-		TaskID:    task.ID,
-		Endpoint:  endpoint,
-		Model:     r.model,
-		Timeout:   harnessTimeout,
-		CPU:       harnessCPU,
-		MemoryMB:  harnessMemory,
-		OutputDir: r.outputDir,
+		RunID:      r.runID,
+		TaskID:     task.ID,
+		Endpoint:   endpoint,
+		Model:      r.model,
+		Timeout:    harnessTimeout,
+		CPU:        harnessCPU,
+		MemoryMB:   harnessMemory,
+		OutputDir:  r.outputDir,
+		Repository: task.Repository,
+		BaseCommit: task.BaseCommit,
 	})
 	// Start may fail after allocating task-local resources. Stop is idempotent,
 	// so every Start attempt must be followed by a positive stop confirmation

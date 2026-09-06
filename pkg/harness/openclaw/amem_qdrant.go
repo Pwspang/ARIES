@@ -12,9 +12,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/containerd/errdefs"
+	"github.com/hyscale-lab/aries/pkg/core"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/api/types/network"
@@ -29,9 +31,9 @@ const (
 	// per-task loopback proxy started by gatewayLauncherScript forwards this
 	// exact port.
 	amemQdrantLoopbackPort = "6333"
-	// amemQdrantNetworkAlias is the fixed Docker network alias the run-scoped
-	// Qdrant container (see ensureAMEMQdrant) registers on the shared amem
-	// network, and what the loopback proxy forwards to.
+	// amemQdrantNetworkAlias is the fixed Docker network alias the Qdrant
+	// container (see ensureAMEMQdrant) registers on the shared amem network,
+	// and what the loopback proxy forwards to.
 	amemQdrantNetworkAlias = "amem-qdrant"
 	// amemQdrantCollectionName is the plugin's own default Qdrant collection
 	// name (confirmed against a live gateway boot log: "default
@@ -40,14 +42,15 @@ const (
 	// true — update both together if that ever changes.
 	amemQdrantCollectionName = "amem_notes"
 	// amemMemoryExportTimeout bounds exportAMEMMemory's Qdrant scroll calls —
-	// generous since this runs once at the very end of a run, not per task.
+	// generous since this runs once at the very end of a task (or, under repo
+	// scope, once per repository at the very end of a run), not per task.
 	amemMemoryExportTimeout = 2 * time.Minute
 )
 
-// amemQdrantState holds the task-scoped Qdrant resources ensureAMEMQdrant
-// creates, so Manager.Close (exportAMEMMemory, teardownAMEMQdrant) can read
-// and then remove them once this task occurrence ends. nil until amem is
-// enabled and this Manager's one Start() call runs.
+// amemQdrantState holds the Qdrant resources ensureAMEMQdrant creates, so
+// Manager.Close (exportAMEMMemory, teardownAMEMQdrant) can read and then
+// remove them once this task occurrence ends. nil until amem is enabled and
+// this Manager's one Start() call runs.
 type amemQdrantState struct {
 	networkID   string
 	networkName string
@@ -55,36 +58,90 @@ type amemQdrantState struct {
 	containerID string
 }
 
-// ensureAMEMQdrant idempotently creates a Docker volume, network, and Qdrant
-// container scoped to this one task occurrence (runID+taskID), giving amem a
-// private memory store per task attempt.
+// amemRepoScopeKey returns the repo-scope registry key for request and true
+// when manager.amemScope selects sharing a Qdrant store across every task
+// occurrence in this run that targets the same repository at the same
+// commit — false (with an empty key) falls back to today's task-scoped
+// behavior, including when the task's metadata carries no repository/commit
+// identity at all (older or malformed task.toml), since sharing memory is
+// only correct between tasks looking at identical code.
+func amemRepoScopeKey(scope string, request core.HarnessRequest) (string, bool) {
+	if scope != "repo" || request.Repository == "" || request.BaseCommit == "" {
+		return "", false
+	}
+	hash := sha256.Sum256([]byte(request.RunID + "\x00repo\x00" + request.Repository + "\x00" + request.BaseCommit))
+	return hex.EncodeToString(hash[:])[:16], true
+}
+
+// amemRepoSlug turns a task's repository+commit identity into a filesystem-
+// safe name for its repo-scoped memory export (see CleanupSharedAMEMRepoScope
+// in amem_pool.go).
+func amemRepoSlug(request core.HarnessRequest) string {
+	safe := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			return r
+		default:
+			return '-'
+		}
+	}, request.Repository)
+	commit := request.BaseCommit
+	if len(commit) > 12 {
+		commit = commit[:12]
+	}
+	return safe + "-" + commit
+}
+
+// ensureAMEMQdrant idempotently gives this task occurrence a Qdrant memory
+// store: task-scoped (a private volume/network/container keyed on
+// runID+taskID) by default, or — when manager.amemScope is "repo" and the
+// task carries repository/base_commit metadata — a store shared with every
+// other task occurrence in this run against the same repository at the same
+// commit, so a later task's agent can see notes an earlier one already
+// stored about that codebase instead of re-discovering it from scratch.
 //
-// This is deliberately task-scoped, not run-scoped: internal/app/run.go's
-// buildTaskExperiment constructs a brand-new *openclaw.Manager for every task
-// occurrence (confirmed by reading its dispatch loop) — there is no single
-// Manager instance shared across a run's occurrences the way an earlier
-// version of this file assumed. A run-scoped resource name keyed only on
-// runID therefore collided the moment a second occurrence's fresh Manager
-// (with its own nil amemQdrant) tried to create the same network name — this
-// failed deterministically from the second occurrence onward regardless of
-// execution.concurrency, and even a fix that tolerated "already exists"
-// would still be wrong: teardownAMEMQdrant/exportAMEMMemory run once per
-// Manager.Close (also once per occurrence, not once per run — see
-// internal/app/run.go's closeOccurrenceClients), so the first occurrence to
-// finish would tear down and export Qdrant out from under every other
-// occurrence still using it. Scoping per-task instead sidesteps all of that:
-// each Manager's create/use/teardown cycle is now fully self-contained, no
-// cross-Manager coordination needed. The tradeoff is that amem's memory no
-// longer links/persists across different tasks in the same benchmark run —
-// acceptable since Deep Research Bench tasks are independent research
-// questions with no shared context to begin with.
+// Task scoping was the original design (see git history on this file): a
+// run-scoped resource name keyed only on runID collided the moment a second
+// occurrence's fresh Manager (every task occurrence gets its own *Manager —
+// internal/app/run.go's buildTaskExperiment) tried to create the same
+// network name, and even a fix tolerating "already exists" would still be
+// wrong because teardownAMEMQdrant/exportAMEMMemory run once per
+// Manager.Close (also once per occurrence). Repo scope sidesteps the same
+// hazard the same way task scope does — via a process-wide, mutex-protected
+// registry (amemRepoRegistry in amem_pool.go) instead of per-Manager state —
+// and defers teardown/export to CleanupSharedAMEMRepoScope, called once after
+// every task occurrence in the run has finished (internal/app/run.go via
+// Wiring.CleanupHarness), rather than from this Manager's own Close().
 //
 // Start() holds manager.mu for its entire duration (see its top-level
-// defer), so no additional locking is needed here.
-func (manager *Manager) ensureAMEMQdrant(ctx context.Context, runID, taskID string) error {
+// defer), so no additional locking is needed here for manager's own fields;
+// the repo-scope registry has its own mutex for the concurrent-Manager case.
+func (manager *Manager) ensureAMEMQdrant(ctx context.Context, request core.HarnessRequest) error {
 	if manager.amemQdrant != nil {
 		return nil
 	}
+	if repoKey, shared := amemRepoScopeKey(manager.amemScope, request); shared {
+		amemRepoRegistryMu.Lock()
+		defer amemRepoRegistryMu.Unlock()
+		if entry, ok := amemRepoRegistry[repoKey]; ok {
+			manager.amemQdrant = entry.state
+			manager.amemQdrantShared = true
+			return nil
+		}
+		labels := map[string]string{
+			"aries.managed": "true", "aries.kind": "openclaw-amem-qdrant-repo", "aries.run": request.RunID,
+			"aries.repository": request.Repository, "aries.base_commit": request.BaseCommit,
+		}
+		state, err := manager.createAMEMQdrant(ctx, repoKey, labels)
+		if err != nil {
+			return err
+		}
+		amemRepoRegistry[repoKey] = &amemRepoEntry{state: state, slug: amemRepoSlug(request)}
+		manager.amemQdrant = state
+		manager.amemQdrantShared = true
+		return nil
+	}
+
 	// safeTaskID (used for the OpenClaw container name elsewhere in this
 	// package) truncates at 48 characters from the start of its input — fine
 	// for a bare task ID, but runID alone (a timestamp+profile-name string)
@@ -93,21 +150,33 @@ func (manager *Manager) ensureAMEMQdrant(ctx context.Context, runID, taskID stri
 	// back into the bug this task-scoping change fixes. A short hash of both
 	// IDs together is fixed-length and collision-safe regardless of how long
 	// either input is.
-	scopeHash := sha256.Sum256([]byte(runID + "\x00" + taskID))
+	scopeHash := sha256.Sum256([]byte(request.RunID + "\x00" + request.TaskID))
 	scopeKey := hex.EncodeToString(scopeHash[:])[:16]
 	labels := map[string]string{
-		"aries.managed": "true", "aries.kind": "openclaw-amem-qdrant", "aries.run": runID, "aries.task": taskID,
+		"aries.managed": "true", "aries.kind": "openclaw-amem-qdrant", "aries.run": request.RunID, "aries.task": request.TaskID,
 	}
+	state, err := manager.createAMEMQdrant(ctx, scopeKey, labels)
+	if err != nil {
+		return err
+	}
+	manager.amemQdrant = state
+	return nil
+}
+
+// createAMEMQdrant creates a Docker volume, network, and Qdrant container
+// named after scopeKey, labeled with labels. Shared by ensureAMEMQdrant's
+// task-scoped and repo-scoped paths.
+func (manager *Manager) createAMEMQdrant(ctx context.Context, scopeKey string, labels map[string]string) (*amemQdrantState, error) {
 	volumeName := "aries-amem-data-" + scopeKey
 	networkName := "aries-amem-net-" + scopeKey
 	containerName := "aries-amem-qdrant-" + scopeKey
 
 	if _, err := manager.client.VolumeCreate(ctx, client.VolumeCreateOptions{Name: volumeName, Labels: labels}); err != nil {
-		return fmt.Errorf("create amem Qdrant volume: %w", err)
+		return nil, fmt.Errorf("create amem Qdrant volume: %w", err)
 	}
 	networkResult, err := manager.client.NetworkCreate(ctx, networkName, client.NetworkCreateOptions{Labels: labels})
 	if err != nil {
-		return fmt.Errorf("create amem Qdrant network: %w", err)
+		return nil, fmt.Errorf("create amem Qdrant network: %w", err)
 	}
 	created, err := manager.client.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Name: containerName,
@@ -128,15 +197,14 @@ func (manager *Manager) ensureAMEMQdrant(ctx context.Context, runID, taskID stri
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("create amem Qdrant container: %w", err)
+		return nil, fmt.Errorf("create amem Qdrant container: %w", err)
 	}
 	if _, err := manager.client.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {
-		return fmt.Errorf("start amem Qdrant container: %w", err)
+		return nil, fmt.Errorf("start amem Qdrant container: %w", err)
 	}
-	manager.amemQdrant = &amemQdrantState{
+	return &amemQdrantState{
 		networkID: networkResult.ID, networkName: networkName, volumeName: volumeName, containerID: created.ID,
-	}
-	return nil
+	}, nil
 }
 
 // joinAMEMNetwork connects an OpenClaw task container to this task's amem
@@ -153,19 +221,22 @@ func (manager *Manager) joinAMEMNetwork(ctx context.Context, containerID string)
 	return nil
 }
 
-// exportAMEMMemory dumps the final state of amem's Qdrant collection — every
-// stored note's full payload, including its "links" array (the ids of other
-// notes it's linked to; this is the graph edge data amem's own automatic
-// contradiction/linking logic writes, confirmed by inspecting the plugin's
-// bundled dist/index.js: notes are stored and patched with a top-level
-// `links` field) — to this task occurrence's own JSON artifact
-// (manager.amemExportDir, set in Start(); NOT manager.outputDir directly,
-// which is shared by every occurrence in the run and would have every
-// occurrence overwrite the same file). Called once from Manager.Close,
-// before teardownAMEMQdrant removes the container: this task's Qdrant volume
-// is the only place this data ever lives (see ensureAMEMQdrant's doc comment
-// on why it's deliberately not persisted beyond one task attempt), so this
-// is the one chance to capture it.
+// exportAMEMMemory dumps the final state of this task occurrence's own
+// (task-scoped) amem Qdrant collection to its own JSON artifact. Under repo
+// scope this is a no-op (manager.amemQdrantShared is true): that store
+// outlives this one task occurrence, so its export happens once, in bulk,
+// from CleanupSharedAMEMRepoScope — see that function's doc comment.
+//
+// Every stored note's full payload, including its "links" array (the ids of
+// other notes it's linked to; this is the graph edge data amem's own
+// automatic contradiction/linking logic writes, confirmed by inspecting the
+// plugin's bundled dist/index.js: notes are stored and patched with a
+// top-level `links` field) is written to manager.amemExportDir (set in
+// Start(); NOT manager.outputDir directly, which is shared by every
+// occurrence in the run and would have every occurrence overwrite the same
+// file). Called once from Manager.Close, before teardownAMEMQdrant removes
+// the container: this task's Qdrant volume is the only place this data ever
+// lives, so this is the one chance to capture it.
 //
 // This reaches Qdrant's REST API directly over the container's Docker
 // network IP rather than through the per-task loopback proxy (which only
@@ -174,17 +245,26 @@ func (manager *Manager) joinAMEMNetwork(ctx context.Context, containerID string)
 // itself talks to the same Docker daemon these containers run under
 // (manager.client), so it can reach their bridge-network IPs directly.
 func (manager *Manager) exportAMEMMemory(ctx context.Context) error {
-	if manager.amemQdrant == nil {
+	if manager.amemQdrant == nil || manager.amemQdrantShared {
 		return nil
 	}
-	inspection, err := manager.client.ContainerInspect(ctx, manager.amemQdrant.containerID, client.ContainerInspectOptions{})
+	return exportAMEMQdrantState(ctx, manager.client, manager.amemQdrant, manager.amemExportDir)
+}
+
+// exportAMEMQdrantState is the free-function core of exportAMEMMemory,
+// reused by CleanupSharedAMEMRepoScope (amem_pool.go) to export a
+// repo-scoped store's accumulated memory once, at the end of a run, using a
+// dedicated Docker client rather than any one Manager's (which may already
+// be closed by the time the last task occurrence for that repo finishes).
+func exportAMEMQdrantState(ctx context.Context, dockerClient dockerClient, state *amemQdrantState, exportDir string) error {
+	inspection, err := dockerClient.ContainerInspect(ctx, state.containerID, client.ContainerInspectOptions{})
 	if err != nil {
 		return fmt.Errorf("inspect amem Qdrant container for export: %w", err)
 	}
 	if inspection.Container.NetworkSettings == nil {
 		return errors.New("amem Qdrant container has no network settings")
 	}
-	endpoint, ok := inspection.Container.NetworkSettings.Networks[manager.amemQdrant.networkName]
+	endpoint, ok := inspection.Container.NetworkSettings.Networks[state.networkName]
 	if !ok || !endpoint.IPAddress.IsValid() {
 		return errors.New("amem Qdrant container has no address on its network")
 	}
@@ -229,9 +309,9 @@ func (manager *Manager) exportAMEMMemory(ctx context.Context) error {
 			return fmt.Errorf("close amem Qdrant scroll response: %w", closeErr)
 		}
 		if response.StatusCode == http.StatusNotFound {
-			// No notes were ever stored this run — the collection is never
-			// created until the first memory_add call (confirmed empirically).
-			return writeAMEMMemoryExport(manager.amemExportDir, nil)
+			// No notes were ever stored — the collection is never created
+			// until the first memory_add call (confirmed empirically).
+			return writeAMEMMemoryExport(exportDir, nil)
 		}
 		if decoded.Status != "ok" {
 			return fmt.Errorf("amem Qdrant scroll returned status %q", decoded.Status)
@@ -242,7 +322,7 @@ func (manager *Manager) exportAMEMMemory(ctx context.Context) error {
 		}
 		offset = decoded.Result.NextPageOffset
 	}
-	return writeAMEMMemoryExport(manager.amemExportDir, notes)
+	return writeAMEMMemoryExport(exportDir, notes)
 }
 
 func writeAMEMMemoryExport(exportDir string, notes []json.RawMessage) error {
@@ -254,10 +334,9 @@ func writeAMEMMemoryExport(exportDir string, notes []json.RawMessage) error {
 		return fmt.Errorf("encode amem memory export: %w", err)
 	}
 	content = append(content, '\n')
-	// exportDir (manager.outputDir + task ID) already exists by the time a
-	// task attempt reaches Close in the common case (Start's artifactDir
-	// creation is an ancestor of it), but MkdirAll defensively in case
-	// ensureAMEMQdrant succeeded before that happened.
+	// exportDir (manager.outputDir + task ID, or the repo-scoped cleanup
+	// export directory) already exists in the common case, but MkdirAll
+	// defensively in case ensureAMEMQdrant succeeded before that happened.
 	if err := os.MkdirAll(exportDir, 0o700); err != nil {
 		return fmt.Errorf("create amem memory export directory: %w", err)
 	}
@@ -268,30 +347,41 @@ func writeAMEMMemoryExport(exportDir string, notes []json.RawMessage) error {
 	return nil
 }
 
-// teardownAMEMQdrant removes the task-scoped Qdrant container, network, and
-// volume created by ensureAMEMQdrant. Called once from Manager.Close, at the
-// end of this task occurrence — deliberately not persisted beyond it, so a
-// later task (in this run or another) never inherits an earlier task's
-// stored memories (see amemPluginConfig's doc comment on why memory linking
-// is scoped the way it is).
+// teardownAMEMQdrant removes this task occurrence's own (task-scoped) amem
+// Qdrant container, network, and volume. Under repo scope this is a no-op
+// (manager.amemQdrantShared is true): that store outlives this one task
+// occurrence, so it's torn down once, in bulk, from
+// CleanupSharedAMEMRepoScope instead — see that function's doc comment.
+// Called once from Manager.Close, at the end of this task occurrence.
 func (manager *Manager) teardownAMEMQdrant(ctx context.Context) error {
 	if manager.amemQdrant == nil {
 		return nil
 	}
+	if manager.amemQdrantShared {
+		manager.amemQdrant = nil
+		return nil
+	}
 	state := manager.amemQdrant
 	manager.amemQdrant = nil
+	return teardownAMEMQdrantState(ctx, manager.client, state)
+}
+
+// teardownAMEMQdrantState is the free-function core of teardownAMEMQdrant,
+// reused by CleanupSharedAMEMRepoScope to tear down a repo-scoped store once
+// every task occurrence sharing it has finished.
+func teardownAMEMQdrantState(ctx context.Context, dockerClient dockerClient, state *amemQdrantState) error {
 	var errs []error
 	timeout := gracefulStopSeconds
-	if _, err := manager.client.ContainerStop(ctx, state.containerID, client.ContainerStopOptions{Timeout: &timeout}); err != nil && !errdefs.IsNotFound(err) {
+	if _, err := dockerClient.ContainerStop(ctx, state.containerID, client.ContainerStopOptions{Timeout: &timeout}); err != nil && !errdefs.IsNotFound(err) {
 		errs = append(errs, fmt.Errorf("stop amem Qdrant container: %w", err))
 	}
-	if _, err := manager.client.ContainerRemove(ctx, state.containerID, client.ContainerRemoveOptions{Force: true}); err != nil && !errdefs.IsNotFound(err) {
+	if _, err := dockerClient.ContainerRemove(ctx, state.containerID, client.ContainerRemoveOptions{Force: true}); err != nil && !errdefs.IsNotFound(err) {
 		errs = append(errs, fmt.Errorf("remove amem Qdrant container: %w", err))
 	}
-	if _, err := manager.client.NetworkRemove(ctx, state.networkID, client.NetworkRemoveOptions{}); err != nil && !errdefs.IsNotFound(err) {
+	if _, err := dockerClient.NetworkRemove(ctx, state.networkID, client.NetworkRemoveOptions{}); err != nil && !errdefs.IsNotFound(err) {
 		errs = append(errs, fmt.Errorf("remove amem Qdrant network: %w", err))
 	}
-	if _, err := manager.client.VolumeRemove(ctx, state.volumeName, client.VolumeRemoveOptions{Force: true}); err != nil && !errdefs.IsNotFound(err) {
+	if _, err := dockerClient.VolumeRemove(ctx, state.volumeName, client.VolumeRemoveOptions{Force: true}); err != nil && !errdefs.IsNotFound(err) {
 		errs = append(errs, fmt.Errorf("remove amem Qdrant volume: %w", err))
 	}
 	return errors.Join(errs...)

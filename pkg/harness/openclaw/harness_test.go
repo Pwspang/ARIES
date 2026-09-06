@@ -773,7 +773,7 @@ func TestExportAMEMMemoryFailsWithoutNetworkAddress(t *testing.T) {
 	manager.client = fake
 
 	ctx := context.Background()
-	if err := manager.ensureAMEMQdrant(ctx, "run-1", "task-1"); err != nil {
+	if err := manager.ensureAMEMQdrant(ctx, core.HarnessRequest{RunID: "run-1", TaskID: "task-1"}); err != nil {
 		t.Fatal(err)
 	}
 	// The fake's ContainerInspect (from ContainerCreate) never populates a
@@ -795,7 +795,7 @@ func TestAMEMQdrantLifecycleIsTaskScopedAndIdempotent(t *testing.T) {
 	manager.client = fake
 
 	ctx := context.Background()
-	if err := manager.ensureAMEMQdrant(ctx, "run-1", "task-1"); err != nil {
+	if err := manager.ensureAMEMQdrant(ctx, core.HarnessRequest{RunID: "run-1", TaskID: "task-1"}); err != nil {
 		t.Fatal(err)
 	}
 	scopeHash := sha256.Sum256([]byte("run-1" + "\x00" + "task-1"))
@@ -816,7 +816,7 @@ func TestAMEMQdrantLifecycleIsTaskScopedAndIdempotent(t *testing.T) {
 	// A second call against the same Manager (same task occurrence) must be
 	// a no-op: each task occurrence gets exactly one Qdrant instance/volume,
 	// reused across every harness turn within that one task attempt.
-	if err := manager.ensureAMEMQdrant(ctx, "run-1", "task-1"); err != nil {
+	if err := manager.ensureAMEMQdrant(ctx, core.HarnessRequest{RunID: "run-1", TaskID: "task-1"}); err != nil {
 		t.Fatal(err)
 	}
 	if len(fake.volumesCreated) != 1 || len(fake.networksCreated) != 1 || fake.createCalls != 1 {

@@ -99,6 +99,13 @@ type Options struct {
 	AMEMLLMBaseURL      string
 	AMEMLLMModel        string
 	AMEMLLMAPIKeyEnv    string
+	// AMEMScope selects how amem's Qdrant memory store is shared across task
+	// occurrences in a run: "" or "task" (default) gives every task
+	// occurrence its own private store, torn down at the end of that task;
+	// "repo" shares one store across every task occurrence in the run that
+	// targets the same Task.Repository at the same Task.BaseCommit, torn
+	// down only once the run ends (see amem_qdrant.go/amem_pool.go).
+	AMEMScope           string
 	LosslessClawEnabled bool
 	// LosslessClawLLMBaseURL/LosslessClawLLMModel/LosslessClawLLMAPIKeyEnv
 	// override the model lossless-claw's own plugin uses internally for
@@ -187,8 +194,14 @@ type Manager struct {
 	amemLLMBaseURL           string
 	amemLLMModel             string
 	amemLLMAPIKeyEnv         string
+	amemScope                string
 	amemQdrant               *amemQdrantState
-	amemExportDir            string
+	// amemQdrantShared marks that amemQdrant is a repo-scoped store shared
+	// with other Manager instances (via amemRepoRegistry in amem_pool.go),
+	// so Close() must not export/tear it down itself — see
+	// exportAMEMMemory/teardownAMEMQdrant.
+	amemQdrantShared bool
+	amemExportDir    string
 	losslessClawEnabled      bool
 	losslessClawLLMBaseURL   string
 	losslessClawLLMModel     string
@@ -360,6 +373,7 @@ func New(options Options) (*Manager, error) {
 		maxConcurrentSubagents: options.MaxConcurrentSubagents, amemEnabled: options.AMEMEnabled,
 		amemQdrantImage: options.AMEMQdrantImage, amemLLMBaseURL: options.AMEMLLMBaseURL,
 		amemLLMModel: options.AMEMLLMModel, amemLLMAPIKeyEnv: options.AMEMLLMAPIKeyEnv,
+		amemScope: options.AMEMScope,
 		losslessClawEnabled: options.LosslessClawEnabled, losslessClawLLMBaseURL: options.LosslessClawLLMBaseURL,
 		losslessClawLLMModel: options.LosslessClawLLMModel, losslessClawLLMAPIKeyEnv: options.LosslessClawLLMAPIKeyEnv,
 		newID: randomID,
@@ -397,7 +411,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		// manager.outputDir root (each occurrence gets its own *Manager, but
 		// they'd all share outputDir otherwise).
 		manager.amemExportDir = filepath.Join(manager.outputDir, request.TaskID)
-		if err := manager.ensureAMEMQdrant(ctx, request.RunID, request.TaskID); err != nil {
+		if err := manager.ensureAMEMQdrant(ctx, request); err != nil {
 			return err
 		}
 	}

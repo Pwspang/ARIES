@@ -15,6 +15,12 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// harnessCleanupTimeout bounds Wiring.CleanupHarness, run once after every
+// task occurrence has finished — generous since (today) it only exports and
+// tears down a handful of repo-scoped amem Qdrant containers, not a
+// per-occurrence cost.
+const harnessCleanupTimeout = 2 * time.Minute
+
 type HarnessInstance struct {
 	Harness runner.AgentHarness
 	Close   func() error
@@ -36,6 +42,14 @@ type Wiring struct {
 	NewHarness           func(config.Config, string, func(string) ([]byte, bool), *logrus.Logger) (HarnessInstance, error)
 	NewSandbox           func(config.Config, string, string, string, []int, *logrus.Logger) (SandboxInstance, error)
 	NewBridge            func(config.Config, string, *logrus.Logger) (runner.ToolBridge, error)
+	// CleanupHarness runs once, after every task occurrence in a run has
+	// finished, for harness-level state that outlives any single task
+	// occurrence's own HarnessInstance.Close() (e.g. the OpenClaw harness's
+	// repo-scoped amem memory stores — see
+	// pkg/harness/openclaw/amem_pool.go's CleanupSharedAMEMRepoScope).
+	// Optional: nil is a no-op, and every harness/config combination that
+	// has no such state should also be a no-op here.
+	CleanupHarness func(context.Context, config.Config, string) error
 }
 
 type Dependencies struct {
@@ -132,6 +146,17 @@ func Run(ctx context.Context, profilePath string, stdout io.Writer, dependencies
 			runEntry.Info("experiment run finished")
 		}
 		returnErr = errors.Join(returnErr, detachRunLog())
+	}()
+	defer func() {
+		if dependencies.Wiring.CleanupHarness == nil {
+			return
+		}
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), harnessCleanupTimeout)
+		defer cancel()
+		if err := dependencies.Wiring.CleanupHarness(cleanupCtx, cfg, outputRoot); err != nil {
+			runEntry.WithField("error_category", "harness_cleanup_failed").Error("harness-level cleanup failed")
+			returnErr = errors.Join(returnErr, fmt.Errorf("harness cleanup: %w", err))
+		}
 	}()
 
 	preflightLookup := apiKeyLookup

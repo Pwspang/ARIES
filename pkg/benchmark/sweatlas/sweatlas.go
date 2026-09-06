@@ -175,6 +175,20 @@ type agentSection struct {
 	TimeoutSeconds float64 `toml:"timeout_sec"`
 }
 
+// taskMetadata decodes task.toml's [metadata] table (parsed as an opaque
+// toml.Primitive in taskFile.Metadata, since its shape isn't otherwise used
+// by this package) into just the two fields the OpenClaw harness's
+// repo-scoped amem memory sharing needs: repository and base_commit — see
+// core.Task's doc comment. Decoding failure or missing fields are tolerated
+// (left as zero values), not errors: this identity is optional, only
+// consumed when harness.amem.scope is "repo", and every task in this
+// dataset (SWE-Atlas schema_version 1.1) has always carried both, but
+// nothing enforces that as a schema invariant.
+type taskMetadata struct {
+	Repository string `toml:"repository"`
+	BaseCommit string `toml:"base_commit"`
+}
+
 type environmentFile struct {
 	BuildTimeoutSeconds float64           `toml:"build_timeout_sec"`
 	DockerImage         string            `toml:"docker_image"`
@@ -342,6 +356,8 @@ func loadTask(root, id string) (core.Task, taskDetails, error) {
 	if err != nil {
 		return core.Task{}, taskDetails{}, err
 	}
+	var metadata taskMetadata
+	_ = meta.PrimitiveDecode(parsed.Metadata, &metadata)
 
 	instructionBytes, err := os.ReadFile(filepath.Join(taskDir, "instruction.md"))
 	if err != nil {
@@ -373,6 +389,8 @@ func loadTask(root, id string) (core.Task, taskDetails, error) {
 			ID:          id,
 			Instruction: instruction,
 			Timeout:     agentTimeout,
+			Repository:  metadata.Repository,
+			BaseCommit:  metadata.BaseCommit,
 			Environment: core.Environment{
 				Image:        image,
 				Workdir:      workdir,

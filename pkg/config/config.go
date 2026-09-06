@@ -211,6 +211,18 @@ type HarnessAMEMConfig struct {
 	LLMBaseURL   string `json:"llm_base_url,omitempty"`
 	LLMModel     string `json:"llm_model,omitempty"`
 	LLMAPIKeyEnv string `json:"llm_api_key_env,omitempty"`
+	// Scope selects how amem's Qdrant memory store is shared across task
+	// occurrences in a run: "" or "task" (default) gives every task
+	// occurrence its own private store, torn down at the end of that task —
+	// this is the only behavior that existed before this field was added.
+	// "repo" shares one store across every task occurrence in the run that
+	// targets the same repository at the same commit (currently only
+	// pkg/benchmark/sweatlas tasks carry that metadata; tasks without it
+	// silently fall back to task scope), so a later task's agent can see
+	// notes an earlier one already stored about that codebase instead of
+	// re-discovering it from scratch. See
+	// pkg/harness/openclaw/amem_qdrant.go and amem_pool.go.
+	Scope string `json:"scope,omitempty"`
 }
 
 // HarnessLosslessClawConfig enables the lossless-claw context-management
@@ -831,6 +843,12 @@ func (h *HarnessConfig) validate() error {
 	}
 	if h.AMEM.Enabled && h.Type != "openclaw" {
 		return errors.New("harness.amem requires OpenClaw")
+	}
+	if h.AMEM.Scope != "" && h.AMEM.Scope != "task" && h.AMEM.Scope != "repo" {
+		return errors.New(`harness.amem.scope must be "task" or "repo"`)
+	}
+	if h.AMEM.Scope != "" && !h.AMEM.Enabled {
+		return errors.New("harness.amem.scope requires harness.amem.enabled")
 	}
 	if h.AMEM.LLMBaseURL != "" || h.AMEM.LLMModel != "" || h.AMEM.LLMAPIKeyEnv != "" {
 		if !h.AMEM.Enabled {

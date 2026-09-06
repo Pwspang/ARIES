@@ -117,6 +117,9 @@ func TestLoadTaskMapsGenericFieldsAndKeepsVerifierPrivate(t *testing.T) {
 	if task.ID != qaTaskID || task.Instruction != strings.TrimSpace(qaInstruction) {
 		t.Fatalf("task identity/instruction = %#v", task)
 	}
+	if task.Repository != "Automattic/wp-calypso" || task.BaseCommit != "be7e5cc641622d153040491fd5625c6cb83e12eb" {
+		t.Fatalf("task.Repository/BaseCommit = %q/%q, want the fixture's task.toml [metadata] values", task.Repository, task.BaseCommit)
+	}
 	wantEnvironment := core.Environment{
 		Image:        qaTaskImage,
 		Workdir:      qaTaskWorkdir,
@@ -149,6 +152,22 @@ func TestLoadTaskMapsGenericFieldsAndKeepsVerifierPrivate(t *testing.T) {
 		if strings.Contains(string(encoded), private) {
 			t.Fatalf("generic task JSON exposes private value %q: %s", private, encoded)
 		}
+	}
+}
+
+func TestLoadTaskToleratesMissingRepositoryMetadata(t *testing.T) {
+	root := writeFixture(t)
+	path := filepath.Join(root, qaSubdirectory, qaTaskID, "task.toml")
+	content := strings.Replace(fixtureTaskTOML,
+		"repository = \"Automattic/wp-calypso\"\nbase_commit = \"be7e5cc641622d153040491fd5625c6cb83e12eb\"\n", "", 1)
+	writeFile(t, path, content)
+
+	task, _, err := loadTask(root, qaTaskID)
+	if err != nil {
+		t.Fatalf("loadTask() error = %v, want missing repository/base_commit metadata tolerated", err)
+	}
+	if task.Repository != "" || task.BaseCommit != "" {
+		t.Fatalf("task.Repository/BaseCommit = %q/%q, want both empty", task.Repository, task.BaseCommit)
 	}
 }
 

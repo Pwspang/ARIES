@@ -8,6 +8,16 @@ type Task struct {
 	Instruction string        `json:"instruction"`
 	Timeout     time.Duration `json:"timeout,omitempty"`
 	Environment Environment   `json:"environment"`
+	// Repository and BaseCommit optionally identify the codebase a task
+	// targets (e.g. "owner/repo" and a git SHA) — set by benchmarks whose
+	// tasks pin a specific repository snapshot (currently only
+	// pkg/benchmark/sweatlas). Empty for benchmarks with no such notion.
+	// Carried through to core.HarnessRequest so a harness can key
+	// repo-scoped state (see pkg/harness/openclaw's amem repo-scope memory
+	// sharing) on the pair, never on Repository alone, since sharing state
+	// is only correct between tasks looking at identical code.
+	Repository string `json:"repository,omitempty"`
+	BaseCommit string `json:"base_commit,omitempty"`
 }
 
 // Environment describes the task sandbox requested by a benchmark.
@@ -120,6 +130,10 @@ type HarnessRequest struct {
 	CPU       *float64      `json:"cpu,omitempty"`
 	MemoryMB  *int          `json:"memory_mb,omitempty"`
 	OutputDir string        `json:"output_dir"`
+	// Repository and BaseCommit mirror Task's fields of the same name (see
+	// its doc comment) — populated by the runner from the originating Task.
+	Repository string `json:"repository,omitempty"`
+	BaseCommit string `json:"base_commit,omitempty"`
 }
 
 const (

@@ -47,7 +47,21 @@ func commandWiring() app.Wiring {
 		NewHarness:           newHarness,
 		NewSandbox:           newSandbox,
 		NewBridge:            newBridge,
+		CleanupHarness:       cleanupHarness,
 	}
+}
+
+// cleanupHarness runs once, after every task occurrence in a run has
+// finished, for any harness-level state that outlives a single task
+// occurrence's own Manager/Close() — currently only the OpenClaw harness's
+// repo-scoped amem memory stores (harness.amem.scope: "repo"; see
+// pkg/harness/openclaw/amem_pool.go's CleanupSharedAMEMRepoScope). A no-op
+// for every other harness/config combination.
+func cleanupHarness(ctx context.Context, cfg config.Config, outputRoot string) error {
+	if cfg.Harness.Type != "openclaw" || !cfg.Harness.AMEM.Enabled || cfg.Harness.AMEM.Scope != "repo" {
+		return nil
+	}
+	return openclawharness.CleanupSharedAMEMRepoScope(ctx, outputRoot)
 }
 
 func validateComponents(cfg config.Config) error {
@@ -282,6 +296,7 @@ func newHarness(cfg config.Config, outputRoot string, lookup func(string) ([]byt
 			AMEMLLMBaseURL:           cfg.Harness.AMEM.LLMBaseURL,
 			AMEMLLMModel:             cfg.Harness.AMEM.LLMModel,
 			AMEMLLMAPIKeyEnv:         cfg.Harness.AMEM.LLMAPIKeyEnv,
+			AMEMScope:                cfg.Harness.AMEM.Scope,
 			LosslessClawEnabled:      cfg.Harness.LosslessClaw.Enabled,
 			LosslessClawLLMBaseURL:   cfg.Harness.LosslessClaw.LLMBaseURL,
 			LosslessClawLLMModel:     cfg.Harness.LosslessClaw.LLMModel,

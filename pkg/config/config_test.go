@@ -350,6 +350,27 @@ func TestAMEMHarnessConfigValidation(t *testing.T) {
 	}
 }
 
+func TestAMEMHarnessScopeValidation(t *testing.T) {
+	invalidScope := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","amem":{"enabled":true,"scope":"repository"}}`, 1)
+	if _, err := Decode(strings.NewReader(invalidScope)); err == nil {
+		t.Fatal(`expected rejection of harness.amem.scope other than "task" or "repo"`)
+	}
+
+	scopeWithoutEnabled := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","amem":{"scope":"repo"}}`, 1)
+	if _, err := Decode(strings.NewReader(scopeWithoutEnabled)); err == nil {
+		t.Fatal("expected rejection of harness.amem.scope without harness.amem.enabled")
+	}
+
+	repoScope := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","amem":{"enabled":true,"scope":"repo"}}`, 1)
+	cfg, err := Decode(strings.NewReader(repoScope))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Harness.AMEM.Scope != "repo" {
+		t.Fatalf("harness.amem.scope = %q, want %q", cfg.Harness.AMEM.Scope, "repo")
+	}
+}
+
 func TestLosslessClawHarnessConfigValidation(t *testing.T) {
 	nonOpenClaw := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"other","lossless_claw":{"enabled":true}}`, 1)
 	if _, err := Decode(strings.NewReader(nonOpenClaw)); err == nil {
@@ -714,7 +735,7 @@ func TestCheckedInProfilesLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 32 {
+	if len(paths) != 34 {
 		t.Fatalf("profiles=%v", paths)
 	}
 	for _, path := range paths {
@@ -912,5 +933,49 @@ func TestSWEAtlasQASubset20ArmsDifferOnlyInAMEM(t *testing.T) {
 	}
 	if !amem.Harness.AMEM.Enabled || control.Harness.AMEM.Enabled {
 		t.Fatalf("amem arm enabled=%v, control arm enabled=%v", amem.Harness.AMEM.Enabled, control.Harness.AMEM.Enabled)
+	}
+}
+
+// The repo-scope amem arm is the same experiment as the task-scoped amem arm
+// above, differing in exactly one thing: harness.amem.scope. Same reasoning
+// as TestSWEAtlasQASubset20ArmsDifferOnlyInAMEM — a diverging task list,
+// image, model, or judge would confound the comparison.
+func TestSWEAtlasQASubset20RepoScopeArmDiffersOnlyInAMEMScope(t *testing.T) {
+	taskScoped, err := Load(filepath.Join("..", "..", "profiles", "openclaw-sweatlasqa-subset20-amem-sglang.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoScoped, err := Load(filepath.Join("..", "..", "profiles", "openclaw-sweatlasqa-subset20-amem-repo-sglang.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(taskScoped.Benchmark.Tasks, repoScoped.Benchmark.Tasks) {
+		t.Fatalf("task lists diverged:\n task-scoped=%v\n repo-scoped=%v", taskScoped.Benchmark.Tasks, repoScoped.Benchmark.Tasks)
+	}
+	if taskScoped.Versions.OpenClaw.Image != repoScoped.Versions.OpenClaw.Image {
+		t.Fatalf("OpenClaw image differs: %q vs %q", taskScoped.Versions.OpenClaw.Image, repoScoped.Versions.OpenClaw.Image)
+	}
+	if !reflect.DeepEqual(taskScoped.Model, repoScoped.Model) || !reflect.DeepEqual(taskScoped.Benchmark.Judge, repoScoped.Benchmark.Judge) {
+		t.Fatal("model or judge configuration differs between arms")
+	}
+	if taskScoped.Execution.Concurrency != repoScoped.Execution.Concurrency {
+		t.Fatalf("concurrency differs: %d vs %d", taskScoped.Execution.Concurrency, repoScoped.Execution.Concurrency)
+	}
+	if !reflect.DeepEqual(taskScoped.Runtime, repoScoped.Runtime) {
+		t.Fatal("runtime configuration differs between arms")
+	}
+	if !taskScoped.Harness.AMEM.Enabled || !repoScoped.Harness.AMEM.Enabled {
+		t.Fatal("both arms must have amem enabled")
+	}
+	if taskScoped.Harness.AMEM.Scope != "" && taskScoped.Harness.AMEM.Scope != "task" {
+		t.Fatalf("task-scoped arm's harness.amem.scope = %q, want unset or \"task\"", taskScoped.Harness.AMEM.Scope)
+	}
+	if repoScoped.Harness.AMEM.Scope != "repo" {
+		t.Fatalf("repo-scoped arm's harness.amem.scope = %q, want \"repo\"", repoScoped.Harness.AMEM.Scope)
+	}
+	taskScoped.Harness.AMEM.Scope = ""
+	repoScoped.Harness.AMEM.Scope = ""
+	if !reflect.DeepEqual(taskScoped.Harness.AMEM, repoScoped.Harness.AMEM) {
+		t.Fatalf("harness.amem differs beyond scope: task-scoped=%#v repo-scoped=%#v", taskScoped.Harness.AMEM, repoScoped.Harness.AMEM)
 	}
 }
