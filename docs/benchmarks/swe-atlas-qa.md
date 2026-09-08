@@ -200,3 +200,118 @@ Two things stay on DeepSeek deliberately:
   look inert for reasons that have nothing to do with whether memory helps.
 
 Both arms therefore need `SGLANG_API_KEY` *and* `DEEPSEEK_API_KEY` set.
+
+### The pilot30 amem study: task-scope vs repo-scope
+
+subset20 only ever answers "amem vs stock OpenClaw memory" (see above), and
+every task occurrence in it gets an isolated store regardless of arm — it
+cannot say whether memory carrying over *between* task occurrences does
+anything, because nothing in that A/B ever shares a store across tasks. The
+pilot30 study exists to close that gap, using a true no-memory control and a
+second amem arm whose store is shared across every task occurrence hitting
+the same repository.
+
+**Hypotheses.**
+
+- **H1 — task-scoped amem is no better than no memory.** Each task occurrence
+  gets its own store, exported and torn down at the end of that occurrence
+  (documented above); by construction, no note written during one task
+  occurrence can ever be read back during another. If that's true, the
+  mandatory bootstrap protocol (`memory_search` → explore → `memory_add` →
+  `memory_consolidate` → `memory_search`, same as subset20) can only add
+  turns and tokens on top of whatever the task itself needs, for no possible
+  informational benefit — task-scoped agg_score should be statistically
+  indistinguishable from control, and its cost should be higher.
+- **H2 — repo-scoped amem beats both control and task-scope.** Scoping the
+  store to `(repository, base_commit)` instead of the task occurrence lets a
+  later task benefit from an earlier task's notes about the same codebase
+  (architecture, conventions, prior findings) — something task-scope cannot
+  do at all. If memory transfer across tasks is real, repo-scope's agg_score
+  should exceed both other arms.
+- **H3 — the benefit compounds with repo history.** If H2's mechanism is
+  real, a task's benefit over control should grow with how many prior task
+  occurrences against the same repository have already run (and written
+  notes) earlier in the same execution — i.e., the repo-scope − control
+  agg_score delta should trend upward against a task's position in its
+  repository's actual execution order, not stay flat. (This is the one
+  hypothesis the pilot30/shuffle1/shuffle2 replicate design in particular was
+  built to test — see below.)
+
+**Arms.** Three profiles per replicate, otherwise identical:
+
+- `openclaw-sweatlasqa-<replicate>-sglang.json` — control, `harness.amem.enabled`
+  unset/false.
+- `openclaw-sweatlasqa-<replicate>-amem-task-sglang.json` — `harness.amem.enabled: true`,
+  `scope` unset (defaults to per-task-occurrence, same as subset20's amem arm).
+- `openclaw-sweatlasqa-<replicate>-amem-repo-sglang.json` — `harness.amem.enabled: true`,
+  `harness.amem.scope: "repo"` — the shared-store path added in `amem_pool.go`
+  (`amemRepoScopeKey`, keyed on `sha256(runID + "repo" + repository +
+  base_commit)`; `CleanupSharedAMEMRepoScope` tears it down once at the end of
+  the run instead of per task).
+
+`TestSWEAtlasQAStudyArmsDifferOnlyInAMEM` (`pkg/config/config_test.go`) is the
+three-way analogue of subset20's differ-only-in-AMEM test: it asserts control
+has amem disabled, both memory arms have it enabled, `harness.amem` is
+identical between the two memory arms once `scope` is normalized out, and
+task list, OpenClaw image, model, judge, runtime, and concurrency are
+identical across all three arms in a replicate. It also pins
+`execution.concurrency: 1` for every arm — unlike subset20's 3 — specifically
+so that (a) two same-repo tasks can never write the shared repo-scope store
+concurrently, and (b) a task's position within its repository's execution
+order is a single well-defined sequence rather than confounded by parallel
+scheduling.
+
+Both memory arms point `harness.amem.llm_*` (the model amem uses for its own
+internal note-metadata and merge/consolidation calls) at the same local
+`Qwen/Qwen3.6-35B-A3B-FP8` SGLang endpoint used as the primary harness model,
+rather than DeepSeek as subset20 uses. This conflicts with subset20's own
+documented finding that a locally served Qwen doesn't reliably emit the raw
+JSON amem parses there, silently defaulting note metadata to empty and merge
+decisions to "no" — it is a known deviation from subset20's setup, not a
+validated choice for this study, and is worth revisiting before drawing firm
+conclusions from pilot30's memory-arm results.
+
+**Replicates.** The same fixed 30-task subset of `data/qa` is run three
+times, once per task-execution order: `pilot30` (baseline order),
+`pilot30-shuffle1`, `pilot30-shuffle2` — each a distinct full derangement of
+the 30 tasks' order with respect to their per-repository position, so that a
+task's position within its repo is decorrelated from task identity across
+replicates and the position-stratified analysis (H3) can pool three
+quasi-independent samples instead of relying on one. A 4-task `smoke4` trio
+(same three arms, same invariants) exists to sanity-check the setup cheaply
+before committing to a full 30-task run.
+
+**Metrics and analysis.** All analysis is done post-hoc from files already on
+disk (`scripts/summarize_sweatlas_arms.py`, extended ad hoc for
+position-within-repo and turn/tool-call breakdowns) — no additional
+instrumentation is required at run time:
+
+- Primary outcome: `agg_score` from each task's `evaluation/evaluation_results.json`.
+- Cost outcomes: input/output tokens and wall-clock runtime from
+  `harness-turn-01/telemetry/sessions.json`; assistant-turn count and the
+  `exec` vs. `memory_search`/`memory_add`/`memory_consolidate` tool-call
+  split from the session transcript
+  (`harness-turn-01/telemetry/<session>.jsonl`).
+- A task's **position within its repository** is derived from its own
+  execution order — the numeric suffix on its run directory
+  (`task-<id>-NNN`) — filtered to one repository and re-ranked, giving "the
+  Nth task run against this repo so far." This suffix is the actual harness
+  execution sequence and was found to disagree with alphabetical task-ID
+  order for a handful of tasks per replicate, so alphabetical order is not a
+  safe substitute.
+- Because all three arms in a replicate run the identical task list (enforced
+  by the config test above), the core comparison is a **paired per-task
+  delta** (same task, same replicate, arm A score − arm B score), both pooled
+  and stratified by position — this cancels out task-difficulty variance that
+  a same-position, different-task comparison would not.
+- A task can fail to produce `evaluation_results.json` (the rubric judge
+  never completed) while still writing a `reward.txt`; every such case
+  observed had `reward.txt == 0`, so these are counted as `agg_score = 0`
+  rather than dropped from the mean — dropping them was found to bias the
+  comparison, since the memory arms fail outright considerably more often
+  than control.
+
+**Out of scope for this study.** Whether the effect (if any) replicates on
+the full 124-task set, on a different harness model or judge, and whether
+capping or pruning the repo-scope store changes its cost profile are open
+follow-up questions, not something pilot30 itself tests.

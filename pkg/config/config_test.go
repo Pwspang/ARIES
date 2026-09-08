@@ -735,7 +735,7 @@ func TestCheckedInProfilesLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 34 {
+	if len(paths) != 46 {
 		t.Fatalf("profiles=%v", paths)
 	}
 	for _, path := range paths {
@@ -977,5 +977,79 @@ func TestSWEAtlasQASubset20RepoScopeArmDiffersOnlyInAMEMScope(t *testing.T) {
 	repoScoped.Harness.AMEM.Scope = ""
 	if !reflect.DeepEqual(taskScoped.Harness.AMEM, repoScoped.Harness.AMEM) {
 		t.Fatalf("harness.amem differs beyond scope: task-scoped=%#v repo-scoped=%#v", taskScoped.Harness.AMEM, repoScoped.Harness.AMEM)
+	}
+}
+
+// The amem-repo-scope study (smoke4, pilot30, and the pilot30-shuffle1/
+// shuffle2 continual-learning replicates) needs the same three-way
+// invariant as the subset20 pair/trio above: control, task-scope, and
+// repo-scope must be identical in everything except harness.amem, otherwise
+// a measured difference between arms could be a task-list, image, model, or
+// judge difference instead of a memory-scope effect. Each shuffle replicate
+// is expected to differ from pilot30 (and from each other) in
+// Benchmark.Tasks *order* (a distinct full derangement per repo, to
+// decorrelate task identity from position-within-repo so multiple
+// independent position assignments can be averaged over) — nothing here
+// compares across prefixes, only within one trio, so that's fine.
+func TestSWEAtlasQAStudyArmsDifferOnlyInAMEM(t *testing.T) {
+	for _, prefix := range []string{
+		"openclaw-sweatlasqa-smoke4", "openclaw-sweatlasqa-pilot30",
+		"openclaw-sweatlasqa-pilot30-shuffle1", "openclaw-sweatlasqa-pilot30-shuffle2",
+	} {
+		t.Run(prefix, func(t *testing.T) {
+			control, err := Load(filepath.Join("..", "..", "profiles", prefix+"-sglang.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			taskScoped, err := Load(filepath.Join("..", "..", "profiles", prefix+"-amem-task-sglang.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			repoScoped, err := Load(filepath.Join("..", "..", "profiles", prefix+"-amem-repo-sglang.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if control.Harness.AMEM.Enabled {
+				t.Fatal("control arm must have amem disabled")
+			}
+			if !taskScoped.Harness.AMEM.Enabled || !repoScoped.Harness.AMEM.Enabled {
+				t.Fatal("both amem arms must have amem enabled")
+			}
+			if taskScoped.Harness.AMEM.Scope != "" && taskScoped.Harness.AMEM.Scope != "task" {
+				t.Fatalf("task-scoped arm's harness.amem.scope = %q, want unset or \"task\"", taskScoped.Harness.AMEM.Scope)
+			}
+			if repoScoped.Harness.AMEM.Scope != "repo" {
+				t.Fatalf("repo-scoped arm's harness.amem.scope = %q, want \"repo\"", repoScoped.Harness.AMEM.Scope)
+			}
+			taskScoped.Harness.AMEM.Scope = ""
+			repoScoped.Harness.AMEM.Scope = ""
+			taskAMEM, repoAMEM := taskScoped.Harness.AMEM, repoScoped.Harness.AMEM
+			if !reflect.DeepEqual(taskAMEM, repoAMEM) {
+				t.Fatalf("harness.amem differs beyond scope: task-scoped=%#v repo-scoped=%#v", taskAMEM, repoAMEM)
+			}
+
+			arms := []Config{control, taskScoped, repoScoped}
+			for _, arm := range arms[1:] {
+				if !reflect.DeepEqual(control.Benchmark.Tasks, arm.Benchmark.Tasks) {
+					t.Fatalf("task lists diverged:\n control=%v\n other=%v", control.Benchmark.Tasks, arm.Benchmark.Tasks)
+				}
+				if control.Versions.OpenClaw.Image != arm.Versions.OpenClaw.Image {
+					t.Fatalf("OpenClaw image differs: %q vs %q", control.Versions.OpenClaw.Image, arm.Versions.OpenClaw.Image)
+				}
+				if !reflect.DeepEqual(control.Model, arm.Model) || !reflect.DeepEqual(control.Benchmark.Judge, arm.Benchmark.Judge) {
+					t.Fatal("model or judge configuration differs between arms")
+				}
+				if control.Execution.Concurrency != arm.Execution.Concurrency {
+					t.Fatalf("concurrency differs: %d vs %d", control.Execution.Concurrency, arm.Execution.Concurrency)
+				}
+				if !reflect.DeepEqual(control.Runtime, arm.Runtime) {
+					t.Fatal("runtime configuration differs between arms")
+				}
+			}
+			if control.Execution.Concurrency != 1 {
+				t.Fatalf("study arms must run at concurrency 1 (see plan: avoids same-repo tasks overlapping under repo scope, and the concurrency-mismatch confound seen against subset20's concurrency:3 baselines): got %d", control.Execution.Concurrency)
+			}
+		})
 	}
 }

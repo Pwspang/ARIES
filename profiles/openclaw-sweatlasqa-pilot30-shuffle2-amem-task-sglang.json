@@ -1,0 +1,78 @@
+{
+  "name": "openclaw-sweatlasqa-pilot30-shuffle2-amem-task-sglang",
+  "versions_file": "../configs/versions-amem.json",
+  "overrides_file": "",
+  "execution": {
+    "concurrency": 1
+  },
+  "benchmark": {
+    "type": "sweatlasqa",
+    "root": ".cache/swe-atlas-qa",
+    "tasks": [
+      "task-6905333b74f22949d97ba9ac",
+      "task-6905333b74f22949d97ba9a7",
+      "task-6905333b74f22949d97ba9a9",
+      "task-6905333b74f22949d97ba9ab",
+      "task-6905333b74f22949d97baa1d",
+      "task-6905333b74f22949d97ba9b2",
+      "task-6905333b74f22949d97ba9a8",
+      "task-6905333b74f22949d97ba9e8",
+      "task-6905333b74f22949d97ba9af",
+      "task-6905333b74f22949d97ba9ae",
+      "task-6905333b74f22949d97ba9aa",
+      "task-6905333b74f22949d97ba9a5",
+      "task-6905333b74f22949d97ba9a6",
+      "task-6905333b74f22949d97ba9a4",
+      "task-6905333b74f22949d97ba9ad",
+      "task-6905333b74f22949d97ba9dd",
+      "task-6905333b74f22949d97ba9d6",
+      "task-6905333b74f22949d97ba9d1",
+      "task-6905333b74f22949d97ba9d2",
+      "task-6905333b74f22949d97ba9db",
+      "task-6905333b74f22949d97ba9d9",
+      "task-6905333b74f22949d97ba9d7",
+      "task-6905333b74f22949d97ba9e0",
+      "task-6905333b74f22949d97ba9d4",
+      "task-6905333b74f22949d97ba9d8",
+      "task-6905333b74f22949d97ba9d0",
+      "task-6905333b74f22949d97ba9d5",
+      "task-6905333b74f22949d97ba9de",
+      "task-6905333b74f22949d97ba9d3",
+      "task-6905333b74f22949d97ba9dc"
+    ],
+    "judge": {
+      "provider": "deepseek",
+      "base_url": "https://api.deepseek.com",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "model": "deepseek-v4-flash"
+    }
+  },
+  "harness": {
+    "type": "openclaw",
+    "amem": {
+      "enabled": true,
+      "llm_base_url": "http://192.168.111.200:8100/v1",
+      "llm_model": "Qwen/Qwen3.6-35B-A3B-FP8",
+      "llm_api_key_env": "SGLANG_API_KEY"
+    }
+  },
+  "sandbox": {
+    "type": "docker"
+  },
+  "bridge": {
+    "type": "openclaw-ssh"
+  },
+  "runtime": {
+    "backend": "sglang",
+    "mode": "external",
+    "config": {
+      "file": "../configs/sglang/qwen3.6-35b-local.yaml"
+    }
+  },
+  "model": {
+    "base_url": "http://192.168.111.200:8100/v1",
+    "api_key_env": "SGLANG_API_KEY",
+    "id": "Qwen/Qwen3.6-35B-A3B-FP8"
+  },
+  "output_dir": "runs"
+}
