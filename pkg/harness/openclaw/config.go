@@ -275,6 +275,15 @@ type modelRecord struct {
 	// is unverified against OpenClaw's actual config parser. Omitted
 	// entirely when unset, matching today's behavior.
 	MaxTokens int `json:"maxTokens,omitempty"`
+	// ContextWindow overrides OpenClaw's own belief about this model's
+	// context window size (see core.ModelConfig.ContextWindowTokens),
+	// confirmed against OpenClaw's vendored source
+	// (src/agents/context-resolution.ts's ConfigModelEntry.contextWindow,
+	// consumed by its auto-compaction budget check) to trigger more frequent
+	// compaction without touching the model's real serving context length.
+	// Omitted entirely when unset, matching today's behavior (OpenClaw falls
+	// back to its own 200k default).
+	ContextWindow int `json:"contextWindow,omitempty"`
 }
 
 type agentsConfig struct {
@@ -371,7 +380,7 @@ func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchE
 					BaseURL: model.BaseURL,
 					APIKey:  "${" + model.APIKeyEnv + "}",
 					API:     "openai-completions",
-					Models:  []modelRecord{{ID: model.Model, Name: model.Model, MaxTokens: model.MaxOutputTokens}},
+					Models:  []modelRecord{{ID: model.Model, Name: model.Model, MaxTokens: model.MaxOutputTokens, ContextWindow: model.ContextWindowTokens}},
 				},
 			},
 		},

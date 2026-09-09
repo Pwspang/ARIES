@@ -100,6 +100,15 @@ type ModelConfig struct {
 	// explicit value, so this exists to let a profile ask for a larger
 	// budget than that undocumented default.
 	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
+	// ContextWindowTokens overrides the harness's belief about how many
+	// tokens this model's context window holds. Zero means unset: the
+	// harness's own default applies, unchanged from before this field
+	// existed. This does not change the model's real serving context length
+	// (e.g. sglang's --context-length) — it only changes when the harness's
+	// own auto-compaction logic decides the budget is exceeded, letting a
+	// profile force more frequent compaction against a model that actually
+	// supports a much larger window.
+	ContextWindowTokens int `json:"context_window_tokens,omitempty"`
 }
 
 // ToolEndpoint is the bridge endpoint and task-local file contract given to a

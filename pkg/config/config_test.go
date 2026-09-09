@@ -421,6 +421,25 @@ func TestModelMaxOutputTokensValidation(t *testing.T) {
 	}
 }
 
+func TestModelContextWindowTokensValidation(t *testing.T) {
+	limited := strings.Replace(validConfig, `"api_key_env":"DEEPSEEK_API_KEY"}`, `"api_key_env":"DEEPSEEK_API_KEY","context_window_tokens":32000}`, 1)
+	cfg, err := Decode(strings.NewReader(limited))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Model.ContextWindowTokens != 32000 {
+		t.Fatalf("model.context_window_tokens = %d, want 32000", cfg.Model.ContextWindowTokens)
+	}
+	if cfg.CoreModel().ContextWindowTokens != 32000 {
+		t.Fatalf("CoreModel().ContextWindowTokens = %d, want 32000", cfg.CoreModel().ContextWindowTokens)
+	}
+
+	negative := strings.Replace(validConfig, `"api_key_env":"DEEPSEEK_API_KEY"}`, `"api_key_env":"DEEPSEEK_API_KEY","context_window_tokens":-1}`, 1)
+	if _, err := Decode(strings.NewReader(negative)); err == nil {
+		t.Fatal("expected rejection of a negative model.context_window_tokens")
+	}
+}
+
 func TestRejectsLegacyRuntimeFields(t *testing.T) {
 	cases := map[string]string{
 		"sglang_file":    strings.Replace(validConfig, `"versions_file":"../configs/versions.json",`, `"versions_file":"../configs/versions.json","sglang_file":"native.yaml",`, 1),
@@ -735,7 +754,7 @@ func TestCheckedInProfilesLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 46 {
+	if len(paths) != 52 {
 		t.Fatalf("profiles=%v", paths)
 	}
 	for _, path := range paths {
@@ -995,6 +1014,7 @@ func TestSWEAtlasQAStudyArmsDifferOnlyInAMEM(t *testing.T) {
 	for _, prefix := range []string{
 		"openclaw-sweatlasqa-smoke4", "openclaw-sweatlasqa-pilot30",
 		"openclaw-sweatlasqa-pilot30-shuffle1", "openclaw-sweatlasqa-pilot30-shuffle2",
+		"openclaw-sweatlasqa-smoke4-ctxlimit", "openclaw-sweatlasqa-pilot30-ctxlimit",
 	} {
 		t.Run(prefix, func(t *testing.T) {
 			control, err := Load(filepath.Join("..", "..", "profiles", prefix+"-sglang.json"))
@@ -1049,6 +1069,59 @@ func TestSWEAtlasQAStudyArmsDifferOnlyInAMEM(t *testing.T) {
 			}
 			if control.Execution.Concurrency != 1 {
 				t.Fatalf("study arms must run at concurrency 1 (see plan: avoids same-repo tasks overlapping under repo scope, and the concurrency-mismatch confound seen against subset20's concurrency:3 baselines): got %d", control.Execution.Concurrency)
+			}
+		})
+	}
+}
+
+// The ctxlimit study exists to ask whether amem's benefit (if any) depends on
+// the harness actually compacting context away, which pilot30's own
+// unconstrained (200k-token) runs never triggered. Each ctxlimit-prefixed
+// trio must therefore be identical to its pilot30-prefixed counterpart in
+// everything except model.context_window_tokens — same task list, image,
+// judge, and runtime — otherwise a score difference between the two studies
+// could just as easily be an unrelated confound instead of the compaction
+// manipulation under test.
+func TestSWEAtlasQACtxLimitArmsDifferFromPilot30OnlyInContextWindow(t *testing.T) {
+	for _, pair := range []struct{ unconstrained, constrained string }{
+		{"openclaw-sweatlasqa-smoke4", "openclaw-sweatlasqa-smoke4-ctxlimit"},
+		{"openclaw-sweatlasqa-pilot30", "openclaw-sweatlasqa-pilot30-ctxlimit"},
+	} {
+		t.Run(pair.constrained, func(t *testing.T) {
+			for _, suffix := range []string{"-sglang.json", "-amem-task-sglang.json", "-amem-repo-sglang.json"} {
+				unconstrained, err := Load(filepath.Join("..", "..", "profiles", pair.unconstrained+suffix))
+				if err != nil {
+					t.Fatal(err)
+				}
+				constrained, err := Load(filepath.Join("..", "..", "profiles", pair.constrained+suffix))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if unconstrained.Model.ContextWindowTokens != 0 {
+					t.Fatalf("%s: unconstrained arm must leave context_window_tokens unset, got %d", suffix, unconstrained.Model.ContextWindowTokens)
+				}
+				if constrained.Model.ContextWindowTokens <= 0 {
+					t.Fatalf("%s: constrained arm must set a positive context_window_tokens, got %d", suffix, constrained.Model.ContextWindowTokens)
+				}
+				constrained.Model.ContextWindowTokens = 0
+				if !reflect.DeepEqual(unconstrained.Model, constrained.Model) {
+					t.Fatalf("%s: model config differs beyond context_window_tokens: unconstrained=%#v constrained=%#v", suffix, unconstrained.Model, constrained.Model)
+				}
+				if !reflect.DeepEqual(unconstrained.Benchmark.Tasks, constrained.Benchmark.Tasks) {
+					t.Fatalf("%s: task lists diverged between unconstrained and constrained arms", suffix)
+				}
+				if unconstrained.Versions.OpenClaw.Image != constrained.Versions.OpenClaw.Image {
+					t.Fatalf("%s: OpenClaw image differs: %q vs %q", suffix, unconstrained.Versions.OpenClaw.Image, constrained.Versions.OpenClaw.Image)
+				}
+				if !reflect.DeepEqual(unconstrained.Benchmark.Judge, constrained.Benchmark.Judge) {
+					t.Fatalf("%s: judge configuration differs between unconstrained and constrained arms", suffix)
+				}
+				if !reflect.DeepEqual(unconstrained.Runtime, constrained.Runtime) {
+					t.Fatalf("%s: runtime configuration differs between unconstrained and constrained arms", suffix)
+				}
+				if unconstrained.Execution.Concurrency != constrained.Execution.Concurrency {
+					t.Fatalf("%s: concurrency differs: %d vs %d", suffix, unconstrained.Execution.Concurrency, constrained.Execution.Concurrency)
+				}
 			}
 		})
 	}

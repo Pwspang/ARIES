@@ -83,6 +83,10 @@ type ProfileModel struct {
 	// core.ModelConfig.MaxOutputTokens. Zero (the default) leaves the
 	// provider's own default in place.
 	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
+	// ContextWindowTokens overrides the harness's belief about its context
+	// window size; see core.ModelConfig.ContextWindowTokens. Zero (the
+	// default) leaves the harness's own default in place.
+	ContextWindowTokens int `json:"context_window_tokens,omitempty"`
 }
 
 type BenchmarkConfig struct {
@@ -369,6 +373,7 @@ func (c Config) CoreModel() core.ModelConfig {
 	return core.ModelConfig{
 		Provider: c.Runtime.Backend, BaseURL: c.Model.BaseURL, Model: c.Model.ID,
 		APIKeyEnv: c.Model.APIKeyEnv, MaxOutputTokens: c.Model.MaxOutputTokens,
+		ContextWindowTokens: c.Model.ContextWindowTokens,
 	}
 }
 
@@ -637,6 +642,9 @@ func (c *Config) validate() error {
 	}
 	if c.Model.MaxOutputTokens < 0 {
 		return errors.New("model.max_output_tokens must not be negative")
+	}
+	if c.Model.ContextWindowTokens < 0 {
+		return errors.New("model.context_window_tokens must not be negative")
 	}
 	if err := c.validateBenchmarkType(); err != nil {
 		return err

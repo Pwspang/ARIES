@@ -80,6 +80,33 @@ func TestRenderConfigSetsMaxTokensWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestRenderConfigOmitsContextWindowWhenUnset(t *testing.T) {
+	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, false, false, 0, "", "", false, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(content, []byte("contextWindow")) {
+		t.Fatalf("expected no contextWindow field when ContextWindowTokens is unset, got %s", content)
+	}
+}
+
+func TestRenderConfigSetsContextWindowWhenConfigured(t *testing.T) {
+	model := testModel()
+	model.ContextWindowTokens = 32000
+	content, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", false, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var configuration openClawConfig
+	if err := json.Unmarshal(content, &configuration); err != nil {
+		t.Fatal(err)
+	}
+	provider := configuration.Models.Providers["aries"]
+	if len(provider.Models) != 1 || provider.Models[0].ContextWindow != 32000 {
+		t.Fatalf("provider models = %#v, want ContextWindow=32000", provider.Models)
+	}
+}
+
 func TestRenderConfigSelectsSGLangProviderWithoutSerializingKey(t *testing.T) {
 	model := testModel()
 	model.Provider = "sglang"
