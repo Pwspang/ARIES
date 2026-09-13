@@ -754,7 +754,7 @@ func TestCheckedInProfilesLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 52 {
+	if len(paths) != 54 {
 		t.Fatalf("profiles=%v", paths)
 	}
 	for _, path := range paths {
@@ -1011,6 +1011,11 @@ func TestSWEAtlasQASubset20RepoScopeArmDiffersOnlyInAMEMScope(t *testing.T) {
 // independent position assignments can be averaged over) — nothing here
 // compares across prefixes, only within one trio, so that's fine.
 func TestSWEAtlasQAStudyArmsDifferOnlyInAMEM(t *testing.T) {
+	// pilot30-ctxlimit is the only prefix so far with a fourth,
+	// cross-repo-transfer arm (harness.amem.scope: "global" — see
+	// docs/benchmarks/swe-atlas-qa.md); every other prefix keeps its
+	// original three-arm trio.
+	globalScopedPrefixes := map[string]bool{"openclaw-sweatlasqa-pilot30-ctxlimit": true}
 	for _, prefix := range []string{
 		"openclaw-sweatlasqa-smoke4", "openclaw-sweatlasqa-pilot30",
 		"openclaw-sweatlasqa-pilot30-shuffle1", "openclaw-sweatlasqa-pilot30-shuffle2",
@@ -1042,14 +1047,34 @@ func TestSWEAtlasQAStudyArmsDifferOnlyInAMEM(t *testing.T) {
 			if repoScoped.Harness.AMEM.Scope != "repo" {
 				t.Fatalf("repo-scoped arm's harness.amem.scope = %q, want \"repo\"", repoScoped.Harness.AMEM.Scope)
 			}
-			taskScoped.Harness.AMEM.Scope = ""
-			repoScoped.Harness.AMEM.Scope = ""
-			taskAMEM, repoAMEM := taskScoped.Harness.AMEM, repoScoped.Harness.AMEM
-			if !reflect.DeepEqual(taskAMEM, repoAMEM) {
-				t.Fatalf("harness.amem differs beyond scope: task-scoped=%#v repo-scoped=%#v", taskAMEM, repoAMEM)
-			}
 
 			arms := []Config{control, taskScoped, repoScoped}
+			scopelessAMEM := []HarnessAMEMConfig{{}, taskScoped.Harness.AMEM, repoScoped.Harness.AMEM}
+			scopelessAMEM[1].Scope, scopelessAMEM[2].Scope = "", ""
+
+			if globalScopedPrefixes[prefix] {
+				globalScoped, err := Load(filepath.Join("..", "..", "profiles", prefix+"-amem-global-sglang.json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !globalScoped.Harness.AMEM.Enabled {
+					t.Fatal("global-scoped arm must have amem enabled")
+				}
+				if globalScoped.Harness.AMEM.Scope != "global" {
+					t.Fatalf("global-scoped arm's harness.amem.scope = %q, want \"global\"", globalScoped.Harness.AMEM.Scope)
+				}
+				arms = append(arms, globalScoped)
+				scopelessGlobalAMEM := globalScoped.Harness.AMEM
+				scopelessGlobalAMEM.Scope = ""
+				scopelessAMEM = append(scopelessAMEM, scopelessGlobalAMEM)
+			}
+
+			for _, amem := range scopelessAMEM[1:] {
+				if !reflect.DeepEqual(scopelessAMEM[1], amem) {
+					t.Fatalf("harness.amem differs beyond scope: %#v vs %#v", scopelessAMEM[1], amem)
+				}
+			}
+
 			for _, arm := range arms[1:] {
 				if !reflect.DeepEqual(control.Benchmark.Tasks, arm.Benchmark.Tasks) {
 					t.Fatalf("task lists diverged:\n control=%v\n other=%v", control.Benchmark.Tasks, arm.Benchmark.Tasks)

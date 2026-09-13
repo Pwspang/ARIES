@@ -315,3 +315,73 @@ instrumentation is required at run time:
 the full 124-task set, on a different harness model or judge, and whether
 capping or pruning the repo-scope store changes its cost profile are open
 follow-up questions, not something pilot30 itself tests.
+
+### The pilot30-ctxlimit amem study: does cross-repo memory transfer?
+
+H1-H3 above all concern memory transfer *within* one repository — repo-scope
+by construction can never share a note across a repository boundary (its key
+is `sha256(runID + "repo" + repository + base_commit)`). A separate
+question is whether amem captures something more general than repo-specific
+facts — harness/tooling quirks, the judge's grading behavior, generic
+debugging strategy — that would transfer even to a *different* codebase. To
+test that, `harness.amem.scope: "global"` shares one Qdrant store across
+every task occurrence in the run regardless of repository or commit
+(`amemRepoScopeKey`'s `"global"` case, keyed only on `sha256(runID +
+"global")`).
+
+pilot30's task list is arranged as 15 tasks in `simple-login/app` followed by
+15 in `paperless-ngx/paperless-ngx` (`benchmark.tasks` order in
+`openclaw-sweatlasqa-pilot30-ctxlimit-sglang.json`), with
+`execution.concurrency: 1` making that array order the literal execution
+order. This is exactly the shape a transfer test needs: by the time the
+first paperless-ngx task starts, a global-scope store has already
+accumulated whatever notes 15 simple-login/app task occurrences wrote, while
+repo-scope's store for paperless-ngx starts empty regardless.
+
+- **H4 — global-scoped amem outperforms repo-scoped and task-scoped amem at
+  the *second* repository's early positions.** If cross-repo transfer is
+  real, paperless-ngx's position-1 (its "cold start") should score higher
+  and/or cost fewer tokens under global scope than under repo-scope, task-scope,
+  or control — repo-scope is the built-in negative control here, since its
+  paperless-ngx store starts empty exactly like control's regardless of what
+  happened in simple-login/app. simple-login/app (the *first* repository)
+  should show no arm difference at all beyond what H1/H2 already predict,
+  since nothing precedes it in the run for any arm to have transferred from.
+- Direct (not just aggregate-score) evidence for transfer: whether any note
+  reused by a paperless-ngx task actually originated from a simple-login/app
+  task occurrence, via the retrieval-relevance evidence
+  (`scripts/out/retrieval_relevance_cases.csv`) tagged with a
+  `source_repository` per retrieved note.
+
+**Arms.** A fourth profile per replicate, identical to the other three except
+`harness.amem.scope`:
+
+- `openclaw-sweatlasqa-pilot30-ctxlimit-amem-global-sglang.json` —
+  `harness.amem.enabled: true`, `harness.amem.scope: "global"`.
+
+`TestSWEAtlasQAStudyArmsDifferOnlyInAMEM` covers this fourth arm for the
+`pilot30-ctxlimit` prefix specifically (not smoke4/shuffle, which keep the
+original three-arm trio), asserting it's enabled, scoped `"global"`, and
+identical to the other memory arms in `harness.amem` once scope is
+normalized out, plus the same task-list/model/judge/runtime/concurrency
+invariants as the other three arms.
+
+A 4-task `smoke4-ctxlimit` variant (2 tasks in simple-login/app, 2 in
+paperless-ngx, same `concurrency: 1`) exists to cheaply confirm the new
+scope's plumbing — one shared container spanning both repositories, one
+`amem-memory/global/amem-memory.json` export at the end of the run — before
+committing to the full 30-task run. `scripts/run-amem-study-smoke-ctxlimit.sh`
+now launches all four arms (control, task-scope, repo-scope, global-scope);
+`scripts/run-amem-study-pilot-ctxlimit.sh` does the same for the full
+pilot30-ctxlimit run, and should only be run after the smoke script confirms
+the plumbing works.
+
+The same known deviation noted above (amem's internal LLM calls pointed at
+the local sglang endpoint rather than DeepSeek, "not validated") applies here
+too and should be revisited before drawing firm conclusions.
+
+**Out of scope for this study.** Whether transfer (if any) survives to a
+third or later repository, whether it depends on the two repositories being
+similar in domain, and whether an interleaved (rather than fully-grouped)
+task order changes the effect are open follow-up questions, not something
+this pilot30-ctxlimit arm itself tests.

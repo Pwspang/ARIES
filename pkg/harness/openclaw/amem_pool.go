@@ -11,20 +11,21 @@ import (
 	"github.com/moby/moby/client"
 )
 
-// amemRepoEntry is one repo-scoped amem Qdrant store, shared by every
-// Manager (task occurrence) in this process's run whose task targets the
-// same repository at the same commit — see amemRepoScopeKey.
+// amemRepoEntry is one shared-scope ("repo" or "global") amem Qdrant store,
+// shared by every Manager (task occurrence) in this process's run whose
+// scope key matches — see amemRepoScopeKey.
 type amemRepoEntry struct {
 	state *amemQdrantState
-	// slug names this repo's export file under CleanupSharedAMEMRepoScope's
+	// slug names this store's export file under CleanupSharedAMEMRepoScope's
 	// "<outputRoot>/amem-memory/" directory — see amemRepoSlug.
 	slug string
 }
 
 // amemRepoRegistry and its mutex are process-wide, not per-Manager: every
 // task occurrence in a run gets its own fresh *Manager (internal/app/run.go's
-// buildTaskExperiment), so sharing a Qdrant store across occurrences of the
-// same repository needs state that outlives any one Manager. This is safe
+// buildTaskExperiment), so sharing a Qdrant store across occurrences (of the
+// same repository under "repo" scope, or of the whole run under "global"
+// scope) needs state that outlives any one Manager. This is safe
 // specifically because one ARIES process runs exactly one benchmark run —
 // see CleanupSharedAMEMRepoScope's doc comment.
 var (
@@ -32,12 +33,13 @@ var (
 	amemRepoRegistry   = map[string]*amemRepoEntry{}
 )
 
-// CleanupSharedAMEMRepoScope exports and tears down every repo-scoped amem
-// Qdrant store created during this process's run (harness.amem.scope:
-// "repo"), one per distinct repository+commit the run touched. It is a
-// no-op if no repo-scoped store was ever created (repo scope disabled, or
-// every task fell back to task scope for lacking repository/commit
-// metadata).
+// CleanupSharedAMEMRepoScope exports and tears down every shared-scope amem
+// Qdrant store created during this process's run: under harness.amem.scope
+// "repo", one per distinct repository+commit the run touched; under
+// "global", the single store shared by the whole run. It is a no-op if no
+// shared-scope store was ever created (repo/global scope disabled, or every
+// task fell back to task scope for lacking repository/commit metadata under
+// "repo" scope).
 //
 // Must be called exactly once, after every task occurrence in the run has
 // finished — see internal/app/run.go's Wiring.CleanupHarness — never from an

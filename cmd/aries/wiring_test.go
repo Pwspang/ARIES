@@ -269,6 +269,31 @@ func TestPrepareBackendRejectsManagedSGLangGPUCountMismatch(t *testing.T) {
 	}
 }
 
+// cleanupHarness must call CleanupSharedAMEMRepoScope for BOTH shared-scope
+// amem values ("repo" and "global"), not just "repo" — an earlier version of
+// this guard checked only `cfg.Harness.AMEM.Scope != "repo"`, which silently
+// skipped that call under "global" scope: its shared Qdrant
+// container/network/volume were never exported or torn down, leaking for
+// every run using that scope. Asserted against the source text (like
+// TestManagedSGLangReceivesConfiguredCredentialEnvironmentName below) rather
+// than cleanupHarness's return value, since with an empty amem repo registry
+// CleanupSharedAMEMRepoScope is a no-op returning nil whether or not it was
+// actually reached — a return-value test can't distinguish "correctly ran a
+// no-op" from "wrongly skipped the call".
+func TestCleanupHarnessCallsSharedScopeCleanupForRepoAndGlobal(t *testing.T) {
+	source, err := os.ReadFile("wiring.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	if strings.Contains(text, `cfg.Harness.AMEM.Scope != "repo" {`) {
+		t.Fatal(`cleanupHarness's guard must not skip "global" scope: found a check against "repo" alone`)
+	}
+	if !strings.Contains(text, `cfg.Harness.AMEM.Scope != "repo" && cfg.Harness.AMEM.Scope != "global"`) {
+		t.Fatal(`cleanupHarness must skip only when scope is neither "repo" nor "global"`)
+	}
+}
+
 func TestManagedSGLangReceivesConfiguredCredentialEnvironmentName(t *testing.T) {
 	source, err := os.ReadFile("wiring.go")
 	if err != nil {

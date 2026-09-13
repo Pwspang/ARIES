@@ -1,5 +1,5 @@
 {
-  "name": "openclaw-sweatlasqa-pilot30-ctxlimit-sglang",
+  "name": "openclaw-sweatlasqa-pilot30-ctxlimit-amem-global-sglang",
   "versions_file": "../configs/versions-amem.json",
   "overrides_file": "",
   "execution": {
@@ -50,7 +50,11 @@
   "harness": {
     "type": "openclaw",
     "amem": {
-      "enabled": false
+      "enabled": true,
+      "scope": "global",
+      "llm_base_url": "http://192.168.111.200:8100/v1",
+      "llm_model": "Qwen/Qwen3.6-35B-A3B-FP8",
+      "llm_api_key_env": "SGLANG_API_KEY"
     }
   },
   "sandbox": {
@@ -69,8 +73,7 @@
   "model": {
     "base_url": "http://192.168.111.200:8100/v1",
     "api_key_env": "SGLANG_API_KEY",
-    "id": "Qwen/Qwen3.6-35B-A3B-FP8",
-    "context_window_tokens": 96000
+    "id": "Qwen/Qwen3.6-35B-A3B-FP8"
   },
   "output_dir": "runs/ctxlimit/"
 }

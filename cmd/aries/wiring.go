@@ -54,11 +54,14 @@ func commandWiring() app.Wiring {
 // cleanupHarness runs once, after every task occurrence in a run has
 // finished, for any harness-level state that outlives a single task
 // occurrence's own Manager/Close() — currently only the OpenClaw harness's
-// repo-scoped amem memory stores (harness.amem.scope: "repo"; see
-// pkg/harness/openclaw/amem_pool.go's CleanupSharedAMEMRepoScope). A no-op
-// for every other harness/config combination.
+// shared-scope amem memory stores (harness.amem.scope: "repo" or "global";
+// see pkg/harness/openclaw/amem_pool.go's CleanupSharedAMEMRepoScope). A
+// no-op for every other harness/config combination.
 func cleanupHarness(ctx context.Context, cfg config.Config, outputRoot string) error {
-	if cfg.Harness.Type != "openclaw" || !cfg.Harness.AMEM.Enabled || cfg.Harness.AMEM.Scope != "repo" {
+	if cfg.Harness.Type != "openclaw" || !cfg.Harness.AMEM.Enabled {
+		return nil
+	}
+	if cfg.Harness.AMEM.Scope != "repo" && cfg.Harness.AMEM.Scope != "global" {
 		return nil
 	}
 	return openclawharness.CleanupSharedAMEMRepoScope(ctx, outputRoot)

@@ -45,7 +45,7 @@ type Wiring struct {
 	// CleanupHarness runs once, after every task occurrence in a run has
 	// finished, for harness-level state that outlives any single task
 	// occurrence's own HarnessInstance.Close() (e.g. the OpenClaw harness's
-	// repo-scoped amem memory stores — see
+	// repo- or global-scoped amem memory stores — see
 	// pkg/harness/openclaw/amem_pool.go's CleanupSharedAMEMRepoScope).
 	// Optional: nil is a no-op, and every harness/config combination that
 	// has no such state should also be a no-op here.

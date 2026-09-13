@@ -1,5 +1,5 @@
 {
-  "name": "openclaw-sweatlasqa-pilot30-ctxlimit-amem-task-sglang",
+  "name": "openclaw-sweatlasqa-smoke4-ctxlimit-amem-global-sglang",
   "versions_file": "../configs/versions-amem.json",
   "overrides_file": "",
   "execution": {
@@ -11,34 +11,8 @@
     "tasks": [
       "task-6905333b74f22949d97ba9a4",
       "task-6905333b74f22949d97ba9a5",
-      "task-6905333b74f22949d97ba9a6",
-      "task-6905333b74f22949d97ba9a7",
-      "task-6905333b74f22949d97ba9a8",
-      "task-6905333b74f22949d97ba9a9",
-      "task-6905333b74f22949d97ba9aa",
-      "task-6905333b74f22949d97ba9ab",
-      "task-6905333b74f22949d97ba9ac",
-      "task-6905333b74f22949d97ba9ad",
-      "task-6905333b74f22949d97ba9ae",
-      "task-6905333b74f22949d97ba9af",
-      "task-6905333b74f22949d97ba9b2",
-      "task-6905333b74f22949d97ba9e8",
-      "task-6905333b74f22949d97baa1d",
       "task-6905333b74f22949d97ba9d0",
-      "task-6905333b74f22949d97ba9d1",
-      "task-6905333b74f22949d97ba9d2",
-      "task-6905333b74f22949d97ba9d3",
-      "task-6905333b74f22949d97ba9d4",
-      "task-6905333b74f22949d97ba9d5",
-      "task-6905333b74f22949d97ba9d6",
-      "task-6905333b74f22949d97ba9d7",
-      "task-6905333b74f22949d97ba9d8",
-      "task-6905333b74f22949d97ba9d9",
-      "task-6905333b74f22949d97ba9db",
-      "task-6905333b74f22949d97ba9dc",
-      "task-6905333b74f22949d97ba9dd",
-      "task-6905333b74f22949d97ba9de",
-      "task-6905333b74f22949d97ba9e0"
+      "task-6905333b74f22949d97ba9d1"
     ],
     "judge": {
       "provider": "deepseek",
@@ -51,6 +25,7 @@
     "type": "openclaw",
     "amem": {
       "enabled": true,
+      "scope": "global",
       "llm_base_url": "http://192.168.111.200:8100/v1",
       "llm_model": "Qwen/Qwen3.6-35B-A3B-FP8",
       "llm_api_key_env": "SGLANG_API_KEY"
@@ -75,5 +50,5 @@
     "id": "Qwen/Qwen3.6-35B-A3B-FP8",
     "context_window_tokens": 96000
   },
-  "output_dir": "runs/ctxlimit/"
+  "output_dir": "runs"
 }

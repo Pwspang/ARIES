@@ -224,8 +224,12 @@ type HarnessAMEMConfig struct {
 	// pkg/benchmark/sweatlas tasks carry that metadata; tasks without it
 	// silently fall back to task scope), so a later task's agent can see
 	// notes an earlier one already stored about that codebase instead of
-	// re-discovering it from scratch. See
-	// pkg/harness/openclaw/amem_qdrant.go and amem_pool.go.
+	// re-discovering it from scratch. "global" shares one store across every
+	// task occurrence in the run regardless of repository or commit, to test
+	// whether memory transfers across different codebases (as opposed to
+	// "repo" scope, which by construction can never share anything across a
+	// repository boundary). See pkg/harness/openclaw/amem_qdrant.go and
+	// amem_pool.go.
 	Scope string `json:"scope,omitempty"`
 }
 
@@ -852,8 +856,8 @@ func (h *HarnessConfig) validate() error {
 	if h.AMEM.Enabled && h.Type != "openclaw" {
 		return errors.New("harness.amem requires OpenClaw")
 	}
-	if h.AMEM.Scope != "" && h.AMEM.Scope != "task" && h.AMEM.Scope != "repo" {
-		return errors.New(`harness.amem.scope must be "task" or "repo"`)
+	if h.AMEM.Scope != "" && h.AMEM.Scope != "task" && h.AMEM.Scope != "repo" && h.AMEM.Scope != "global" {
+		return errors.New(`harness.amem.scope must be "task", "repo", or "global"`)
 	}
 	if h.AMEM.Scope != "" && !h.AMEM.Enabled {
 		return errors.New("harness.amem.scope requires harness.amem.enabled")

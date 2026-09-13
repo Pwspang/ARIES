@@ -58,25 +58,41 @@ type amemQdrantState struct {
 	containerID string
 }
 
-// amemRepoScopeKey returns the repo-scope registry key for request and true
-// when manager.amemScope selects sharing a Qdrant store across every task
-// occurrence in this run that targets the same repository at the same
-// commit — false (with an empty key) falls back to today's task-scoped
-// behavior, including when the task's metadata carries no repository/commit
-// identity at all (older or malformed task.toml), since sharing memory is
-// only correct between tasks looking at identical code.
+// amemRepoScopeKey returns the shared-scope registry key for request and true
+// when manager.amemScope selects sharing a Qdrant store across more than one
+// task occurrence in this run — false (with an empty key) falls back to
+// today's task-scoped behavior. "repo" shares a store across every task
+// occurrence targeting the same repository at the same commit, since sharing
+// memory is only correct between tasks looking at identical code; tasks
+// without that metadata (older or malformed task.toml) silently fall back to
+// task scope. "global" shares one store across every task occurrence in the
+// run regardless of repository or commit, to test whether memory transfers
+// across different codebases.
 func amemRepoScopeKey(scope string, request core.HarnessRequest) (string, bool) {
-	if scope != "repo" || request.Repository == "" || request.BaseCommit == "" {
+	switch scope {
+	case "repo":
+		if request.Repository == "" || request.BaseCommit == "" {
+			return "", false
+		}
+		hash := sha256.Sum256([]byte(request.RunID + "\x00repo\x00" + request.Repository + "\x00" + request.BaseCommit))
+		return hex.EncodeToString(hash[:])[:16], true
+	case "global":
+		hash := sha256.Sum256([]byte(request.RunID + "\x00global"))
+		return hex.EncodeToString(hash[:])[:16], true
+	default:
 		return "", false
 	}
-	hash := sha256.Sum256([]byte(request.RunID + "\x00repo\x00" + request.Repository + "\x00" + request.BaseCommit))
-	return hex.EncodeToString(hash[:])[:16], true
 }
 
-// amemRepoSlug turns a task's repository+commit identity into a filesystem-
-// safe name for its repo-scoped memory export (see CleanupSharedAMEMRepoScope
-// in amem_pool.go).
-func amemRepoSlug(request core.HarnessRequest) string {
+// amemRepoSlug turns a task's identity into a filesystem-safe name for its
+// shared-scope memory export (see CleanupSharedAMEMRepoScope in
+// amem_pool.go): a repository+commit slug under "repo" scope, or a fixed
+// "global" slug under "global" scope, since that store isn't tied to any one
+// repository.
+func amemRepoSlug(scope string, request core.HarnessRequest) string {
+	if scope == "global" {
+		return "global"
+	}
 	safe := strings.Map(func(r rune) rune {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
@@ -97,8 +113,11 @@ func amemRepoSlug(request core.HarnessRequest) string {
 // runID+taskID) by default, or — when manager.amemScope is "repo" and the
 // task carries repository/base_commit metadata — a store shared with every
 // other task occurrence in this run against the same repository at the same
-// commit, so a later task's agent can see notes an earlier one already
-// stored about that codebase instead of re-discovering it from scratch.
+// commit, or — when manager.amemScope is "global" — a store shared with
+// every task occurrence in the run regardless of repository, so a later
+// task's agent can see notes an earlier one already stored (about that same
+// codebase under "repo" scope, or about anything under "global" scope)
+// instead of re-discovering it from scratch.
 //
 // Task scoping was the original design (see git history on this file): a
 // run-scoped resource name keyed only on runID collided the moment a second
@@ -106,16 +125,18 @@ func amemRepoSlug(request core.HarnessRequest) string {
 // internal/app/run.go's buildTaskExperiment) tried to create the same
 // network name, and even a fix tolerating "already exists" would still be
 // wrong because teardownAMEMQdrant/exportAMEMMemory run once per
-// Manager.Close (also once per occurrence). Repo scope sidesteps the same
-// hazard the same way task scope does — via a process-wide, mutex-protected
-// registry (amemRepoRegistry in amem_pool.go) instead of per-Manager state —
-// and defers teardown/export to CleanupSharedAMEMRepoScope, called once after
-// every task occurrence in the run has finished (internal/app/run.go via
-// Wiring.CleanupHarness), rather than from this Manager's own Close().
+// Manager.Close (also once per occurrence). Repo and global scope sidestep
+// the same hazard the same way task scope does — via a process-wide,
+// mutex-protected registry (amemRepoRegistry in amem_pool.go) instead of
+// per-Manager state — and defer teardown/export to
+// CleanupSharedAMEMRepoScope, called once after every task occurrence in the
+// run has finished (internal/app/run.go via Wiring.CleanupHarness), rather
+// than from this Manager's own Close().
 //
 // Start() holds manager.mu for its entire duration (see its top-level
 // defer), so no additional locking is needed here for manager's own fields;
-// the repo-scope registry has its own mutex for the concurrent-Manager case.
+// the shared-scope registry has its own mutex for the concurrent-Manager
+// case.
 func (manager *Manager) ensureAMEMQdrant(ctx context.Context, request core.HarnessRequest) error {
 	if manager.amemQdrant != nil {
 		return nil
@@ -129,14 +150,14 @@ func (manager *Manager) ensureAMEMQdrant(ctx context.Context, request core.Harne
 			return nil
 		}
 		labels := map[string]string{
-			"aries.managed": "true", "aries.kind": "openclaw-amem-qdrant-repo", "aries.run": request.RunID,
+			"aries.managed": "true", "aries.kind": "openclaw-amem-qdrant-" + manager.amemScope, "aries.run": request.RunID,
 			"aries.repository": request.Repository, "aries.base_commit": request.BaseCommit,
 		}
 		state, err := manager.createAMEMQdrant(ctx, repoKey, labels)
 		if err != nil {
 			return err
 		}
-		amemRepoRegistry[repoKey] = &amemRepoEntry{state: state, slug: amemRepoSlug(request)}
+		amemRepoRegistry[repoKey] = &amemRepoEntry{state: state, slug: amemRepoSlug(manager.amemScope, request)}
 		manager.amemQdrant = state
 		manager.amemQdrantShared = true
 		return nil
