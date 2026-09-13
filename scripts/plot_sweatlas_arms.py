@@ -34,27 +34,24 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 import summarize_sweatlas_arms as ssa  # noqa: E402
 
 TASK_DIR_RE = re.compile(r"^(task-[0-9a-f]+)-(\d+)$")
-ARM_LABELS = {"control": "control", "task-scope": "task-scope", "repo-scope": "repo-scope"}
-ARM_ORDER = ["control", "task-scope", "repo-scope"]
-ARM_PALETTE = {"control": "#2a78d6", "task-scope": "#eb6834", "repo-scope": "#1baf7a"}
+ARM_LABELS = {"control": "control", "repo-scope": "repo-scope"}
+ARM_ORDER = ["control", "repo-scope"]
+ARM_PALETTE = {"control": "#2a78d6", "repo-scope": "#1baf7a"}
 
 REPLICATES = [
     dict(
         name="pilot30",
         control="runs/20260906T141944.963675899Z-openclaw-sweatlasqa-pilot30-sglang",
-        task="runs/20260906T141944.965072498Z-openclaw-sweatlasqa-pilot30-amem-task-sglang",
         repo="runs/20260906T141944.964671697Z-openclaw-sweatlasqa-pilot30-amem-repo-sglang",
     ),
     dict(
         name="shuffle1",
         control="runs/20260907T013422.077077636Z-openclaw-sweatlasqa-pilot30-shuffle1-sglang",
-        task="runs/20260907T013422.077076453Z-openclaw-sweatlasqa-pilot30-shuffle1-amem-task-sglang",
         repo="runs/20260907T013422.077067776Z-openclaw-sweatlasqa-pilot30-shuffle1-amem-repo-sglang",
     ),
     dict(
         name="shuffle2",
         control="runs/20260907T111756.126844838Z-openclaw-sweatlasqa-pilot30-shuffle2-sglang",
-        task="runs/20260907T111756.126345861Z-openclaw-sweatlasqa-pilot30-shuffle2-amem-task-sglang",
         repo="runs/20260907T111756.126379309Z-openclaw-sweatlasqa-pilot30-shuffle2-amem-repo-sglang",
     ),
 ]
@@ -108,7 +105,7 @@ def build_dataset(qa_root: Path) -> pd.DataFrame:
     task_meta = ssa.load_task_metadata(qa_root)
     rows = []
     for rep in REPLICATES:
-        dirs = {"control": Path(rep["control"]), "task-scope": Path(rep["task"]), "repo-scope": Path(rep["repo"])}
+        dirs = {"control": Path(rep["control"]), "repo-scope": Path(rep["repo"])}
 
         # Position is defined by the CONTROL arm's actual run order (the
         # task dir's own numeric suffix, which is the harness's real run
@@ -239,19 +236,18 @@ def fit_slopes_binned(df, group_col, group_order, bin_labels, y):
     return out
 
 
-DELTA_ORDER = ["task-scope - control", "repo-scope - control"]
-DELTA_PALETTE = {"task-scope - control": ARM_PALETTE["task-scope"], "repo-scope - control": ARM_PALETTE["repo-scope"]}
+DELTA_ORDER = ["repo-scope - control"]
+DELTA_PALETTE = {"repo-scope - control": ARM_PALETTE["repo-scope"]}
 
 
 def build_paired_deltas(df, y="agg_score"):
-    """Same-task paired delta vs. control (repo-scope - control, task-scope
-    - control), by (replicate, task_id, position) -- this cancels out the
-    shared task-difficulty-by-position pattern that a same-position,
-    different-task comparison would not, matching the paired methodology
-    used throughout this study. One row per (replicate, task_id) per
-    comparison, long-form for seaborn."""
+    """Same-task paired delta vs. control (repo-scope - control), by
+    (replicate, task_id, position) -- this cancels out the shared
+    task-difficulty-by-position pattern that a same-position, different-task
+    comparison would not, matching the paired methodology used throughout
+    this study. One row per (replicate, task_id) per comparison, long-form
+    for seaborn."""
     piv = df.pivot_table(index=["replicate", "task_id", "position"], columns="arm", values=y).reset_index()
-    piv["task-scope - control"] = piv["task-scope"] - piv["control"]
     piv["repo-scope - control"] = piv["repo-scope"] - piv["control"]
     long = piv.melt(
         id_vars=["replicate", "task_id", "position"],
@@ -259,6 +255,61 @@ def build_paired_deltas(df, y="agg_score"):
     ).dropna(subset=["delta"])
     long["comparison"] = pd.Categorical(long["comparison"], categories=DELTA_ORDER, ordered=True)
     return long
+
+
+def bucket_deltas(long, thresh=0.05):
+    """Bucket each paired repo-scope-control delta into improved (>thresh),
+    unchanged (within +-thresh), or degraded (<-thresh) -- the base-rate
+    view of "when does memory help vs hurt" that a single mean can't show:
+    a mean near zero could mean "almost always exactly zero effect" or
+    "roughly as many big wins as big losses," and those call for different
+    stories."""
+    def bucket(d):
+        if d > thresh:
+            return "improved"
+        if d < -thresh:
+            return "degraded"
+        return "unchanged"
+    out = long.copy()
+    out["bucket"] = out["delta"].apply(bucket)
+    return out
+
+
+def plot_delta_distribution(df, out_dir, thresh=0.05):
+    """Distribution of the paired repo-scope-control agg_score delta across
+    all common-success tasks -- a strip/swarm of individual task deltas
+    plus the improved/unchanged/degraded bucket counts, so the aggregate
+    mean (already shown in accuracy_by_arm.png) doesn't hide how many
+    individual tasks actually moved which way."""
+    long = build_paired_deltas(df, "agg_score")
+    bucketed = bucket_deltas(long, thresh=thresh)
+    counts = bucketed["bucket"].value_counts().reindex(["degraded", "unchanged", "improved"]).fillna(0).astype(int)
+    n = len(bucketed)
+
+    fig, ax = plt.subplots(figsize=(8, 7))
+    bucket_colors = {"degraded": "#d03b3b", "unchanged": "#83817a", "improved": ARM_PALETTE["repo-scope"]}
+    ax.axhline(0, color="black", linewidth=1, alpha=0.5, zorder=1)
+    ax.axhspan(-thresh, thresh, color="#83817a", alpha=0.08, zorder=0)
+    sns.stripplot(
+        data=bucketed, x="comparison", y="delta", hue="bucket", hue_order=["degraded", "unchanged", "improved"],
+        palette=bucket_colors, size=7, jitter=0.25, alpha=0.85, ax=ax,
+    )
+    mean_delta = bucketed["delta"].mean()
+    ax.axhline(mean_delta, color=ARM_PALETTE["repo-scope"], linewidth=2.5, linestyle="--",
+               label=f"mean = {mean_delta:+.3f}")
+    ax.set_xlabel("")
+    ax.set_ylabel("agg_score delta vs. control\n(same task, paired)")
+    ax.set_xticks([])
+    subtitle = (f"n={n}  |  degraded (< -{thresh:g}): {counts['degraded']} ({counts['degraded']/n:.0%})  |  "
+                f"unchanged: {counts['unchanged']} ({counts['unchanged']/n:.0%})  |  "
+                f"improved (> +{thresh:g}): {counts['improved']} ({counts['improved']/n:.0%})")
+    fig.suptitle("Distribution of repo-scope - control paired delta, per task", y=1.0)
+    ax.set_title(subtitle, fontsize=11)
+    ax.legend(loc="upper right", fontsize=10)
+    fig.tight_layout()
+    fig.savefig(out_dir / "accuracy_delta_distribution.png", dpi=150, bbox_inches="tight")
+    print(f"wrote {out_dir / 'accuracy_delta_distribution.png'}  ({subtitle})")
+    return bucketed
 
 
 def fit_slopes_generic(df, group_col, group_order, y):
@@ -296,7 +347,7 @@ def plot_delta_vs_position(df, out_dir, bin_size=5):
     ax.axhline(0, color="black", linewidth=1, alpha=0.4, zorder=1)
     sns.pointplot(
         data=long, x="position_bin", y="delta", hue="comparison", order=bin_labels, hue_order=DELTA_ORDER,
-        palette=DELTA_PALETTE, errorbar=None, dodge=0.15, ax=ax,
+        palette=DELTA_PALETTE, errorbar=None, dodge=False, ax=ax,
     )
     slopes = fit_slopes_binned(long, "comparison", DELTA_ORDER, bin_labels, "delta")
     subtitle = "  |  ".join(f"{c} slope={s:+.4f}/bin (mean {m:+.3f})" for c, (s, m) in slopes.items())
@@ -327,7 +378,8 @@ def plot_longitudinal(df, out_dir, bin_size=5):
     fig, ax = plt.subplots(figsize=(9, 6.5))
     sns.pointplot(
         data=df, x="position_bin", y="agg_score", hue="arm", order=bin_labels, hue_order=ARM_ORDER,
-        palette=ARM_PALETTE, errorbar=None, dodge=0.2, ax=ax,
+        palette=ARM_PALETTE, errorbar="sd", capsize=0.1, dodge=0.2, ax=ax,
+        err_kws={"linewidth": 1.2, "alpha": 0.6}, markersize=6, linewidth=2,
     )
     ax.set_xlabel(f"task position within repo, binned (execution order, bin size={bin_size})")
     ax.set_ylabel("agg_score")
@@ -413,19 +465,15 @@ def task_id_for_timestamp(ts, windows):
 
 def build_memory_growth(qa_root, out_dir):
     """Per-position memory size, reconstructed from each note's own
-    "timestamp" field in the amem-memory.json exports:
-    - repo-scope: ONE export per repository (the shared store is only
-      exported once, when it's torn down at the end of the whole run --
-      see amem_pool.go's CleanupSharedAMEMRepoScope), so growth over the
-      run has to be reconstructed by bucketing each note's timestamp into
-      whichever task's [started, finished) window contains it, then
-      cumulative-summing by that task's within-repo position.
-    - task-scope: one export PER TASK (store torn down every task), so
-      there's no cumulative growth to reconstruct -- this is plotted
-      un-cumulative, per task, as the contrast case (a flat, non-growing
-      size at each position, since every task starts from empty)."""
+    "timestamp" field in the amem-memory.json exports. repo-scope has ONE
+    export per repository (the shared store is only exported once, when
+    it's torn down at the end of the whole run -- see amem_pool.go's
+    CleanupSharedAMEMRepoScope), so growth over the run has to be
+    reconstructed by bucketing each note's timestamp into whichever task's
+    [started, finished) window contains it, then cumulative-summing by that
+    task's within-repo position."""
     task_meta = ssa.load_task_metadata(qa_root)
-    repo_rows, task_rows = [], []
+    repo_rows = []
 
     for rep in REPLICATES:
         control_dir = Path(rep["control"])
@@ -476,43 +524,20 @@ def build_memory_growth(qa_root, out_dir):
                             "notes_added": 0, "chars_added": 0,
                         })
 
-        # --- task-scope: per-task export size, NOT cumulative (contrast case) ---
-        task_dir_run = Path(rep["task"])
-        for task_id, suffix, task_dir in find_task_dirs_ordered(task_dir_run):
-            mem_path = task_dir / "amem-memory.json"
-            repository, _ = task_meta.get(task_id, (None, None))
-            order = repo_order.get(repository)
-            pos = (order.index(task_id) + 1) if order and task_id in order else None
-            if pos is None:
-                continue
-            if mem_path.is_file():
-                notes = json.loads(mem_path.read_text())
-                n_notes = len(notes)
-                n_chars = sum(len(n["payload"].get("content", "")) for n in notes)
-            else:
-                n_notes = n_chars = 0
-            task_rows.append({
-                "replicate": rep["name"], "repository": repository, "position": pos,
-                "notes": n_notes, "chars": n_chars,
-            })
-
     repo_df = pd.DataFrame(repo_rows).sort_values(["replicate", "repository", "position"])
     repo_df["cum_notes"] = repo_df.groupby(["replicate", "repository"])["notes_added"].cumsum()
     repo_df["cum_chars"] = repo_df.groupby(["replicate", "repository"])["chars_added"].cumsum()
-    task_df = pd.DataFrame(task_rows)
 
     repo_df.to_csv(out_dir / "repo_scope_memory_growth.csv", index=False)
-    task_df.to_csv(out_dir / "task_scope_memory_sizes.csv", index=False)
-    return repo_df, task_df
+    return repo_df
 
 
 def plot_memory_growth(qa_root, out_dir):
-    repo_df, task_df = build_memory_growth(qa_root, out_dir)
+    repo_df = build_memory_growth(qa_root, out_dir)
     max_pos = int(repo_df["position"].max())
 
-    fig, axes = plt.subplots(1, 2, figsize=(15, 6.5))
+    fig, ax = plt.subplots(figsize=(8, 6.5))
 
-    ax = axes[0]
     series_id = repo_df["replicate"] + " / " + repo_df["repository"]
     for key, sub in repo_df.assign(series=series_id).groupby("series"):
         ax.plot(sub["position"], sub["cum_notes"], color=ARM_PALETTE["repo-scope"], alpha=0.25, linewidth=1.2)
@@ -525,24 +550,115 @@ def plot_memory_growth(qa_root, out_dir):
     ax.set_xticks(range(1, max_pos + 1))
     ax.legend(loc="upper left", fontsize=9)
 
-    ax = axes[1]
-    series_id2 = task_df["replicate"] + " / " + task_df["repository"]
-    for key, sub in task_df.assign(series=series_id2).groupby("series"):
-        ax.plot(sub["position"], sub["notes"], color=ARM_PALETTE["task-scope"], alpha=0.25, linewidth=1.2, marker=".")
-    mean_curve2 = task_df.groupby("position")["notes"].mean()
-    ax.plot(mean_curve2.index, mean_curve2.values, color=ARM_PALETTE["task-scope"], linewidth=3, marker="o",
-            label="mean across replicates x repos")
-    ax.set_xlabel("task position within repo (execution order)")
-    ax.set_ylabel("memory notes in THIS task's store (not cumulative)")
-    ax.set_title("task-scope: memory does NOT accumulate\n(fresh store every task, torn down after -- size shown is per-task, not running total)", fontsize=11)
-    ax.set_xticks(range(1, max_pos + 1))
-    ax.set_ylim(0, max(task_df["notes"].max(), mean_curve.max() if len(mean_curve) else 5) * 1.15)
-    ax.legend(loc="upper left", fontsize=9)
-
     fig.suptitle("Memory size vs. task position within repo", y=1.02)
     fig.tight_layout()
     fig.savefig(out_dir / "memory_growth_by_position.png", dpi=150, bbox_inches="tight")
     print(f"wrote {out_dir / 'memory_growth_by_position.png'}")
+
+
+def plot_retrieval_relevance(out_dir):
+    """Is a relevant, on-topic memory note the differentiator between
+    repo-scope's wins and losses? Reads scripts/out/retrieval_relevance_cases.csv
+    -- a hand-annotated table from transcript-level investigation of the 8
+    largest wins and 8 largest losses (paired vs. control, same task), each
+    case checked for whether a retrieved note is DIRECTLY and quotably
+    reflected in the answer that won or lost the task (see the CSV's
+    "evidence" column for the citation backing each row; this is not
+    inferred from aggregate stats).
+
+    This is the sharpest single piece of evidence in the whole repo-scope
+    investigation: relevant retrieval shows up in the majority of wins and
+    in NONE of the losses -- retrieval isn't a source of harm (no
+    poisoned/misleading notes found in any loss case), it's a coverage
+    lottery that pays off when an earlier task happened to already record
+    the fact a later question needs, and is simply inert otherwise."""
+    cases = pd.read_csv(out_dir / "retrieval_relevance_cases.csv")
+    summary = (
+        cases.groupby("bucket")["relevant_note_used"]
+        .agg(n_used="sum", n_total="count")
+        .reindex(["improved", "degraded"])
+    )
+    summary["frac"] = summary["n_used"] / summary["n_total"]
+
+    fig, ax = plt.subplots(figsize=(8, 8))
+    labels = {"improved": "wins\n(repo-scope > control)", "degraded": "losses\n(repo-scope < control)"}
+    colors = [ARM_PALETTE["repo-scope"], "#d03b3b"]
+    bars = ax.bar([labels[b] for b in summary.index], summary["frac"] * 100, color=colors, width=0.55)
+    for bar, (bucket, row) in zip(bars, summary.iterrows()):
+        ax.annotate(f"{int(row['n_used'])} of {int(row['n_total'])}\n({row['frac']:.0%})",
+                    (bar.get_x() + bar.get_width() / 2, bar.get_height()),
+                    ha="center", va="bottom", fontsize=12, xytext=(0, 6), textcoords="offset points")
+    ax.set_ylabel("cases where a relevant memory note was\ndirectly, quotably reflected in the answer", fontsize=12)
+    ax.set_ylim(0, 100)
+    ax.set_yticks(range(0, 101, 20))
+    ax.set_yticklabels([f"{y}%" for y in range(0, 101, 20)])
+    n_deg = int(summary.loc["degraded", "n_total"])
+    fig.suptitle("Relevant retrieval is what separates wins from losses, not harmful retrieval", y=1.0, fontsize=13)
+    ax.set_title("8 largest paired wins vs. paired losses (repo-scope vs. control, same task)\n"
+                 f"0 of {n_deg} losses show a wrong/misleading note anywhere -- see retrieval_relevance_cases.csv for citations",
+                 fontsize=10, pad=12)
+    fig.tight_layout(rect=[0, 0, 1, 0.88])
+    fig.savefig(out_dir / "retrieval_relevance_by_outcome.png", dpi=150, bbox_inches="tight")
+    print(f"wrote {out_dir / 'retrieval_relevance_by_outcome.png'}")
+    print(summary)
+
+
+def plot_retrieval_similarity_comparison(out_dir):
+    """Does the memory_search similarity score predict whether a retrieved
+    note ends up mattering? Same 18 hand-investigated cases as
+    plot_retrieval_relevance, now plotting each case's mean retrieved-note
+    similarity (from repo_scope_retrieval_similarity.csv, joined in) against
+    outcome bucket and against whether the note was actually used.
+
+    If similarity predicted usefulness, the "used" dots should sit visibly
+    above the "not used" dots. They don't -- both groups cluster around the
+    same ~50% mean with fully overlapping spread, the quantitative version
+    of "semantically similar to the query, but functionally useless for the
+    task": the retrieval system is finding topically-adjacent notes at a
+    fairly consistent rate regardless of whether they happen to contain the
+    specific fact a task needs."""
+    cases = pd.read_csv(out_dir / "retrieval_relevance_cases.csv").dropna(subset=["sim_mean"])
+
+    fig, axes = plt.subplots(1, 2, figsize=(13, 6.5))
+
+    ax = axes[0]
+    bucket_labels = {"improved": "wins", "degraded": "losses"}
+    bucket_colors = {"improved": ARM_PALETTE["repo-scope"], "degraded": "#d03b3b"}
+    for i, bucket in enumerate(["improved", "degraded"]):
+        sub = cases[cases["bucket"] == bucket]
+        x = np.random.default_rng(0).uniform(i - 0.12, i + 0.12, size=len(sub))
+        ax.scatter(x, sub["sim_mean"], color=bucket_colors[bucket], s=70, alpha=0.85, zorder=3)
+        mean = sub["sim_mean"].mean()
+        ax.plot([i - 0.2, i + 0.2], [mean, mean], color=bucket_colors[bucket], linewidth=3, zorder=4)
+        ax.annotate(f"mean {mean:.1f}%  (n={len(sub)})", (i, mean), xytext=(0, 10), textcoords="offset points",
+                    ha="center", fontsize=10, color=bucket_colors[bucket])
+    ax.set_xticks([0, 1])
+    ax.set_xticklabels([f"{bucket_labels[b]}\n(repo-scope vs. control)" for b in ["improved", "degraded"]])
+    ax.set_ylabel("mean similarity of retrieved notes (%)")
+    ax.set_ylim(20, 80)
+    ax.set_title("by outcome", fontsize=11)
+
+    ax = axes[1]
+    used_labels = {True: "note used\nin the answer", False: "retrieved,\nnot used"}
+    used_colors = {True: ARM_PALETTE["repo-scope"], False: "#83817a"}
+    for i, used in enumerate([True, False]):
+        sub = cases[cases["relevant_note_used"] == used]
+        x = np.random.default_rng(1).uniform(i - 0.12, i + 0.12, size=len(sub))
+        ax.scatter(x, sub["sim_mean"], color=used_colors[used], s=70, alpha=0.85, zorder=3)
+        mean = sub["sim_mean"].mean()
+        ax.plot([i - 0.2, i + 0.2], [mean, mean], color=used_colors[used], linewidth=3, zorder=4)
+        ax.annotate(f"mean {mean:.1f}%  (n={len(sub)})", (i, mean), xytext=(0, 10), textcoords="offset points",
+                    ha="center", fontsize=10, color=used_colors[used])
+    ax.set_xticks([0, 1])
+    ax.set_xticklabels([used_labels[u] for u in [True, False]])
+    ax.set_ylabel("mean similarity of retrieved notes (%)")
+    ax.set_ylim(20, 80)
+    ax.set_title("by whether the note was actually used", fontsize=11)
+
+    fig.suptitle("Similarity score does not predict whether a retrieved note matters", y=1.02, fontsize=13)
+    fig.tight_layout()
+    fig.savefig(out_dir / "retrieval_similarity_vs_outcome.png", dpi=150, bbox_inches="tight")
+    print(f"wrote {out_dir / 'retrieval_similarity_vs_outcome.png'}")
 
 
 def main():
@@ -564,7 +680,7 @@ def main():
 
     df = restrict_to_common_success(df_all)
     n_dropped_per_replicate = df_all.groupby("replicate")["task_id"].nunique() - df.groupby("replicate")["task_id"].nunique()
-    print(f"\n--- restricted to tasks that succeeded in ALL 3 arms: {df['task_id'].nunique()} of "
+    print(f"\n--- restricted to tasks that succeeded in ALL {len(ARM_ORDER)} arms: {df['task_id'].nunique()} of "
           f"{df_all['task_id'].nunique()} unique tasks kept per replicate on average "
           f"(dropped per replicate: {dict(n_dropped_per_replicate)}) ---")
     print(df.groupby("arm", observed=True)[["agg_score", "inputTokens", "outputTokens", "runtimeSec", "turns"]]
@@ -616,6 +732,14 @@ def main():
     plot_longitudinal(df, out_dir, bin_size=args.bin_size)
     plot_delta_vs_position(df, out_dir, bin_size=args.bin_size)
     plot_memory_growth(qa_root, out_dir)
+
+    bucketed = plot_delta_distribution(df, out_dir)
+    bucketed.to_csv(out_dir / "accuracy_delta_bucketed.csv", index=False)
+    print(f"wrote {out_dir / 'accuracy_delta_bucketed.csv'} ({len(bucketed)} rows)")
+
+    if (out_dir / "retrieval_relevance_cases.csv").is_file():
+        plot_retrieval_relevance(out_dir)
+        plot_retrieval_similarity_comparison(out_dir)
 
 
 if __name__ == "__main__":

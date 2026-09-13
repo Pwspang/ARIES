@@ -76,5 +76,5 @@
     "id": "Qwen/Qwen3.6-35B-A3B-FP8",
     "context_window_tokens": 96000
   },
-  "output_dir": "runs"
+  "output_dir": "runs/ctxlimit/"
 }
