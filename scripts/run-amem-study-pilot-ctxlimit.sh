@@ -15,5 +15,6 @@
 set -eu
 cd "$(dirname "$0")/.."
 go build -o bin/aries ./cmd/aries
-./bin/aries profiles/openclaw-sweatlasqa-pilot30-ctxlimit-amem-global-sglang.json &
+./bin/aries profiles/openclaw-sweatlasqa-pilot30-ctxlimit-amem-repo-sglang.json &
+./bin/aries profiles/openclaw-sweatlasqa-pilot30-ctxlimit-amem-sglang.json &
 wait

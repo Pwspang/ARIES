@@ -109,6 +109,15 @@ type ModelConfig struct {
 	// profile force more frequent compaction against a model that actually
 	// supports a much larger window.
 	ContextWindowTokens int `json:"context_window_tokens,omitempty"`
+	// CompactionTimeoutMs bounds how long the harness's own auto-compaction
+	// call is allowed to run before it's aborted as hung (surfacing as a
+	// "Compaction timed out" error, which the caller then treats as a failed
+	// compaction attempt). Zero means unset: the harness's own default
+	// applies (OpenClaw's EMBEDDED_COMPACTION_TIMEOUT_MS, 180000ms), which
+	// observed ctxlimit runs show is routinely too short against a loaded
+	// local sglang backend — most auto-compaction attempts there fail on
+	// timeout rather than on the compaction actually being impossible.
+	CompactionTimeoutMs int `json:"compaction_timeout_ms,omitempty"`
 }
 
 // ToolEndpoint is the bridge endpoint and task-local file contract given to a

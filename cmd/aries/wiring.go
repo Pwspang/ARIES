@@ -304,6 +304,10 @@ func newHarness(cfg config.Config, outputRoot string, lookup func(string) ([]byt
 			LosslessClawLLMBaseURL:   cfg.Harness.LosslessClaw.LLMBaseURL,
 			LosslessClawLLMModel:     cfg.Harness.LosslessClaw.LLMModel,
 			LosslessClawLLMAPIKeyEnv: cfg.Harness.LosslessClaw.LLMAPIKeyEnv,
+			Mem0Enabled:              cfg.Harness.Mem0.Enabled,
+			Mem0LLMBaseURL:           cfg.Harness.Mem0.LLMBaseURL,
+			Mem0LLMModel:             cfg.Harness.Mem0.LLMModel,
+			Mem0LLMAPIKeyEnv:         cfg.Harness.Mem0.LLMAPIKeyEnv,
 		})
 		if err != nil {
 			return app.HarnessInstance{}, fmt.Errorf("construct OpenClaw harness: %w", err)

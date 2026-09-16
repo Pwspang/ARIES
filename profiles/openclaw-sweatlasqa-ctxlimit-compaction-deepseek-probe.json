@@ -1,0 +1,45 @@
+{
+  "name": "openclaw-sweatlasqa-ctxlimit-compaction-deepseek-probe",
+  "versions_file": "../configs/versions-amem.json",
+  "overrides_file": "",
+  "execution": {
+    "concurrency": 1
+  },
+  "benchmark": {
+    "type": "sweatlasqa",
+    "root": ".cache/swe-atlas-qa",
+    "tasks": [
+      "task-6905333b74f22949d97ba9d3"
+    ],
+    "judge": {
+      "provider": "deepseek",
+      "base_url": "https://api.deepseek.com",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "model": "deepseek-v4-pro"
+    }
+  },
+  "harness": {
+    "type": "openclaw",
+    "amem": {
+      "enabled": false
+    }
+  },
+  "sandbox": {
+    "type": "docker"
+  },
+  "bridge": {
+    "type": "openclaw-ssh"
+  },
+  "runtime": {
+    "backend": "deepseek",
+    "mode": "external"
+  },
+  "model": {
+    "base_url": "https://api.deepseek.com",
+    "api_key_env": "DEEPSEEK_API_KEY",
+    "id": "deepseek-v4-pro",
+    "context_window_tokens": 96000,
+    "compaction_timeout_ms": 900000
+  },
+  "output_dir": "runs/ctxlimit/"
+}

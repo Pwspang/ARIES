@@ -115,7 +115,18 @@ type Options struct {
 	LosslessClawLLMBaseURL   string
 	LosslessClawLLMModel     string
 	LosslessClawLLMAPIKeyEnv string
-	CleanupTimeout           time.Duration
+	Mem0Enabled              bool
+	// Mem0LLMBaseURL/Mem0LLMModel/Mem0LLMAPIKeyEnv override the LLM/embedder
+	// mem0's own plugin uses internally in open-source mode instead of
+	// reusing the primary task model — see mem0PluginConfig's doc comment in
+	// config.go. Must be set together or not at all (validated in
+	// pkg/config). Unlike amem/lossless-claw, mem0 needs no sidecar container
+	// (open-source mode's default vector store is a local SQLite file inside
+	// the plugin's own state directory).
+	Mem0LLMBaseURL   string
+	Mem0LLMModel     string
+	Mem0LLMAPIKeyEnv string
+	CleanupTimeout   time.Duration
 	StartTimeout             time.Duration
 	AgentTimeout             time.Duration
 	Logger                   *logrus.Logger
@@ -207,6 +218,10 @@ type Manager struct {
 	losslessClawLLMModel     string
 	losslessClawLLMAPIKeyEnv string
 	losslessClawExportDir    string
+	mem0Enabled              bool
+	mem0LLMBaseURL           string
+	mem0LLMModel             string
+	mem0LLMAPIKeyEnv         string
 	newID                    func() (string, error)
 	newGateway               func(string, []byte) (gatewayConnection, error)
 	newRealtime              func(realtimeclient.Gateway, realtimeclient.Options) (realtimeRunner, error)
@@ -282,6 +297,7 @@ type session struct {
 	tavilySearchAPIKey    []byte
 	amemLLMAPIKey         []byte
 	losslessClawLLMAPIKey []byte
+	mem0LLMAPIKey         []byte
 	gatewayToken          []byte
 	gatewayURL            string
 	agentIdempotency      string
@@ -376,6 +392,8 @@ func New(options Options) (*Manager, error) {
 		amemScope: options.AMEMScope,
 		losslessClawEnabled: options.LosslessClawEnabled, losslessClawLLMBaseURL: options.LosslessClawLLMBaseURL,
 		losslessClawLLMModel: options.LosslessClawLLMModel, losslessClawLLMAPIKeyEnv: options.LosslessClawLLMAPIKeyEnv,
+		mem0Enabled: options.Mem0Enabled, mem0LLMBaseURL: options.Mem0LLMBaseURL,
+		mem0LLMModel: options.Mem0LLMModel, mem0LLMAPIKeyEnv: options.Mem0LLMAPIKeyEnv,
 		newID: randomID,
 		newGateway: func(rawURL string, token []byte) (gatewayConnection, error) {
 			return newGatewayClientWithDisposition(rawURL, token, gatewayScopes(options.Mode), gatewayEventDisposition(options.Mode))
@@ -545,13 +563,45 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		}
 		losslessClawLLMAPIKey = candidate
 	}
-	configuration, err := renderConfig(request.Model, request.Endpoint, manager.webSearchEnabled, manager.searchProvider, extractEnabled, manager.subagentsEnabled, manager.amemEnabled, manager.maxConcurrentSubagents, manager.amemLLMBaseURL, manager.amemLLMModel, manager.losslessClawEnabled, manager.losslessClawLLMBaseURL, manager.losslessClawLLMModel)
+	mem0LLMRequested := manager.mem0Enabled && manager.mem0LLMAPIKeyEnv != ""
+	var mem0LLMAPIKey []byte
+	if mem0LLMRequested {
+		// Fatal-on-missing, same rationale as amem's/lossless-claw's LLM
+		// override above: the profile explicitly requested a distinct model
+		// for mem0's own internal LLM/embedder calls (see
+		// Options.Mem0LLMAPIKeyEnv's doc comment), so silently falling back to
+		// the primary model would mask the misconfiguration.
+		mem0LLMSource, ok := manager.apiKeyLookup(manager.mem0LLMAPIKeyEnv)
+		if !ok {
+			clear(mem0LLMSource)
+			clear(extractAPIKey)
+			clear(firecrawlAPIKey)
+			clear(tavilySearchAPIKey)
+			clear(amemLLMAPIKey)
+			clear(losslessClawLLMAPIKey)
+			return fmt.Errorf("OpenClaw mem0 LLM API-key environment %q is not set", manager.mem0LLMAPIKeyEnv)
+		}
+		candidate := bytes.Clone(mem0LLMSource)
+		clear(mem0LLMSource)
+		if err := validateAPIKey(candidate); err != nil {
+			clear(candidate)
+			clear(extractAPIKey)
+			clear(firecrawlAPIKey)
+			clear(tavilySearchAPIKey)
+			clear(amemLLMAPIKey)
+			clear(losslessClawLLMAPIKey)
+			return fmt.Errorf("OpenClaw mem0 LLM API key: %w", err)
+		}
+		mem0LLMAPIKey = candidate
+	}
+	configuration, err := renderConfig(request.Model, request.Endpoint, manager.webSearchEnabled, manager.searchProvider, extractEnabled, manager.subagentsEnabled, manager.amemEnabled, manager.maxConcurrentSubagents, manager.amemLLMBaseURL, manager.amemLLMModel, manager.losslessClawEnabled, manager.losslessClawLLMBaseURL, manager.losslessClawLLMModel, manager.mem0Enabled, manager.mem0LLMBaseURL, manager.mem0LLMModel)
 	if err != nil {
 		clear(extractAPIKey)
 		clear(firecrawlAPIKey)
 		clear(tavilySearchAPIKey)
 		clear(amemLLMAPIKey)
 		clear(losslessClawLLMAPIKey)
+		clear(mem0LLMAPIKey)
 		return err
 	}
 	apiKeySource, ok := manager.apiKeyLookup(request.Model.APIKeyEnv)
@@ -562,6 +612,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(tavilySearchAPIKey)
 		clear(amemLLMAPIKey)
 		clear(losslessClawLLMAPIKey)
+		clear(mem0LLMAPIKey)
 		return fmt.Errorf("OpenClaw API-key environment %q is not set", request.Model.APIKeyEnv)
 	}
 	apiKey := bytes.Clone(apiKeySource)
@@ -573,6 +624,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(tavilySearchAPIKey)
 		clear(amemLLMAPIKey)
 		clear(losslessClawLLMAPIKey)
+		clear(mem0LLMAPIKey)
 		return err
 	}
 	var realtimeAPIKey []byte
@@ -586,6 +638,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 			clear(tavilySearchAPIKey)
 			clear(amemLLMAPIKey)
 			clear(losslessClawLLMAPIKey)
+			clear(mem0LLMAPIKey)
 			return fmt.Errorf("OpenClaw realtime API-key environment %q is not set", manager.realtime.TTS.APIKeyEnv)
 		}
 		realtimeAPIKey = bytes.Clone(realtimeKeySource)
@@ -598,6 +651,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 			clear(tavilySearchAPIKey)
 			clear(amemLLMAPIKey)
 			clear(losslessClawLLMAPIKey)
+			clear(mem0LLMAPIKey)
 			return fmt.Errorf("OpenClaw realtime API key: %w", err)
 		}
 	}
@@ -609,6 +663,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(tavilySearchAPIKey)
 		clear(amemLLMAPIKey)
 		clear(losslessClawLLMAPIKey)
+		clear(mem0LLMAPIKey)
 		return errors.New("rendered OpenClaw config contains the API-key value")
 	}
 	if len(realtimeAPIKey) != 0 && bytes.Contains(configuration, realtimeAPIKey) {
@@ -619,6 +674,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(tavilySearchAPIKey)
 		clear(amemLLMAPIKey)
 		clear(losslessClawLLMAPIKey)
+		clear(mem0LLMAPIKey)
 		return errors.New("rendered OpenClaw config contains the realtime API-key value")
 	}
 	if len(extractAPIKey) != 0 && bytes.Contains(configuration, extractAPIKey) {
@@ -629,6 +685,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(tavilySearchAPIKey)
 		clear(amemLLMAPIKey)
 		clear(losslessClawLLMAPIKey)
+		clear(mem0LLMAPIKey)
 		return errors.New("rendered OpenClaw config contains the extract API-key value")
 	}
 	if len(firecrawlAPIKey) != 0 && bytes.Contains(configuration, firecrawlAPIKey) {
@@ -639,6 +696,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(tavilySearchAPIKey)
 		clear(amemLLMAPIKey)
 		clear(losslessClawLLMAPIKey)
+		clear(mem0LLMAPIKey)
 		return errors.New("rendered OpenClaw config contains the Firecrawl API-key value")
 	}
 	if len(tavilySearchAPIKey) != 0 && bytes.Contains(configuration, tavilySearchAPIKey) {
@@ -649,6 +707,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(tavilySearchAPIKey)
 		clear(amemLLMAPIKey)
 		clear(losslessClawLLMAPIKey)
+		clear(mem0LLMAPIKey)
 		return errors.New("rendered OpenClaw config contains the Tavily API-key value")
 	}
 	if len(amemLLMAPIKey) != 0 && bytes.Contains(configuration, amemLLMAPIKey) {
@@ -659,6 +718,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(tavilySearchAPIKey)
 		clear(amemLLMAPIKey)
 		clear(losslessClawLLMAPIKey)
+		clear(mem0LLMAPIKey)
 		return errors.New("rendered OpenClaw config contains the amem LLM API-key value")
 	}
 	if len(losslessClawLLMAPIKey) != 0 && bytes.Contains(configuration, losslessClawLLMAPIKey) {
@@ -669,7 +729,19 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(tavilySearchAPIKey)
 		clear(amemLLMAPIKey)
 		clear(losslessClawLLMAPIKey)
+		clear(mem0LLMAPIKey)
 		return errors.New("rendered OpenClaw config contains the lossless-claw LLM API-key value")
+	}
+	if len(mem0LLMAPIKey) != 0 && bytes.Contains(configuration, mem0LLMAPIKey) {
+		clear(apiKey)
+		clear(realtimeAPIKey)
+		clear(extractAPIKey)
+		clear(firecrawlAPIKey)
+		clear(tavilySearchAPIKey)
+		clear(amemLLMAPIKey)
+		clear(losslessClawLLMAPIKey)
+		clear(mem0LLMAPIKey)
+		return errors.New("rendered OpenClaw config contains the mem0 LLM API-key value")
 	}
 	containerConfig := &container.Config{
 		Image: manager.image,
@@ -714,6 +786,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(tavilySearchAPIKey)
 		clear(amemLLMAPIKey)
 		clear(losslessClawLLMAPIKey)
+		clear(mem0LLMAPIKey)
 		return fmt.Errorf("generate OpenClaw harness ID: %w", err)
 	}
 	gatewayToken, err := randomSecret(32)
@@ -725,6 +798,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(tavilySearchAPIKey)
 		clear(amemLLMAPIKey)
 		clear(losslessClawLLMAPIKey)
+		clear(mem0LLMAPIKey)
 		return fmt.Errorf("generate OpenClaw gateway token: %w", err)
 	}
 	agentIdempotency, err := randomID()
@@ -736,6 +810,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(tavilySearchAPIKey)
 		clear(amemLLMAPIKey)
 		clear(losslessClawLLMAPIKey)
+		clear(mem0LLMAPIKey)
 		clear(gatewayToken)
 		return fmt.Errorf("generate OpenClaw agent idempotency key: %w", err)
 	}
@@ -743,7 +818,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 	active := &session{
 		runID: request.RunID, taskID: request.TaskID, safeTaskID: safeTaskID(request.TaskID), attemptID: id,
 		containerName: "aries-openclaw-" + id, artifactDir: filepath.Join(manager.outputDir, request.TaskID, fmt.Sprintf("harness-turn-%02d", manager.turnCount)),
-		endpoint: request.Endpoint, model: request.Model, agentTimeout: agentTimeout, apiKey: apiKey, realtimeAPIKey: realtimeAPIKey, extractAPIKey: extractAPIKey, firecrawlAPIKey: firecrawlAPIKey, tavilySearchAPIKey: tavilySearchAPIKey, amemLLMAPIKey: amemLLMAPIKey, losslessClawLLMAPIKey: losslessClawLLMAPIKey, gatewayToken: gatewayToken, agentIdempotency: agentIdempotency,
+		endpoint: request.Endpoint, model: request.Model, agentTimeout: agentTimeout, apiKey: apiKey, realtimeAPIKey: realtimeAPIKey, extractAPIKey: extractAPIKey, firecrawlAPIKey: firecrawlAPIKey, tavilySearchAPIKey: tavilySearchAPIKey, amemLLMAPIKey: amemLLMAPIKey, losslessClawLLMAPIKey: losslessClawLLMAPIKey, mem0LLMAPIKey: mem0LLMAPIKey, gatewayToken: gatewayToken, agentIdempotency: agentIdempotency,
 	}
 	containerConfig.Labels["aries.attempt"] = active.attemptID
 	fail := func(primary error) error {
@@ -1460,12 +1535,12 @@ func (manager *Manager) validateContainer(ctx context.Context, active *session) 
 		return errors.New("OpenClaw container labels do not match the task")
 	}
 	for _, value := range append(append([]string(nil), configuration.Env...), configuration.Cmd...) {
-		if containsSecret(value, active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.firecrawlAPIKey, active.tavilySearchAPIKey, active.amemLLMAPIKey, active.losslessClawLLMAPIKey, active.gatewayToken) {
+		if containsSecret(value, active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.firecrawlAPIKey, active.tavilySearchAPIKey, active.amemLLMAPIKey, active.losslessClawLLMAPIKey, active.mem0LLMAPIKey, active.gatewayToken) {
 			return errors.New("OpenClaw secret entered Docker configuration")
 		}
 	}
 	for _, value := range configuration.Labels {
-		if containsSecret(value, active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.firecrawlAPIKey, active.tavilySearchAPIKey, active.amemLLMAPIKey, active.losslessClawLLMAPIKey, active.gatewayToken) {
+		if containsSecret(value, active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.firecrawlAPIKey, active.tavilySearchAPIKey, active.amemLLMAPIKey, active.losslessClawLLMAPIKey, active.mem0LLMAPIKey, active.gatewayToken) {
 			return errors.New("OpenClaw secret entered Docker labels")
 		}
 	}
@@ -1495,7 +1570,7 @@ func (manager *Manager) runtimeArchive(active *session, configuration []byte) ([
 		"run/aries/openclaw.json":    {content: configuration, mode: 0o600},
 		"run/aries/model.key":        {content: active.apiKey, mode: 0o600},
 		"run/aries/gateway.key":      {content: active.gatewayToken, mode: 0o600},
-		"run/aries/launch":           {content: launcherScript(active.model.APIKeyEnv, manager.realtimeAPIKeyEnv(active), len(active.extractAPIKey) != 0, len(active.firecrawlAPIKey) != 0, len(active.tavilySearchAPIKey) != 0, manager.amemEnabled, len(active.amemLLMAPIKey) != 0, len(active.losslessClawLLMAPIKey) != 0), mode: 0o555},
+		"run/aries/launch":           {content: launcherScript(active.model.APIKeyEnv, manager.realtimeAPIKeyEnv(active), len(active.extractAPIKey) != 0, len(active.firecrawlAPIKey) != 0, len(active.tavilySearchAPIKey) != 0, manager.amemEnabled, len(active.amemLLMAPIKey) != 0, len(active.losslessClawLLMAPIKey) != 0, manager.mem0Enabled, len(active.mem0LLMAPIKey) != 0), mode: 0o555},
 		"run/aries/gateway-proxy.js": {content: gatewayProxyScript(), mode: 0o555},
 		"run/aries/gateway-launcher": {content: gatewayLauncherScript(manager.amemEnabled), mode: 0o555},
 		"run/aries/ssh/id_ed25519":   {content: identity, mode: 0o600},
@@ -1523,6 +1598,9 @@ func (manager *Manager) runtimeArchive(active *session, configuration []byte) ([
 	}
 	if len(active.losslessClawLLMAPIKey) != 0 {
 		files["run/aries/lossless-claw-llm.key"] = stagedFile{content: active.losslessClawLLMAPIKey, mode: 0o600}
+	}
+	if len(active.mem0LLMAPIKey) != 0 {
+		files["run/aries/mem0-llm.key"] = stagedFile{content: active.mem0LLMAPIKey, mode: 0o600}
 	}
 	return stageArchive(files)
 }
@@ -1709,7 +1787,7 @@ func (manager *Manager) collectArtifacts(ctx context.Context, active *session) e
 		if copyErr != nil || closeErr != nil || stdout.exceeded || stderr.exceeded {
 			errs = append(errs, errors.Join(copyErr, closeErr, errors.New("OpenClaw gateway logs exceeded their bound")))
 		} else {
-			content := allowGatewayLogs(append(stdout.Bytes(), stderr.Bytes()...), active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.firecrawlAPIKey, active.tavilySearchAPIKey, active.amemLLMAPIKey, active.losslessClawLLMAPIKey, active.gatewayToken)
+			content := allowGatewayLogs(append(stdout.Bytes(), stderr.Bytes()...), active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.firecrawlAPIKey, active.tavilySearchAPIKey, active.amemLLMAPIKey, active.losslessClawLLMAPIKey, active.mem0LLMAPIKey, active.gatewayToken)
 			path := filepath.Join(active.artifactDir, "gateway.log")
 			if err := writeArtifact(path, content); err != nil {
 				errs = append(errs, err)
@@ -1759,7 +1837,7 @@ func (manager *Manager) collectTelemetry(ctx context.Context, active *session) (
 	if err != nil || len(archive) > maxDockerOutput {
 		return nil, errors.New("OpenClaw telemetry archive exceeded its bound")
 	}
-	return extractTelemetry(active.artifactDir, archive, active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.firecrawlAPIKey, active.tavilySearchAPIKey, active.amemLLMAPIKey, active.losslessClawLLMAPIKey, active.gatewayToken)
+	return extractTelemetry(active.artifactDir, archive, active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.firecrawlAPIKey, active.tavilySearchAPIKey, active.amemLLMAPIKey, active.losslessClawLLMAPIKey, active.mem0LLMAPIKey, active.gatewayToken)
 }
 
 func failedHarnessResult(active *session, started time.Time, err error) core.HarnessResult {
@@ -2030,13 +2108,15 @@ func clearSessionSecrets(active *session) {
 	active.amemLLMAPIKey = nil
 	clear(active.losslessClawLLMAPIKey)
 	active.losslessClawLLMAPIKey = nil
+	clear(active.mem0LLMAPIKey)
+	active.mem0LLMAPIKey = nil
 	clear(active.gatewayToken)
 	active.gatewayToken = nil
 	active.agentIdempotency = ""
 }
 
 func redactSession(content []byte, active *session) []byte {
-	return redactSecrets(content, active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.firecrawlAPIKey, active.tavilySearchAPIKey, active.amemLLMAPIKey, active.losslessClawLLMAPIKey, active.gatewayToken)
+	return redactSecrets(content, active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.firecrawlAPIKey, active.tavilySearchAPIKey, active.amemLLMAPIKey, active.losslessClawLLMAPIKey, active.mem0LLMAPIKey, active.gatewayToken)
 }
 
 type sessionRedactedError struct {

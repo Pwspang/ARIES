@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -402,6 +403,37 @@ func TestLosslessClawHarnessConfigValidation(t *testing.T) {
 	}
 }
 
+func TestMem0HarnessConfigValidation(t *testing.T) {
+	nonOpenClaw := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"other","mem0":{"enabled":true}}`, 1)
+	if _, err := Decode(strings.NewReader(nonOpenClaw)); err == nil {
+		t.Fatal("expected rejection of harness.mem0 under a non-OpenClaw harness type")
+	}
+
+	llmFieldsWithoutEnabled := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","mem0":{"llm_base_url":"https://api.deepseek.com","llm_model":"deepseek-v4-flash","llm_api_key_env":"DEEPSEEK_API_KEY"}}`, 1)
+	if _, err := Decode(strings.NewReader(llmFieldsWithoutEnabled)); err == nil {
+		t.Fatal("expected rejection of harness.mem0.llm_* without harness.mem0.enabled")
+	}
+
+	partialLLMFields := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","mem0":{"enabled":true,"llm_model":"deepseek-v4-flash"}}`, 1)
+	if _, err := Decode(strings.NewReader(partialLLMFields)); err == nil {
+		t.Fatal("expected rejection of harness.mem0.llm_model set without llm_base_url/llm_api_key_env")
+	}
+
+	valid := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","mem0":{"enabled":true,"llm_base_url":"https://api.deepseek.com","llm_model":"deepseek-v4-flash","llm_api_key_env":"DEEPSEEK_API_KEY"}}`, 1)
+	cfg, err := Decode(strings.NewReader(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Harness.Mem0.Enabled || cfg.Harness.Mem0.LLMBaseURL != "https://api.deepseek.com" || cfg.Harness.Mem0.LLMModel != "deepseek-v4-flash" || cfg.Harness.Mem0.LLMAPIKeyEnv != "DEEPSEEK_API_KEY" {
+		t.Fatalf("harness.mem0 = %#v", cfg.Harness.Mem0)
+	}
+
+	both := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","amem":{"enabled":true},"mem0":{"enabled":true}}`, 1)
+	if _, err := Decode(strings.NewReader(both)); err == nil {
+		t.Fatal("expected rejection of harness.amem and harness.mem0 enabled together")
+	}
+}
+
 func TestModelMaxOutputTokensValidation(t *testing.T) {
 	limited := strings.Replace(validConfig, `"api_key_env":"DEEPSEEK_API_KEY"}`, `"api_key_env":"DEEPSEEK_API_KEY","max_output_tokens":32000}`, 1)
 	cfg, err := Decode(strings.NewReader(limited))
@@ -754,7 +786,7 @@ func TestCheckedInProfilesLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 54 {
+	if len(paths) != 63 {
 		t.Fatalf("profiles=%v", paths)
 	}
 	for _, path := range paths {
@@ -897,7 +929,7 @@ func TestCheckedInVersionCatalogsLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 3 {
+	if len(paths) != 4 {
 		t.Fatalf("catalogs=%v", paths)
 	}
 	for _, path := range paths {
@@ -1129,8 +1161,13 @@ func TestSWEAtlasQACtxLimitArmsDifferFromPilot30OnlyInContextWindow(t *testing.T
 					t.Fatalf("%s: constrained arm must set a positive context_window_tokens, got %d", suffix, constrained.Model.ContextWindowTokens)
 				}
 				constrained.Model.ContextWindowTokens = 0
+				// The constrained arms also raise compaction_timeout_ms (added after this
+				// test was written, to address a real "Compaction timed out" failure mode
+				// found under the tight window) — an expected second difference, not a
+				// confound, since it only compensates for the constrained window itself.
+				constrained.Model.CompactionTimeoutMs = 0
 				if !reflect.DeepEqual(unconstrained.Model, constrained.Model) {
-					t.Fatalf("%s: model config differs beyond context_window_tokens: unconstrained=%#v constrained=%#v", suffix, unconstrained.Model, constrained.Model)
+					t.Fatalf("%s: model config differs beyond context_window_tokens/compaction_timeout_ms: unconstrained=%#v constrained=%#v", suffix, unconstrained.Model, constrained.Model)
 				}
 				if !reflect.DeepEqual(unconstrained.Benchmark.Tasks, constrained.Benchmark.Tasks) {
 					t.Fatalf("%s: task lists diverged between unconstrained and constrained arms", suffix)
@@ -1144,10 +1181,97 @@ func TestSWEAtlasQACtxLimitArmsDifferFromPilot30OnlyInContextWindow(t *testing.T
 				if !reflect.DeepEqual(unconstrained.Runtime, constrained.Runtime) {
 					t.Fatalf("%s: runtime configuration differs between unconstrained and constrained arms", suffix)
 				}
-				if unconstrained.Execution.Concurrency != constrained.Execution.Concurrency {
-					t.Fatalf("%s: concurrency differs: %d vs %d", suffix, unconstrained.Execution.Concurrency, constrained.Execution.Concurrency)
-				}
+				// Concurrency is intentionally NOT asserted equal here: the plain
+				// control arm (no shared-state ordering constraint, unlike the amem
+				// arms) may be parallelized differently per study as an independent
+				// infra choice — that's orthogonal to the context-window manipulation
+				// this test exists to isolate. Each study's own three-arm test
+				// (TestSWEAtlasQAStudyArmsDifferOnlyInAMEM) still pins concurrency=1
+				// within that study's amem arms, where it matters for correctness.
 			}
 		})
+	}
+}
+
+// The ctxlimit shuffle1 replicate exists to decorrelate a task's position
+// within its repository's execution order from the task's identity (see
+// pilot30-ctxlimit's own position-within-repo finding: repo-scoped amem's
+// delta over control trended negative late in paperless-ngx's sequence,
+// which a single execution order can't distinguish from "these particular
+// tasks are just harder"). It only has two arms so far (control,
+// repo-scope) — not the three/four-arm trio pilot30-ctxlimit has — so it
+// gets its own two-way invariant, modeled on
+// TestSWEAtlasQASubset20ArmsDifferOnlyInAMEM: same task list (just
+// reordered relative to pilot30-ctxlimit), same image, model, judge,
+// runtime, and concurrency; the only allowed differences are
+// harness.amem and, deliberately, task order.
+func TestSWEAtlasQACtxLimitShuffleArmsDifferOnlyInAMEM(t *testing.T) {
+	base, err := Load(filepath.Join("..", "..", "profiles", "openclaw-sweatlasqa-pilot30-ctxlimit-sglang.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseSet := append([]string(nil), base.Benchmark.Tasks...)
+	sort.Strings(baseSet)
+
+	replicates := []string{"shuffle1", "shuffle2"}
+	orders := make(map[string][]string, len(replicates))
+
+	for _, replicate := range replicates {
+		t.Run(replicate, func(t *testing.T) {
+			prefix := "openclaw-sweatlasqa-pilot30-ctxlimit-" + replicate
+			control, err := Load(filepath.Join("..", "..", "profiles", prefix+"-sglang.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			repoScoped, err := Load(filepath.Join("..", "..", "profiles", prefix+"-amem-repo-sglang.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if control.Harness.AMEM.Enabled {
+				t.Fatal("control arm must have amem disabled")
+			}
+			if !repoScoped.Harness.AMEM.Enabled || repoScoped.Harness.AMEM.Scope != "repo" {
+				t.Fatalf("repo-scoped arm's harness.amem = %#v, want enabled with scope \"repo\"", repoScoped.Harness.AMEM)
+			}
+			if len(control.Benchmark.Tasks) != 30 || len(repoScoped.Benchmark.Tasks) != 30 {
+				t.Fatalf("%s must run all 30 tasks: control=%d repo=%d", replicate, len(control.Benchmark.Tasks), len(repoScoped.Benchmark.Tasks))
+			}
+			if !reflect.DeepEqual(control.Benchmark.Tasks, repoScoped.Benchmark.Tasks) {
+				t.Fatalf("task lists diverged:\n control=%v\n repo=%v", control.Benchmark.Tasks, repoScoped.Benchmark.Tasks)
+			}
+			if control.Versions.OpenClaw.Image != repoScoped.Versions.OpenClaw.Image {
+				t.Fatalf("OpenClaw image differs: %q vs %q", control.Versions.OpenClaw.Image, repoScoped.Versions.OpenClaw.Image)
+			}
+			if !reflect.DeepEqual(control.Model, repoScoped.Model) || !reflect.DeepEqual(control.Benchmark.Judge, repoScoped.Benchmark.Judge) {
+				t.Fatal("model or judge configuration differs between arms")
+			}
+			if control.Model.ContextWindowTokens != 96000 {
+				t.Fatalf("%s must run at the same 96k context_window_tokens as pilot30-ctxlimit, got %d", replicate, control.Model.ContextWindowTokens)
+			}
+			if !reflect.DeepEqual(control.Runtime, repoScoped.Runtime) {
+				t.Fatal("runtime configuration differs between arms")
+			}
+			if control.Execution.Concurrency != 1 || repoScoped.Execution.Concurrency != 1 {
+				t.Fatalf("%s must run at concurrency 1, same reasoning as pilot30-ctxlimit: control=%d repo=%d", replicate, control.Execution.Concurrency, repoScoped.Execution.Concurrency)
+			}
+
+			// The whole point of a shuffle replicate is a *different* per-repo
+			// execution order than pilot30-ctxlimit's own — same task set, reordered.
+			shuffleSet := append([]string(nil), control.Benchmark.Tasks...)
+			sort.Strings(shuffleSet)
+			if !reflect.DeepEqual(baseSet, shuffleSet) {
+				t.Fatalf("%s must run the same 30 tasks as pilot30-ctxlimit, just reordered:\n base=%v\n %s=%v", replicate, baseSet, replicate, shuffleSet)
+			}
+			if reflect.DeepEqual(base.Benchmark.Tasks, control.Benchmark.Tasks) {
+				t.Fatalf("%s's task order must differ from pilot30-ctxlimit's — otherwise it isn't decorrelating position from identity", replicate)
+			}
+			orders[replicate] = control.Benchmark.Tasks
+		})
+	}
+
+	// Two replicates only decorrelate position from identity if their orders
+	// are themselves distinct derangements, not copies of each other.
+	if len(orders) == len(replicates) && reflect.DeepEqual(orders["shuffle1"], orders["shuffle2"]) {
+		t.Fatal("shuffle1 and shuffle2 must use distinct task orders — identical orders defeat the point of a second replicate")
 	}
 }

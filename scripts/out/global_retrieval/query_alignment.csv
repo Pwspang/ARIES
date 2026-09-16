@@ -1,0 +1,121 @@
+replicate,task_id,repository,call_seq,query,n_notes_parsed,query_question_overlap,n_cross_repo,n_same_repo,n_origin_unknown,cross_repo_frac
+pilot30,task-6905333b74f22949d97ba9a4,simple-login/app,1,SimpleLogin backend startup development configuration,0,0.06153846153846154,0,0,0,
+pilot30,task-6905333b74f22949d97ba9a4,simple-login/app,2,SimpleLogin startup backend dev mode configuration,5,0.06153846153846154,0,4,1,0.0
+pilot30,task-6905333b74f22949d97ba9a5,simple-login/app,1,alias creation signed suffix validation rate limiting,5,0.0821917808219178,0,5,0,0.0
+pilot30,task-6905333b74f22949d97ba9a6,simple-login/app,1,email privacy anonymous aliases system,5,0.03759398496240601,0,5,0,0.0
+pilot30,task-6905333b74f22949d97ba9a6,simple-login/app,2,database migrations tables email handler registration,5,0.045112781954887216,0,5,0,0.0
+pilot30,task-6905333b74f22949d97ba9a7,simple-login/app,1,SimpleLogin codebase repository structure,5,0.011111111111111112,0,5,0,0.0
+pilot30,task-6905333b74f22949d97ba9a8,simple-login/app,1,SimpleLogin Flask app startup configuration,5,0.06,0,4,1,0.0
+pilot30,task-6905333b74f22949d97ba9a9,simple-login/app,1,SimpleLogin alias reply handling email routing,5,0.07692307692307693,0,5,0,0.0
+pilot30,task-6905333b74f22949d97ba9a9,simple-login/app,2,SimpleLogin handle_reply EmailLog mailbox alias routing,5,0.037037037037037035,0,5,0,0.0
+pilot30,task-6905333b74f22949d97ba9aa,simple-login/app,1,SimpleLogin repository structure,5,0.014705882352941176,0,5,0,0.0
+pilot30,task-6905333b74f22949d97ba9ab,simple-login/app,1,SimpleLogin alias creation codebase,5,0.0297029702970297,0,5,0,0.0
+pilot30,task-6905333b74f22949d97ba9ab,simple-login/app,2,SimpleLogin alias creation flow database tables request response,5,0.07920792079207921,0,5,0,0.0
+pilot30,task-6905333b74f22949d97ba9ac,simple-login/app,1,SimpleLogin email forwarding message-id log,5,0.05714285714285714,0,5,0,0.0
+pilot30,task-6905333b74f22949d97ba9ad,simple-login/app,1,SimpleLogin setup registration dashboard,5,0.023809523809523808,0,5,0,0.0
+pilot30,task-6905333b74f22949d97ba9ae,simple-login/app,1,SimpleLogin reply resolution contact forwarding alias,5,0.06741573033707865,0,5,0,0.0
+pilot30,task-6905333b74f22949d97ba9af,simple-login/app,1,codebase structure development environment,5,0.018691588785046728,0,5,0,0.0
+pilot30,task-6905333b74f22949d97ba9b2,simple-login/app,1,bounce email handling SimpleLogin SMTP,5,0.03333333333333333,0,5,0,0.0
+pilot30,task-6905333b74f22949d97ba9d0,paperless-ngx/paperless-ngx,1,paperless-ngx architecture tasks scheduler maintenance,5,0.06666666666666667,5,0,0,1.0
+pilot30,task-6905333b74f22949d97ba9d1,paperless-ngx/paperless-ngx,1,Paperless-NGX search index synchronization,5,0.025423728813559324,4,1,0,0.8
+pilot30,task-6905333b74f22949d97ba9d1,paperless-ngx/paperless-ngx,2,Paperless-NGX index synchronization API update signal,3,0.025210084033613446,1,2,0,0.3333333333333333
+pilot30,task-6905333b74f22949d97ba9d2,paperless-ngx/paperless-ngx,1,paperless-ngx document processing pipeline,5,0.04918032786885246,3,2,0,0.6
+pilot30,task-6905333b74f22949d97ba9d2,paperless-ngx/paperless-ngx,2,paperless-ngx document metadata required optional derived,5,0.1,0,5,0,0.0
+pilot30,task-6905333b74f22949d97ba9d3,paperless-ngx/paperless-ngx,1,paperless-ngx document ingestion pipeline,5,0.05263157894736842,0,5,0,0.0
+pilot30,task-6905333b74f22949d97ba9d3,paperless-ngx/paperless-ngx,2,paperless-ngx ingestion pipeline classifier training file layout database tables,10,0.08974358974358974,2,8,0,0.2
+pilot30,task-6905333b74f22949d97ba9d4,paperless-ngx/paperless-ngx,1,Paperless-NGX runtime background processes tasks,5,0.08196721311475409,1,4,0,0.2
+pilot30,task-6905333b74f22949d97ba9d4,paperless-ngx/paperless-ngx,2,paperless-ngx background processes runtime log messages periodic tasks qcluster consumer gunicorn,5,0.09230769230769231,2,3,0,0.4
+pilot30,task-6905333b74f22949d97ba9d5,paperless-ngx/paperless-ngx,1,Paperless-NGX document ingestion processing pipeline,5,0.05194805194805195,0,5,0,0.0
+pilot30,task-6905333b74f22949d97ba9d6,paperless-ngx/paperless-ngx,1,paperless-ngx OCR processing,5,0.02702702702702703,0,5,0,0.0
+pilot30,task-6905333b74f22949d97ba9d7,paperless-ngx/paperless-ngx,1,paperless API authentication token,5,0.041666666666666664,3,2,0,0.6
+pilot30,task-6905333b74f22949d97ba9d8,paperless-ngx/paperless-ngx,1,document classification machine learning pipeline OCR barcode training tests,5,0.10256410256410256,0,5,0,0.0
+pilot30,task-6905333b74f22949d97ba9d8,paperless-ngx/paperless-ngx,2,classifier retrain model reuse training data hash confidence threshold OCR no text mime type barcode splitting,5,0.13580246913580246,1,3,1,0.2
+pilot30,task-6905333b74f22949d97ba9d9,paperless-ngx/paperless-ngx,1,paperless-ngx background processing queue tasks async,5,0.07575757575757576,0,5,0,0.0
+pilot30,task-6905333b74f22949d97ba9d9,paperless-ngx/paperless-ngx,2,django q task queue broker redis task states job,5,0.028985507246376812,2,3,0,0.4
+pilot30,task-6905333b74f22949d97ba9db,paperless-ngx/paperless-ngx,1,Paperless-NGX file move tags duplicate classifier,5,0.038461538461538464,0,5,0,0.0
+pilot30,task-6905333b74f22949d97ba9dc,paperless-ngx/paperless-ngx,1,paperless-ngx OCR processing PDF upload,5,0.04,0,4,1,0.0
+pilot30,task-6905333b74f22949d97ba9dc,paperless-ngx/paperless-ngx,2,paperless-ngx upload HTTP response status OCRmyPDF archive filename multi-page,5,0.11842105263157894,0,5,0,0.0
+pilot30,task-6905333b74f22949d97ba9dd,paperless-ngx/paperless-ngx,1,Paperless-NGX document ingestion processing workflow,5,0.05434782608695652,0,5,0,0.0
+pilot30,task-6905333b74f22949d97ba9de,paperless-ngx/paperless-ngx,1,Paperless document processing memory metadata,5,0.043859649122807015,0,5,0,0.0
+pilot30,task-6905333b74f22949d97ba9de,paperless-ngx/paperless-ngx,2,Paperless memory spike root causes content field depth serializer prefetch,5,0.024793388429752067,0,5,0,0.0
+pilot30,task-6905333b74f22949d97ba9e0,paperless-ngx/paperless-ngx,1,documents list pagination filtering sorting duplicates,5,0.043478260869565216,1,4,0,0.2
+pilot30,task-6905333b74f22949d97ba9e8,simple-login/app,1,SimpleLogin authentication API sessions,5,0.013422818791946308,0,5,0,0.0
+pilot30,task-6905333b74f22949d97ba9e8,simple-login/app,2,SimpleLogin API authentication session storage email headers,10,0.03355704697986577,0,10,0,0.0
+pilot30,task-6905333b74f22949d97baa1d,simple-login/app,1,SimpleLogin session handling Redis deserialization,5,0.07352941176470588,0,5,0,0.0
+pilot30-shuffle1,task-6905333b74f22949d97ba9a5,simple-login/app,1,alias creation validation signed suffix rate limiting quota,5,0.0958904109589041,0,5,0,0.0
+pilot30-shuffle1,task-6905333b74f22949d97ba9a5,simple-login/app,2,alias creation API error status code validation rate limit signature tampered,5,0.08,0,5,0,0.0
+pilot30-shuffle1,task-6905333b74f22949d97ba9a6,simple-login/app,1,email privacy system anonymous aliases initialization,5,0.045112781954887216,0,5,0,0.0
+pilot30-shuffle1,task-6905333b74f22949d97ba9a6,simple-login/app,2,SimpleLogin migration table count user registration login API max_alias config,5,0.04411764705882353,0,5,0,0.0
+pilot30-shuffle1,task-6905333b74f22949d97ba9a7,simple-login/app,1,SimpleLogin workflow verification code forwarding,5,0.03333333333333333,0,5,0,0.0
+pilot30-shuffle1,task-6905333b74f22949d97ba9ac,simple-login/app,1,SimpleLogin email forwarding alias processing,0,0.07142857142857142,0,0,0,
+pilot30-shuffle1,task-6905333b74f22949d97ba9ac,simple-login/app,2,SimpleLogin email forwarding log message status code from header VERP,2,0.06944444444444445,0,2,0,0.0
+pilot30-shuffle1,task-6905333b74f22949d97ba9ad,simple-login/app,1,SimpleLogin setup authentication email forwarding,5,0.04819277108433735,0,5,0,0.0
+pilot30-shuffle1,task-6905333b74f22949d97ba9ad,simple-login/app,2,SimpleLogin registration login activation email forwarding dashboard startup background jobs,5,0.06976744186046512,0,5,0,0.0
+pilot30-shuffle1,task-6905333b74f22949d97ba9ae,simple-login/app,1,SimpleLogin inbound reply email contact resolution forwarding,2,0.07865168539325842,0,2,0,0.0
+pilot30-shuffle1,task-6905333b74f22949d97ba9ae,simple-login/app,2,SimpleLogin reply resolution race condition contact lookup forwarding,4,0.07777777777777778,0,4,0,0.0
+pilot30-shuffle1,task-6905333b74f22949d97ba9af,simple-login/app,1,application structure database server email,4,0.027777777777777776,0,4,0,0.0
+pilot30-shuffle1,task-6905333b74f22949d97ba9af,simple-login/app,2,database error login page startup SLDomain email handler,5,0.07547169811320754,0,4,1,0.0
+pilot30-shuffle1,task-6905333b74f22949d97ba9d0,paperless-ngx/paperless-ngx,1,paperless-ngx celery periodic tasks maintenance,5,0.06666666666666667,0,5,0,0.0
+pilot30-shuffle1,task-6905333b74f22949d97ba9d1,paperless-ngx/paperless-ngx,1,Paperless-NGX search index synchronization document changes,5,0.0423728813559322,1,4,0,0.2
+pilot30-shuffle1,task-6905333b74f22949d97ba9d2,paperless-ngx/paperless-ngx,1,paperless-ngx document processing pipeline metadata,5,0.06557377049180328,0,5,0,0.0
+pilot30-shuffle1,task-6905333b74f22949d97ba9d3,paperless-ngx/paperless-ngx,1,paperless-ngx document ingestion pipeline processing,5,0.06578947368421052,5,0,0,1.0
+pilot30-shuffle1,task-6905333b74f22949d97ba9d3,paperless-ngx/paperless-ngx,2,paperless-ngx document ingestion classification training ML,5,0.05194805194805195,3,2,0,0.6
+pilot30-shuffle1,task-6905333b74f22949d97ba9d4,paperless-ngx/paperless-ngx,1,Paperless-NGX codebase background processes tasks,5,0.06557377049180328,0,5,0,0.0
+pilot30-shuffle1,task-6905333b74f22949d97ba9d4,paperless-ngx/paperless-ngx,2,Paperless-NGX periodic tasks background processes startup log messages health,5,0.078125,0,5,0,0.0
+pilot30-shuffle1,task-6905333b74f22949d97ba9d5,paperless-ngx/paperless-ngx,1,Paperless-NGX document ingestion processing pipeline,5,0.05194805194805195,0,5,0,0.0
+pilot30-shuffle1,task-6905333b74f22949d97ba9d5,paperless-ngx/paperless-ngx,2,document ingestion pipeline detection parsing classification indexing,5,0.07792207792207792,0,4,1,0.0
+pilot30-shuffle1,task-6905333b74f22949d97ba9d6,paperless-ngx/paperless-ngx,1,paperless-ngx OCR processing,5,0.02702702702702703,0,4,1,0.0
+pilot30-shuffle1,task-6905333b74f22949d97ba9d7,paperless-ngx/paperless-ngx,1,paperless API authentication token Django,5,0.05555555555555555,0,4,1,0.0
+pilot30-shuffle1,task-6905333b74f22949d97ba9d7,paperless-ngx/paperless-ngx,2,paperless authentication token header API endpoint,5,0.06944444444444445,2,3,0,0.4
+pilot30-shuffle1,task-6905333b74f22949d97ba9d8,paperless-ngx/paperless-ngx,1,document classification machine learning pipeline test,5,0.07692307692307693,0,3,2,0.0
+pilot30-shuffle1,task-6905333b74f22949d97ba9d8,paperless-ngx/paperless-ngx,2,classifier training barcodes OCR edge cases confidence threshold,10,0.0759493670886076,2,7,1,0.2
+pilot30-shuffle1,task-6905333b74f22949d97ba9d9,paperless-ngx/paperless-ngx,1,paperless-ngx background processing async queue,5,0.07692307692307693,0,5,0,0.0
+pilot30-shuffle1,task-6905333b74f22949d97ba9d9,paperless-ngx/paperless-ngx,2,paperless-ngx async task queue django-q background processing,5,0.09090909090909091,0,5,0,0.0
+pilot30-shuffle1,task-6905333b74f22949d97ba9db,paperless-ngx/paperless-ngx,1,Paperless-NGX repository file handling tags duplicate classifier,5,0.038461538461538464,2,3,0,0.4
+pilot30-shuffle1,task-6905333b74f22949d97ba9db,paperless-ngx/paperless-ngx,2,paperless-ngx file handling tag rename rollback classifier duplicate sanity,5,0.04580152671755725,1,3,1,0.2
+pilot30-shuffle1,task-6905333b74f22949d97ba9dc,paperless-ngx/paperless-ngx,1,paperless-ngx document processing OCR,5,0.04,0,5,0,0.0
+pilot30-shuffle1,task-6905333b74f22949d97ba9dd,paperless-ngx/paperless-ngx,1,Paperless-NGX ingestion document processing codebase,5,0.043478260869565216,2,3,0,0.4
+pilot30-shuffle1,task-6905333b74f22949d97ba9de,paperless-ngx/paperless-ngx,1,Paperless memory usage metadata processing,5,0.043859649122807015,0,5,0,0.0
+pilot30-shuffle1,task-6905333b74f22949d97ba9e0,paperless-ngx/paperless-ngx,1,documents list pagination duplicate browsing filters,5,0.054945054945054944,3,2,0,0.6
+pilot30-shuffle1,task-6905333b74f22949d97ba9e0,paperless-ngx/paperless-ngx,2,paperless-ngx documents pagination duplicate haunting ordering,5,0.03225806451612903,2,3,0,0.4
+pilot30-shuffle1,task-6905333b74f22949d97ba9e8,simple-login/app,1,SimpleLogin authentication API sessions email forwarding alias tokens,5,0.040268456375838924,0,5,0,0.0
+pilot30-shuffle1,task-6905333b74f22949d97baa1d,simple-login/app,1,SimpleLogin session handling Redis deserialization,5,0.07352941176470588,0,5,0,0.0
+pilot30-shuffle1,task-6905333b74f22949d97baa1d,simple-login/app,2,SimpleLogin session corruption pickle deserialization itsdangerous,5,0.04225352112676056,0,5,0,0.0
+pilot30-shuffle2,task-6905333b74f22949d97ba9a4,simple-login/app,1,SimpleLogin backend startup dev mode,5,0.046153846153846156,0,5,0,0.0
+pilot30-shuffle2,task-6905333b74f22949d97ba9a4,simple-login/app,2,SimpleLogin startup configuration logging background jobs,5,0.06060606060606061,0,5,0,0.0
+pilot30-shuffle2,task-6905333b74f22949d97ba9a5,simple-login/app,1,alias creation signed suffix validation rate limit,5,0.06756756756756757,0,5,0,0.0
+pilot30-shuffle2,task-6905333b74f22949d97ba9a5,simple-login/app,2,signed suffix validation error status code 412 400 429 409,5,0.0547945205479452,0,5,0,0.0
+pilot30-shuffle2,task-6905333b74f22949d97ba9a6,simple-login/app,1,email privacy system anonymous aliases initialization database migration,5,,0,5,0,0.0
+pilot30-shuffle2,task-6905333b74f22949d97ba9a7,simple-login/app,1,SimpleLogin workflow mailbox verification code email forwarding,1,0.05555555555555555,0,1,0,0.0
+pilot30-shuffle2,task-6905333b74f22949d97ba9a9,simple-login/app,1,SimpleLogin alias reply handling routing,5,0.0641025641025641,0,4,1,0.0
+pilot30-shuffle2,task-6905333b74f22949d97ba9aa,simple-login/app,1,SimpleLogin application structure setup,5,0.028985507246376812,0,5,0,0.0
+pilot30-shuffle2,task-6905333b74f22949d97ba9aa,simple-login/app,2,SimpleLogin email handler job runner web server startup logs confirmation,5,0.08695652173913043,0,5,0,0.0
+pilot30-shuffle2,task-6905333b74f22949d97ba9ab,simple-login/app,1,SimpleLogin alias creation frontend backend database,5,0.0594059405940594,0,5,0,0.0
+pilot30-shuffle2,task-6905333b74f22949d97ba9ab,simple-login/app,2,alias creation flow database tables touched events background tasks,5,0.0891089108910891,0,5,0,0.0
+pilot30-shuffle2,task-6905333b74f22949d97ba9ac,simple-login/app,1,SimpleLogin email forwarding SL Message-ID alias,0,0.07142857142857142,0,0,0,
+pilot30-shuffle2,task-6905333b74f22949d97ba9ac,simple-login/app,2,email forwarding log messages email handler forward success failure,1,0.0547945205479452,0,1,0,0.0
+pilot30-shuffle2,task-6905333b74f22949d97ba9ad,simple-login/app,1,SimpleLogin codebase setup authentication email,5,0.03614457831325301,0,5,0,0.0
+pilot30-shuffle2,task-6905333b74f22949d97ba9ae,simple-login/app,1,SimpleLogin inbound email reply contact resolution alias forwarding,5,0.0898876404494382,0,5,0,0.0
+pilot30-shuffle2,task-6905333b74f22949d97ba9af,simple-login/app,1,codebase structure server database PostgreSQL setup,5,0.037383177570093455,0,4,1,0.0
+pilot30-shuffle2,task-6905333b74f22949d97ba9af,simple-login/app,2,database migrations login server startup services email handler SMTP,5,0.08490566037735849,0,5,0,0.0
+pilot30-shuffle2,task-6905333b74f22949d97ba9d0,paperless-ngx/paperless-ngx,1,paperless-ngx background maintenance tasks,5,0.05333333333333334,0,5,0,0.0
+pilot30-shuffle2,task-6905333b74f22949d97ba9d1,paperless-ngx/paperless-ngx,1,Paperless-NGX search index synchronization document changes,5,0.0423728813559322,1,3,1,0.2
+pilot30-shuffle2,task-6905333b74f22949d97ba9d1,paperless-ngx/paperless-ngx,2,Paperless-NGX document update API index sync add_to_index bulk_update_documents,5,0.03333333333333333,0,5,0,0.0
+pilot30-shuffle2,task-6905333b74f22949d97ba9d2,paperless-ngx/paperless-ngx,1,paperless-ngx document processing metadata,5,0.06666666666666667,0,5,0,0.0
+pilot30-shuffle2,task-6905333b74f22949d97ba9d3,paperless-ngx/paperless-ngx,1,paperless-ngx document processing pipeline,5,0.05263157894736842,0,5,0,0.0
+pilot30-shuffle2,task-6905333b74f22949d97ba9d4,paperless-ngx/paperless-ngx,1,Paperless-NGX runtime background processes,5,0.06557377049180328,0,5,0,0.0
+pilot30-shuffle2,task-6905333b74f22949d97ba9d5,paperless-ngx/paperless-ngx,1,Paperless-NGX document ingestion pipeline,5,0.03896103896103896,0,5,0,0.0
+pilot30-shuffle2,task-6905333b74f22949d97ba9d6,paperless-ngx/paperless-ngx,1,paperless-ngx OCR processing pipeline,5,0.04054054054054054,2,3,0,0.4
+pilot30-shuffle2,task-6905333b74f22949d97ba9d7,paperless-ngx/paperless-ngx,1,paperless API authentication token,5,0.041666666666666664,2,3,0,0.4
+pilot30-shuffle2,task-6905333b74f22949d97ba9d8,paperless-ngx/paperless-ngx,1,document classification machine learning pipeline test training OCR,5,0.08974358974358974,0,2,3,0.0
+pilot30-shuffle2,task-6905333b74f22949d97ba9d9,paperless-ngx/paperless-ngx,1,paperless-ngx background processing async queue tasks,5,0.07575757575757576,0,5,0,0.0
+pilot30-shuffle2,task-6905333b74f22949d97ba9db,paperless-ngx/paperless-ngx,1,Paperless-NGX file handling tags classifier duplicate,5,0.038461538461538464,0,5,0,0.0
+pilot30-shuffle2,task-6905333b74f22949d97ba9db,paperless-ngx/paperless-ngx,2,Paperless-NGX rollback move file tag change rename path,5,0.03816793893129771,0,5,0,0.0
+pilot30-shuffle2,task-6905333b74f22949d97ba9dc,paperless-ngx/paperless-ngx,1,paperless-ngx OCR PDF processing,5,0.02666666666666667,0,4,1,0.0
+pilot30-shuffle2,task-6905333b74f22949d97ba9dd,paperless-ngx/paperless-ngx,1,Paperless-NGX codebase document ingestion workflow,5,0.043478260869565216,4,0,1,0.8
+pilot30-shuffle2,task-6905333b74f22949d97ba9dd,paperless-ngx/paperless-ngx,2,Paperless-NGX document ingestion workflow Django Q task queue Redis,5,0.05263157894736842,2,3,0,0.4
+pilot30-shuffle2,task-6905333b74f22949d97ba9de,paperless-ngx/paperless-ngx,1,Paperless memory usage metadata processing,5,0.043859649122807015,0,5,0,0.0
+pilot30-shuffle2,task-6905333b74f22949d97ba9e0,paperless-ngx/paperless-ngx,1,documents list pagination duplicates sort order,5,0.06666666666666667,1,4,0,0.2
+pilot30-shuffle2,task-6905333b74f22949d97ba9e0,paperless-ngx/paperless-ngx,2,pagination ordering unstable distinct M2M tag filter,5,0.03260869565217391,1,4,0,0.2
+pilot30-shuffle2,task-6905333b74f22949d97baa1d,simple-login/app,1,SimpleLogin session handling Redis deserialization,5,0.07352941176470588,0,4,1,0.0
+pilot30-shuffle2,task-6905333b74f22949d97baa1d,simple-login/app,2,SimpleLogin session Redis deserialization pickle corruption,5,0.05714285714285714,0,5,0,0.0

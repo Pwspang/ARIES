@@ -421,13 +421,14 @@ def plot_longitudinal(df, out_dir, bin_size=5):
     print(f"wrote {out_dir / f'efficiency_by_position_bin{bin_size}.png'}")
 
 
-def annotate_bars(ax, df, y):
+def annotate_bars(ax, df, y, arm_order=None):
     stats = df.groupby("arm", observed=True)[y].agg(["mean", "std"])
-    for i, arm in enumerate(ARM_ORDER):
+    for i, arm in enumerate(arm_order or ARM_ORDER):
         if arm in stats.index:
             mean, std = stats.loc[arm, "mean"], stats.loc[arm, "std"]
             top = mean + (std if pd.notna(std) else 0)
-            ax.annotate(f"{mean:.3g}", (i, top), ha="center", va="bottom",
+            label = f"{mean:.3g} ± {std:.3g}" if pd.notna(std) else f"{mean:.3g}"
+            ax.annotate(label, (i, top), ha="center", va="bottom",
                         fontsize=9, xytext=(0, 4), textcoords="offset points")
 
 

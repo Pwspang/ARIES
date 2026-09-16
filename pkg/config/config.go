@@ -87,6 +87,11 @@ type ProfileModel struct {
 	// window size; see core.ModelConfig.ContextWindowTokens. Zero (the
 	// default) leaves the harness's own default in place.
 	ContextWindowTokens int `json:"context_window_tokens,omitempty"`
+	// CompactionTimeoutMs overrides how long the harness's auto-compaction
+	// call may run before being aborted as hung; see
+	// core.ModelConfig.CompactionTimeoutMs. Zero (the default) leaves the
+	// harness's own default (180000ms) in place.
+	CompactionTimeoutMs int `json:"compaction_timeout_ms,omitempty"`
 }
 
 type BenchmarkConfig struct {
@@ -192,6 +197,7 @@ type HarnessConfig struct {
 	Subagents    HarnessSubagentsConfig    `json:"subagents,omitempty"`
 	AMEM         HarnessAMEMConfig         `json:"amem,omitempty"`
 	LosslessClaw HarnessLosslessClawConfig `json:"lossless_claw,omitempty"`
+	Mem0         HarnessMem0Config         `json:"mem0,omitempty"`
 }
 
 // HarnessAMEMConfig enables the amem memory plugin (https://amem.owo.lc, npm
@@ -250,6 +256,32 @@ type HarnessAMEMConfig struct {
 // OpenClaw model provider. All three LLM* fields must be set together or not
 // at all — see (*HarnessConfig).validate.
 type HarnessLosslessClawConfig struct {
+	Enabled      bool   `json:"enabled,omitempty"`
+	LLMBaseURL   string `json:"llm_base_url,omitempty"`
+	LLMModel     string `json:"llm_model,omitempty"`
+	LLMAPIKeyEnv string `json:"llm_api_key_env,omitempty"`
+}
+
+// HarnessMem0Config enables mem0's first-party OpenClaw plugin
+// (github.com/mem0ai/mem0, integrations/openclaw, npm "@mem0/openclaw-mem0")
+// in open-source (self-hosted) mode as an OpenClaw plugin claiming the
+// "memory" slot (see pkg/harness/openclaw/config.go's mem0PluginConfig) —
+// mutually exclusive with AMEM (see (*HarnessConfig).validate), which claims
+// the same slot. Unlike amem, mem0 needs no sidecar container by default:
+// open-source mode's default vector store is a local file inside the
+// plugin's own state directory, not an external vector DB.
+//
+// By default mem0's own internal LLM/embedder calls (fact extraction,
+// embeddings) reuse the profile's primary task model and API key — see
+// mem0PluginConfig's doc comment. The LLM* fields below override that with a
+// separate model/endpoint instead. Note that mem0's embedder needs a real
+// embeddings-capable endpoint (mem0's own OSS default is OpenAI's
+// text-embedding-3-small): most chat-completions-only inference servers
+// (e.g. an sglang deployment serving a chat model) do not also serve
+// embeddings, so profiles whose primary model can't do that will likely need
+// LLM* set to an endpoint that can. All three LLM* fields must be set
+// together or not at all — see (*HarnessConfig).validate.
+type HarnessMem0Config struct {
 	Enabled      bool   `json:"enabled,omitempty"`
 	LLMBaseURL   string `json:"llm_base_url,omitempty"`
 	LLMModel     string `json:"llm_model,omitempty"`
@@ -378,6 +410,7 @@ func (c Config) CoreModel() core.ModelConfig {
 		Provider: c.Runtime.Backend, BaseURL: c.Model.BaseURL, Model: c.Model.ID,
 		APIKeyEnv: c.Model.APIKeyEnv, MaxOutputTokens: c.Model.MaxOutputTokens,
 		ContextWindowTokens: c.Model.ContextWindowTokens,
+		CompactionTimeoutMs: c.Model.CompactionTimeoutMs,
 	}
 }
 
@@ -650,6 +683,9 @@ func (c *Config) validate() error {
 	if c.Model.ContextWindowTokens < 0 {
 		return errors.New("model.context_window_tokens must not be negative")
 	}
+	if c.Model.CompactionTimeoutMs < 0 {
+		return errors.New("model.compaction_timeout_ms must not be negative")
+	}
 	if err := c.validateBenchmarkType(); err != nil {
 		return err
 	}
@@ -894,6 +930,26 @@ func (h *HarnessConfig) validate() error {
 		}
 		if !validEnvName(h.LosslessClaw.LLMAPIKeyEnv) {
 			return errors.New("harness.lossless_claw.llm_api_key_env must be an environment variable name")
+		}
+	}
+	if h.Mem0.Enabled && h.Type != "openclaw" {
+		return errors.New("harness.mem0 requires OpenClaw")
+	}
+	if h.AMEM.Enabled && h.Mem0.Enabled {
+		return errors.New("harness.amem and harness.mem0 are mutually exclusive")
+	}
+	if h.Mem0.LLMBaseURL != "" || h.Mem0.LLMModel != "" || h.Mem0.LLMAPIKeyEnv != "" {
+		if !h.Mem0.Enabled {
+			return errors.New("harness.mem0.llm_base_url/llm_model/llm_api_key_env require harness.mem0.enabled")
+		}
+		if h.Mem0.LLMBaseURL == "" || h.Mem0.LLMModel == "" || h.Mem0.LLMAPIKeyEnv == "" {
+			return errors.New("harness.mem0.llm_base_url, llm_model, and llm_api_key_env must be set together")
+		}
+		if err := validateHTTPBaseURL("harness.mem0.llm_base_url", h.Mem0.LLMBaseURL); err != nil {
+			return err
+		}
+		if !validEnvName(h.Mem0.LLMAPIKeyEnv) {
+			return errors.New("harness.mem0.llm_api_key_env must be an environment variable name")
 		}
 	}
 	switch h.Mode {

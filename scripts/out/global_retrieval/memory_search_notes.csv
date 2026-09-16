@@ -1,0 +1,53 @@
+run_dir,task_id,occurrence,call_seq,note_rank,note_id,similarity,via,note_text_snippet,source_repository,note_timestamp
+20260914T035338.436341279Z-openclaw-sweatlasqa-pilot30-shuffle1-amem-global-sglang,task-6905333b74f22949d97ba9ac,1,2,1,ccc0679b-1976-46e6-9de9-6e9fe28d809a,66.48475,match,"SimpleLogin email forwarding flow:
+
+1. handle() receives SMTP envelope and message, determines forward vs reply based on recipient
+2. For forward: handle_forward() looks up alias by rcpt_to email; if alias not found, calls try_auto_create()
+3. If alias not found AND can't auto-create: returns [(Fals",simple-login/app,2026-09-14T04:16:29.022Z
+20260914T035338.436341279Z-openclaw-sweatlasqa-pilot30-shuffle1-amem-global-sglang,task-6905333b74f22949d97ba9ac,1,2,2,50b46470-6669-4a2f-bc8c-4151733514ff,71.29634,match,"Exact log messages from SimpleLogin email_handler.py:
+
+SUCCESSFUL FORWARD:
+- Line 740: LOG.d(""Create %s for %s, %s, %s"", email_log, contact, user, mailbox) → resolves to ""Create <EmailLog {id}> for <Contact {id} {email} {alias_id}>, <User {id}>, <Mailbox {email}>""
+- Line 867: LOG.d(""From header, new",simple-login/app,2026-09-14T04:27:51.326Z
+20260914T035338.436341279Z-openclaw-sweatlasqa-pilot30-shuffle1-amem-global-sglang,task-6905333b74f22949d97ba9ae,2,1,1,ccc0679b-1976-46e6-9de9-6e9fe28d809a,69.22012600000001,match,"SimpleLogin email forwarding flow:
+
+1. handle() receives SMTP envelope and message, determines forward vs reply based on recipient
+2. For forward: handle_forward() looks up alias by rcpt_to email; if alias not found, calls try_auto_create()
+3. If alias not found AND can't auto-create: returns [(Fals",simple-login/app,2026-09-14T04:16:29.022Z
+20260914T035338.436341279Z-openclaw-sweatlasqa-pilot30-shuffle1-amem-global-sglang,task-6905333b74f22949d97ba9ae,2,1,2,50b46470-6669-4a2f-bc8c-4151733514ff,64.35581,match,"Exact log messages from SimpleLogin email_handler.py:
+
+SUCCESSFUL FORWARD:
+- Line 740: LOG.d(""Create %s for %s, %s, %s"", email_log, contact, user, mailbox) → resolves to ""Create <EmailLog {id}> for <Contact {id} {email} {alias_id}>, <User {id}>, <Mailbox {email}>""
+- Line 867: LOG.d(""From header, new",simple-login/app,2026-09-14T04:27:51.326Z
+20260914T035338.436341279Z-openclaw-sweatlasqa-pilot30-shuffle1-amem-global-sglang,task-6905333b74f22949d97ba9ae,2,2,1,ccc0679b-1976-46e6-9de9-6e9fe28d809a,59.83872,match,"SimpleLogin email forwarding flow:
+
+1. handle() receives SMTP envelope and message, determines forward vs reply based on recipient
+2. For forward: handle_forward() looks up alias by rcpt_to email; if alias not found, calls try_auto_create()
+3. If alias not found AND can't auto-create: returns [(Fals",simple-login/app,2026-09-14T04:16:29.022Z
+20260914T035338.436341279Z-openclaw-sweatlasqa-pilot30-shuffle1-amem-global-sglang,task-6905333b74f22949d97ba9ae,2,2,2,475e2c95-af0c-4fd3-92a7-0bc6a3835bb3,55.39701,match,"Contact table has UniqueConstraint(""alias_id"", ""website_email"") but NO unique constraint on reply_email. The reply_email column has a non-unique index (unique=False). The generate_reply_email function attempts to create a unique reply_email by checking available_sl_email(), which checks if the email",,2026-09-14T04:51:56.353Z
+20260914T035338.436341279Z-openclaw-sweatlasqa-pilot30-shuffle1-amem-global-sglang,task-6905333b74f22949d97ba9ae,2,2,3,d5c66f52-1951-4440-a0bc-08a7bb0e2e95,65.591997,match,"SimpleLogin reply resolution mechanism: In the reply phase, when an email arrives with rcpt_to being a reverse-alias, handle_reply() resolves the contact via Contact.get_by(reply_email=normalize_reply_email(rcpt_to)). The reply_email is derived directly from the SMTP envelope's rcpt_to field. The co",simple-login/app,2026-09-14T04:49:57.846Z
+20260914T035338.436341279Z-openclaw-sweatlasqa-pilot30-shuffle1-amem-global-sglang,task-6905333b74f22949d97ba9ae,2,2,4,50b46470-6669-4a2f-bc8c-4151733514ff,57.23282,match,"Exact log messages from SimpleLogin email_handler.py:
+
+SUCCESSFUL FORWARD:
+- Line 740: LOG.d(""Create %s for %s, %s, %s"", email_log, contact, user, mailbox) → resolves to ""Create <EmailLog {id}> for <Contact {id} {email} {alias_id}>, <User {id}>, <Mailbox {email}>""
+- Line 867: LOG.d(""From header, new",simple-login/app,2026-09-14T04:27:51.326Z
+20260914T035338.436341279Z-openclaw-sweatlasqa-pilot30-shuffle1-amem-global-sglang,task-6905333b74f22949d97ba9af,3,1,1,ccc0679b-1976-46e6-9de9-6e9fe28d809a,52.49759,match,"SimpleLogin email forwarding flow:
+
+1. handle() receives SMTP envelope and message, determines forward vs reply based on recipient
+2. For forward: handle_forward() looks up alias by rcpt_to email; if alias not found, calls try_auto_create()
+3. If alias not found AND can't auto-create: returns [(Fals",simple-login/app,2026-09-14T04:16:29.022Z
+20260914T035338.436341279Z-openclaw-sweatlasqa-pilot30-shuffle1-amem-global-sglang,task-6905333b74f22949d97ba9af,3,1,2,475e2c95-af0c-4fd3-92a7-0bc6a3835bb3,51.39251,match,"Contact table has UniqueConstraint(""alias_id"", ""website_email"") but NO unique constraint on reply_email. The reply_email column has a non-unique index (unique=False). The generate_reply_email function attempts to create a unique reply_email by checking available_sl_email(), which checks if the email",,2026-09-14T04:51:56.353Z
+20260914T035338.436341279Z-openclaw-sweatlasqa-pilot30-shuffle1-amem-global-sglang,task-6905333b74f22949d97ba9af,3,1,3,50b46470-6669-4a2f-bc8c-4151733514ff,54.277754,match,"Exact log messages from SimpleLogin email_handler.py:
+
+SUCCESSFUL FORWARD:
+- Line 740: LOG.d(""Create %s for %s, %s, %s"", email_log, contact, user, mailbox) → resolves to ""Create <EmailLog {id}> for <Contact {id} {email} {alias_id}>, <User {id}>, <Mailbox {email}>""
+- Line 867: LOG.d(""From header, new",simple-login/app,2026-09-14T04:27:51.326Z
+20260914T035338.436341279Z-openclaw-sweatlasqa-pilot30-shuffle1-amem-global-sglang,task-6905333b74f22949d97ba9af,3,1,4,d5c66f52-1951-4440-a0bc-08a7bb0e2e95,49.916905,match,"SimpleLogin reply resolution mechanism: In the reply phase, when an email arrives with rcpt_to being a reverse-alias, handle_reply() resolves the contact via Contact.get_by(reply_email=normalize_reply_email(rcpt_to)). The reply_email is derived directly from the SMTP envelope's rcpt_to field. The co",simple-login/app,2026-09-14T04:49:57.846Z
+20260914T035345.813663967Z-openclaw-sweatlasqa-pilot30-shuffle2-amem-global-sglang,task-6905333b74f22949d97ba9a7,2,1,1,d66e85ec-97fe-4cf6-b9a2-a99f76f3a485,61.10311000000001,match,"This is a SimpleLogin codebase (email privacy/alias service). Main email processing is in email_handler.py (83KB). Codebase structure: app/ directory, email_handler.py is the main email processing module, cron.py handles scheduled tasks, tasks/ directory for async tasks, tests/ for unit tests, migra",simple-login/app,2026-09-14T03:56:17.964Z
+20260914T035345.813663967Z-openclaw-sweatlasqa-pilot30-shuffle2-amem-global-sglang,task-6905333b74f22949d97ba9a9,3,1,1,d66e85ec-97fe-4cf6-b9a2-a99f76f3a485,58.66724,match,"This is a SimpleLogin codebase (email privacy/alias service). Main email processing is in email_handler.py (83KB). Codebase structure: app/ directory, email_handler.py is the main email processing module, cron.py handles scheduled tasks, tasks/ directory for async tasks, tests/ for unit tests, migra",simple-login/app,2026-09-14T03:56:17.964Z
+20260914T035345.813663967Z-openclaw-sweatlasqa-pilot30-shuffle2-amem-global-sglang,task-6905333b74f22949d97ba9a9,3,1,2,a0f25f88-0777-4de3-b45f-35b0e8303f87,52.24183,match,"Bounce handling: When bounce arrives at VERP address, handle_bounce() dispatches to handle_bounce_forward_phase() or handle_bounce_reply_phase() based on email_log.is_reply flag. In forward phase: email bounced from alias->mailbox. Sets email_log.bounced=True, creates Bounce record, creates RefusedE",,2026-09-14T04:56:27.150Z
+20260914T035345.813663967Z-openclaw-sweatlasqa-pilot30-shuffle2-amem-global-sglang,task-6905333b74f22949d97ba9a9,3,1,3,a618e7c9-2c35-4c80-9cf8-dccc9ee183ab,51.01286,match,"Email forwarding uses ""special@sl.co"" as Reply-To header to hide user's real mailbox email. The reverse-alias (reply_email) is generated by generate_reply_email(): random string + optional contact email (with @ replaced by _at_) + random suffix. In the forward phase, VERP envelope sender is ""bounce+",,2026-09-14T04:57:20.932Z
+20260914T035345.813663967Z-openclaw-sweatlasqa-pilot30-shuffle2-amem-global-sglang,task-6905333b74f22949d97ba9a9,3,1,4,54f9e39c-c2da-4e19-9524-f9449131b0cc,44.80467,match,"VERP format for bounce/failure notifications: New signed format: ""sl.{b32_encoded_payload}.{b32_encoded_signature}@{domain}"" where payload is JSON [verp_type(int), object_id(int), time_min(int)] signed with HMAC-SHA3-224. VerpType: bounce_forward=0, bounce_reply=1, transactional=2. Legacy format: ""b",,2026-09-14T04:55:30.093Z
+20260914T035345.813663967Z-openclaw-sweatlasqa-pilot30-shuffle2-amem-global-sglang,task-6905333b74f22949d97ba9a9,3,1,5,9eeb53cb-cb87-4b1e-a500-600c801bb1e4,36.450058,match,"Mailbox verification uses MAX_ACTIVATION_TRIES=3. verify_mailbox_code() checks: 1) mailbox exists and is unverified, 2) activation record exists with tries < MAX_ACTIVATION_TRIES, 3) code is not older than 15 minutes, 4) code matches. On wrong code, activation.tries is incremented. When tries >= 3, ",,2026-09-14T04:54:09.196Z
+20260914T035345.813663967Z-openclaw-sweatlasqa-pilot30-shuffle2-amem-global-sglang,task-6905333b74f22949d97ba9a9,3,1,6,b55f3b00-76a4-40ca-a90e-524e5548ca9c,37.01979,link,"Job lifecycle: Job model has states ready(0), taken(1), done(2), error(3), with fields: taken(boolean), run_at(timestamp), attempts(integer). Jobs are created via Job.create() with name, payload, and run_at. The job runner polls get_jobs_to_run() which returns jobs that are ready or taken+stale(take",,2026-09-14T04:54:49.961Z
+20260914T035345.813663967Z-openclaw-sweatlasqa-pilot30-shuffle2-amem-global-sglang,task-6905333b74f22949d97ba9ac,1,2,1,d66e85ec-97fe-4cf6-b9a2-a99f76f3a485,49.4352,match,"This is a SimpleLogin codebase (email privacy/alias service). Main email processing is in email_handler.py (83KB). Codebase structure: app/ directory, email_handler.py is the main email processing module, cron.py handles scheduled tasks, tasks/ directory for async tasks, tests/ for unit tests, migra",simple-login/app,2026-09-14T03:56:17.964Z

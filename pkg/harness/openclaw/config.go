@@ -70,6 +70,25 @@ const (
 	// second provider entry rather than passing a raw base URL into the
 	// plugin's own config.
 	losslessClawProviderID = "lossless-claw-llm"
+	// mem0PluginID is the npm package / OpenClaw plugin ID for mem0's
+	// first-party OpenClaw integration (github.com/mem0ai/mem0,
+	// integrations/openclaw, npm "@mem0/openclaw-mem0") — a real OpenClaw
+	// plugin (installed via `openclaw plugins install`, not an MCP stdio
+	// server), pre-baked into this profile's pinned image
+	// (docker/openclaw-mem0), confirmed against the plugin's shipped
+	// openclaw.plugin.json manifest.
+	mem0PluginID = "openclaw-mem0"
+	// mem0LLMAPIKeyEnv is the container-side env var mem0's own source reads
+	// for both its LLM (fact extraction) and embedder calls in open-source
+	// mode — by default exported from the already-staged primary model key;
+	// if a profile configures a distinct mem0 LLM (harness.mem0.llm_*), it's
+	// exported from mem0LLMKeyPath instead — see launcherScript.
+	mem0LLMAPIKeyEnv = "MEM0_LLM_API_KEY"
+	// mem0LLMKeyPath stages a distinct API key for mem0's own LLM/embedder
+	// calls when a profile sets harness.mem0.llm_api_key_env — separate from
+	// modelKeyPath so the primary task model's key and mem0's own key can
+	// differ.
+	mem0LLMKeyPath = "/run/aries/mem0-llm.key"
 	// searxngBaseURL matches the fixed network alias
 	// (pkg/sandbox/docker/docker.go's `networkAlias = "task-sandbox"`) and
 	// port (images/deep-research-bench/Dockerfile) that the DRB task
@@ -239,6 +258,46 @@ type losslessClawPluginConfig struct {
 	ExpansionModel string `json:"expansionModel,omitempty"`
 }
 
+// mem0PluginConfig is @mem0/openclaw-mem0's
+// plugins.entries.openclaw-mem0.config shape (confirmed against the
+// plugin's shipped openclaw.plugin.json configSchema). Mode is always
+// "open-source" here — ARIES only wires the self-hosted path, never mem0's
+// cloud platform (which would need a MEM0_API_KEY instead). UserID is left
+// unset to accept the plugin's own default; every other field (topK,
+// searchThreshold, skills, ...) is likewise left unset to accept the
+// plugin's own defaults, matching the "just get it working" scope this was
+// first wired in for. OSS.LLM/OSS.Embedder route mem0's own internal calls
+// through an OpenAI-compatible endpoint — by default the same one ARIES
+// already configured for the primary task model, or a distinct override
+// (see renderConfig's mem0LLMBaseURL/mem0LLMModel params, sourced from
+// harness.mem0.llm_base_url/llm_model). The API key is deliberately not set
+// here (config fields land in the world-readable rendered JSON); see
+// mem0LLMAPIKeyEnv, exported by launcherScript instead, and referenced via
+// "${MEM0_LLM_API_KEY}" the same way amem/lossless-claw reference their own
+// staged keys. oss.vectorStore is left unset entirely to accept the
+// plugin's own local-storage default — no sidecar container is needed for
+// this to work (see HarnessMem0Config's doc comment in pkg/config).
+type mem0PluginConfig struct {
+	Mode string       `json:"mode"`
+	OSS  mem0OSSConfig `json:"oss"`
+}
+
+type mem0OSSConfig struct {
+	LLM      mem0ProviderConfig `json:"llm"`
+	Embedder mem0ProviderConfig `json:"embedder"`
+}
+
+type mem0ProviderConfig struct {
+	Provider string                   `json:"provider"`
+	Config   mem0ProviderConfigDetail `json:"config"`
+}
+
+type mem0ProviderConfigDetail struct {
+	APIKey  string `json:"apiKey,omitempty"`
+	BaseURL string `json:"baseURL,omitempty"`
+	Model   string `json:"model,omitempty"`
+}
+
 type gatewayConfig struct {
 	Mode   string        `json:"mode"`
 	Auth   gatewayAuth   `json:"auth"`
@@ -295,6 +354,17 @@ type agentDefaults struct {
 	Sandbox      sandboxConfig       `json:"sandbox"`
 	Subagents    *subagentsConfig    `json:"subagents,omitempty"`
 	MemorySearch *memorySearchConfig `json:"memorySearch,omitempty"`
+	Compaction   *compactionConfig   `json:"compaction,omitempty"`
+}
+
+// compactionConfig overrides how long OpenClaw's embedded auto-compaction
+// call may run before being aborted as hung (confirmed against OpenClaw's
+// vendored source, resolveCompactionTimeoutMs reading
+// cfg.agents.defaults.compaction.timeoutSeconds, falling back to its own
+// 180000ms EMBEDDED_COMPACTION_TIMEOUT_MS default when unset). Omitted
+// entirely when unset, matching today's behavior.
+type compactionConfig struct {
+	TimeoutSeconds int `json:"timeoutSeconds,omitempty"`
 }
 
 // memorySearchConfig disables OpenClaw's unrelated, bundled "memory-core"
@@ -353,7 +423,18 @@ var losslessClawToolNames = []string{
 	"lcm_grep", "lcm_describe", "lcm_expand_query",
 }
 
-func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchEnabled bool, searchProvider string, extractEnabled, subagentsEnabled, amemEnabled bool, maxConcurrentSubagents int, amemLLMBaseURL, amemLLMModel string, losslessClawEnabled bool, losslessClawLLMBaseURL, losslessClawLLMModel string) ([]byte, error) {
+// mem0ToolNames is @mem0/openclaw-mem0@1.1.0's full tool surface, with no
+// plugin-ID prefix — confirmed against the plugin's shipped
+// openclaw.plugin.json ("contracts.tools"). A version bump could add/rename
+// tools, in which case this list needs re-capturing from the plugin's
+// manifest (or a live gateway boot log, like amemToolNames) rather than
+// guessed.
+var mem0ToolNames = []string{
+	"memory_search", "memory_add", "memory_get", "memory_list",
+	"memory_update", "memory_delete", "memory_event_list", "memory_event_status",
+}
+
+func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchEnabled bool, searchProvider string, extractEnabled, subagentsEnabled, amemEnabled bool, maxConcurrentSubagents int, amemLLMBaseURL, amemLLMModel string, losslessClawEnabled bool, losslessClawLLMBaseURL, losslessClawLLMModel string, mem0Enabled bool, mem0LLMBaseURL, mem0LLMModel string) ([]byte, error) {
 	if err := validateModel(model); err != nil {
 		return nil, err
 	}
@@ -399,6 +480,11 @@ func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchE
 	}
 	if subagentsEnabled && maxConcurrentSubagents > 0 {
 		configuration.Agents.Defaults.Subagents = &subagentsConfig{MaxConcurrent: maxConcurrentSubagents}
+	}
+	if model.CompactionTimeoutMs > 0 {
+		configuration.Agents.Defaults.Compaction = &compactionConfig{
+			TimeoutSeconds: (model.CompactionTimeoutMs + 999) / 1000,
+		}
 	}
 	var alsoAllow []string
 	pluginEntries := map[string]pluginEntry{}
@@ -507,7 +593,10 @@ func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchE
 			},
 		}
 		pluginAllow = append(pluginAllow, amemPluginID)
-		pluginSlots = map[string]string{"memory": amemPluginID}
+		if pluginSlots == nil {
+			pluginSlots = map[string]string{}
+		}
+		pluginSlots["memory"] = amemPluginID
 		configuration.Agents.Defaults.MemorySearch = &memorySearchConfig{Enabled: false}
 		alsoAllow = append(alsoAllow, amemToolNames...)
 	}
@@ -559,8 +648,72 @@ func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchE
 		entry.Config = &cfg
 		pluginEntries[losslessClawPluginID] = entry
 		pluginAllow = append(pluginAllow, losslessClawPluginID)
-		pluginSlots = map[string]string{"contextEngine": losslessClawPluginID}
+		if pluginSlots == nil {
+			pluginSlots = map[string]string{}
+		}
+		pluginSlots["contextEngine"] = losslessClawPluginID
 		alsoAllow = append(alsoAllow, losslessClawToolNames...)
+	}
+	if mem0Enabled {
+		// mem0 (https://mem0.ai, github.com/mem0ai/mem0,
+		// integrations/openclaw, npm "@mem0/openclaw-mem0") is a real,
+		// first-party OpenClaw plugin pre-installed into this profile's
+		// pinned image (docker/openclaw-mem0) via `openclaw plugins
+		// install`, not an MCP stdio server — confirmed against the
+		// plugin's shipped openclaw.plugin.json manifest. Its tools are
+		// gated by the same sandbox tools.alsoAllow list as every other
+		// plugin here (mem0ToolNames).
+		//
+		// mode "open-source" selects mem0's self-hosted path (as opposed to
+		// "platform", mem0's cloud offering, which needs a MEM0_API_KEY
+		// instead — not wired here). oss.llm/oss.embedder route mem0's own
+		// internal calls through an OpenAI-compatible endpoint (see
+		// mem0PluginConfig's doc comment); the API key is exported
+		// separately by launcherScript under mem0LLMAPIKeyEnv, never placed
+		// in this rendered JSON. oss.vectorStore is left unset, accepting
+		// the plugin's own local-storage default — no sidecar container is
+		// needed for mem0 to work, unlike amem's Qdrant requirement.
+		//
+		// By default this reuses the primary task model/endpoint (empty
+		// mem0LLMBaseURL/mem0LLMModel). A profile can override both
+		// together (harness.mem0.llm_base_url/llm_model/llm_api_key_env) to
+		// point mem0's own calls at a different model, mirroring amem's
+		// equivalent override.
+		llmBaseURL, llmModel := model.BaseURL, model.Model
+		if mem0LLMBaseURL != "" {
+			llmBaseURL = mem0LLMBaseURL
+		}
+		if mem0LLMModel != "" {
+			llmModel = mem0LLMModel
+		}
+		providerCfg := mem0ProviderConfig{
+			Provider: "openai",
+			Config:   mem0ProviderConfigDetail{APIKey: "${" + mem0LLMAPIKeyEnv + "}", BaseURL: llmBaseURL, Model: llmModel},
+		}
+		pluginEntries[mem0PluginID] = pluginEntry{
+			Enabled: true,
+			// allowConversationAccess is required for mem0's autoCapture hook
+			// (agent_end) to fire at all — confirmed via a live gateway run,
+			// which otherwise logs "typed hook \"agent_end\" blocked because
+			// non-bundled plugins must set
+			// plugins.entries.openclaw-mem0.hooks.allowConversationAccess=true"
+			// and silently never captures anything. Same requirement as amem
+			// (see pluginHooksBlock's doc comment) — this is OpenClaw's
+			// generic gate for any non-bundled plugin's agent_end hook, not
+			// something specific to amem.
+			Hooks: &pluginHooksBlock{AllowConversationAccess: true},
+			Config: &mem0PluginConfig{
+				Mode: "open-source",
+				OSS:  mem0OSSConfig{LLM: providerCfg, Embedder: providerCfg},
+			},
+		}
+		pluginAllow = append(pluginAllow, mem0PluginID)
+		if pluginSlots == nil {
+			pluginSlots = map[string]string{}
+		}
+		pluginSlots["memory"] = mem0PluginID
+		configuration.Agents.Defaults.MemorySearch = &memorySearchConfig{Enabled: false}
+		alsoAllow = append(alsoAllow, mem0ToolNames...)
 	}
 	if len(pluginEntries) > 0 || len(pluginAllow) > 0 || len(pluginSlots) > 0 {
 		configuration.Plugins = &pluginsConfig{Entries: pluginEntries, Allow: pluginAllow, Slots: pluginSlots}
@@ -671,7 +824,7 @@ func validEnvironmentName(value string) bool {
 	return value != ""
 }
 
-func launcherScript(apiKeyEnv, realtimeAPIKeyEnv string, extractEnabled, firecrawlEnabled, tavilySearchEnabled, amemEnabled, amemLLMOverride, losslessClawLLMOverride bool) []byte {
+func launcherScript(apiKeyEnv, realtimeAPIKeyEnv string, extractEnabled, firecrawlEnabled, tavilySearchEnabled, amemEnabled, amemLLMOverride, losslessClawLLMOverride, mem0Enabled, mem0LLMOverride bool) []byte {
 	script := "#!/bin/sh\nset -eu\nmodel_key=$(cat " + modelKeyPath + ")\ngateway_key=$(cat " + gatewayKeyPath + ")\nexport " + apiKeyEnv + "=\"$model_key\"\nexport " + gatewayTokenEnv + "=\"$gateway_key\"\n"
 	if realtimeAPIKeyEnv != "" {
 		script += "realtime_key=$(cat " + realtimeKeyPath + ")\nexport " + realtimeAPIKeyEnv + "=\"$realtime_key\"\nunset realtime_key\n"
@@ -702,6 +855,18 @@ func launcherScript(apiKeyEnv, realtimeAPIKeyEnv string, extractEnabled, firecra
 		// override, renderConfig never registers the extra provider entry
 		// that would reference this env var at all.
 		script += "lcm_llm_key=$(cat " + losslessClawLLMKeyPath + ")\nexport " + losslessClawLLMAPIKeyEnv + "=\"$lcm_llm_key\"\nunset lcm_llm_key\n"
+	}
+	if mem0LLMOverride {
+		// A profile configured a distinct LLM/embedder for mem0's own internal
+		// calls (harness.mem0.llm_*, see Options.Mem0LLMAPIKeyEnv) — its key is
+		// staged separately, never derived from the primary model key.
+		script += "mem0_llm_key=$(cat " + mem0LLMKeyPath + ")\nexport " + mem0LLMAPIKeyEnv + "=\"$mem0_llm_key\"\nunset mem0_llm_key\n"
+	} else if mem0Enabled {
+		// Default: reuses the already-loaded primary model key rather than
+		// staging a separate secret file — mem0's own LLM/embedder calls are
+		// configured (see mem0PluginConfig) to route through the same
+		// OpenAI-compatible endpoint as the primary task model.
+		script += "export " + mem0LLMAPIKeyEnv + "=\"$model_key\"\n"
 	}
 	script += "unset model_key gateway_key\nexec \"$@\"\n"
 	return []byte(script)

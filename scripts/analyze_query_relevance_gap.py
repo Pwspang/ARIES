@@ -46,7 +46,7 @@ STOPWORDS = {
 
 
 def tokenize(text: str) -> set[str]:
-    if not text:
+    if not isinstance(text, str) or not text:
         return set()
     return {t.lower() for t in TOKEN_RE.findall(text)} - STOPWORDS
 

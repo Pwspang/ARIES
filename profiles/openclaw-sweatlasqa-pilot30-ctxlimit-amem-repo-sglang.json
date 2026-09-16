@@ -74,7 +74,8 @@
     "base_url": "http://192.168.111.200:8100/v1",
     "api_key_env": "SGLANG_API_KEY",
     "id": "Qwen/Qwen3.6-35B-A3B-FP8",
-    "context_window_tokens": 96000
+    "context_window_tokens": 96000,
+    "compaction_timeout_ms": 900000
   },
   "output_dir": "runs/ctxlimit/"
 }
