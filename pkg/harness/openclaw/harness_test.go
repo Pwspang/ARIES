@@ -1280,6 +1280,159 @@ func TestStartStagesAMEMLLMKeyWhenConfigured(t *testing.T) {
 	}
 }
 
+// The fork's post-BFS cross-encoder reranker reads AMEM_RERANK_MODEL/
+// AMEM_RERANK_THRESHOLD/AMEM_RERANK_DEVICE as plain process environment
+// variables, not from the plugin's JSON config schema (see
+// third_party/amem-fork/packages/amem-core/src/reranker.ts) — so, unlike the
+// LLM override above, they must land in containerConfig.Env rather than the
+// rendered openclaw.json.
+func TestStartSetsAMEMRerankEnvWhenConfigured(t *testing.T) {
+	fake := newFakeDocker()
+	threshold := 0.35
+	manager, err := New(Options{
+		Image: testOpenClawImage, OutputDir: t.TempDir(), StartTimeout: time.Second, AgentTimeout: time.Second,
+		AMEMEnabled: true, AMEMQdrantImage: "qdrant/qdrant:v1.19.0",
+		AMEMRerankModel: "Xenova/ms-marco-MiniLM-L-6-v2", AMEMRerankThreshold: &threshold, AMEMRerankDevice: "cpu",
+		APIKeyLookup: func(string) ([]byte, bool) { return []byte("model-secret"), true },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.client = fake
+	manager.newID = func() (string, error) { return "attempt", nil }
+
+	request := core.HarnessRequest{RunID: "run-1", TaskID: "fix-git", Endpoint: endpointFiles(t), Model: testModel(), Timeout: 37 * time.Second}
+	if err := manager.Start(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(context.Background())
+
+	for _, want := range []string{
+		"AMEM_RERANK_MODEL=Xenova/ms-marco-MiniLM-L-6-v2",
+		"AMEM_RERANK_THRESHOLD=0.35",
+		"AMEM_RERANK_DEVICE=cpu",
+	} {
+		found := false
+		for _, env := range fake.created.Config.Env {
+			if env == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("container Env = %#v, want %q", fake.created.Config.Env, want)
+		}
+	}
+}
+
+// disable_goal_embedding/disable_rerank are the ablation study's control-arm
+// switches: unlike AMEMRerankThreshold (which only tunes the reranker's
+// filter), these fully disable each method — AMEM_RERANK_ENABLED=false skips
+// the cross-encoder pass entirely, and AMEM_DISABLE_GOAL_EMBED=true forces
+// current_task to have no effect regardless of what the agent passes, since
+// current_task has no other config surface to force off.
+func TestStartSetsAMEMAblationEnvWhenDisabled(t *testing.T) {
+	fake := newFakeDocker()
+	manager, err := New(Options{
+		Image: testOpenClawImage, OutputDir: t.TempDir(), StartTimeout: time.Second, AgentTimeout: time.Second,
+		AMEMEnabled: true, AMEMQdrantImage: "qdrant/qdrant:v1.19.0",
+		AMEMDisableGoalEmbedding: true, AMEMDisableRerank: true,
+		APIKeyLookup: func(string) ([]byte, bool) { return []byte("model-secret"), true },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.client = fake
+	manager.newID = func() (string, error) { return "attempt", nil }
+
+	request := core.HarnessRequest{RunID: "run-1", TaskID: "fix-git", Endpoint: endpointFiles(t), Model: testModel(), Timeout: 37 * time.Second}
+	if err := manager.Start(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(context.Background())
+
+	for _, want := range []string{
+		"AMEM_RERANK_ENABLED=false",
+		"AMEM_DISABLE_GOAL_EMBED=true",
+	} {
+		found := false
+		for _, env := range fake.created.Config.Env {
+			if env == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("container Env = %#v, want %q", fake.created.Config.Env, want)
+		}
+	}
+}
+
+// Neither ablation switch should appear in Env when left at its default
+// (false) — only an explicit disable should add anything, so a profile that
+// never sets these fields behaves exactly as it did before they existed.
+func TestStartOmitsAMEMAblationEnvByDefault(t *testing.T) {
+	fake := newFakeDocker()
+	manager, err := New(Options{
+		Image: testOpenClawImage, OutputDir: t.TempDir(), StartTimeout: time.Second, AgentTimeout: time.Second,
+		AMEMEnabled: true, AMEMQdrantImage: "qdrant/qdrant:v1.19.0",
+		APIKeyLookup: func(string) ([]byte, bool) { return []byte("model-secret"), true },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.client = fake
+	manager.newID = func() (string, error) { return "attempt", nil }
+
+	request := core.HarnessRequest{RunID: "run-1", TaskID: "fix-git", Endpoint: endpointFiles(t), Model: testModel(), Timeout: 37 * time.Second}
+	if err := manager.Start(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(context.Background())
+
+	for _, env := range fake.created.Config.Env {
+		if strings.HasPrefix(env, "AMEM_RERANK_ENABLED=") || strings.HasPrefix(env, "AMEM_DISABLE_GOAL_EMBED=") {
+			t.Fatalf("container Env = %#v, want no ablation entries by default", fake.created.Config.Env)
+		}
+	}
+}
+
+// disable_task_trace_fallback IS a real plugin JSON config field (unlike the
+// rerank knobs above), so it must render into plugins.entries.openclaw-amem
+// .config, not the container environment.
+func TestStartRendersAMEMDisableTaskTraceFallbackWhenConfigured(t *testing.T) {
+	fake := newFakeDocker()
+	manager, err := New(Options{
+		Image: testOpenClawImage, OutputDir: t.TempDir(), StartTimeout: time.Second, AgentTimeout: time.Second,
+		AMEMEnabled: true, AMEMQdrantImage: "qdrant/qdrant:v1.19.0",
+		AMEMDisableTaskTraceFallback: true,
+		APIKeyLookup:                 func(string) ([]byte, bool) { return []byte("model-secret"), true },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.client = fake
+	manager.newID = func() (string, error) { return "attempt", nil }
+
+	request := core.HarnessRequest{RunID: "run-1", TaskID: "fix-git", Endpoint: endpointFiles(t), Model: testModel(), Timeout: 37 * time.Second}
+	if err := manager.Start(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(context.Background())
+
+	retained, err := os.ReadFile(filepath.Join(manager.outputDir, request.TaskID, "harness-turn-01", "openclaw.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var configuration openClawConfig
+	if err := json.Unmarshal(retained, &configuration); err != nil {
+		t.Fatal(err)
+	}
+	entry := configuration.Plugins.Entries[amemPluginID]
+	block, blockOK := entry.Config.(map[string]any)
+	if !blockOK || block["disableTaskTraceFallback"] != true {
+		t.Fatalf("plugins.entries[%q].config = %#v, want disableTaskTraceFallback=true", amemPluginID, entry.Config)
+	}
+}
+
 // A missing amem LLM credential must fail Start outright, same rationale as
 // Firecrawl/Tavily: the profile explicitly requested a distinct model for
 // amem, so silently falling back to the primary model would mask the

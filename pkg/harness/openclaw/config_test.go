@@ -23,7 +23,7 @@ func testModel() core.ModelConfig {
 }
 
 func TestRenderConfigLocksProviderSharedSSHAndPlaceholder(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, false, false, 0, "", "", false, "", "", false, "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestRenderConfigLocksProviderSharedSSHAndPlaceholder(t *testing.T) {
 }
 
 func TestRenderConfigOmitsMaxTokensWhenUnset(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, false, false, 0, "", "", false, "", "", false, "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestRenderConfigOmitsMaxTokensWhenUnset(t *testing.T) {
 func TestRenderConfigSetsMaxTokensWhenConfigured(t *testing.T) {
 	model := testModel()
 	model.MaxOutputTokens = 32000
-	content, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", false, "", "", false, "", "")
+	content, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestRenderConfigSetsMaxTokensWhenConfigured(t *testing.T) {
 }
 
 func TestRenderConfigOmitsContextWindowWhenUnset(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, false, false, 0, "", "", false, "", "", false, "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestRenderConfigOmitsContextWindowWhenUnset(t *testing.T) {
 func TestRenderConfigSetsContextWindowWhenConfigured(t *testing.T) {
 	model := testModel()
 	model.ContextWindowTokens = 32000
-	content, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", false, "", "", false, "", "")
+	content, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestRenderConfigSetsContextWindowWhenConfigured(t *testing.T) {
 }
 
 func TestRenderConfigOmitsCompactionWhenUnset(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, false, false, 0, "", "", false, "", "", false, "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestRenderConfigOmitsCompactionWhenUnset(t *testing.T) {
 func TestRenderConfigSetsCompactionTimeoutWhenConfigured(t *testing.T) {
 	model := testModel()
 	model.CompactionTimeoutMs = 600000
-	content, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", false, "", "", false, "", "")
+	content, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestRenderConfigSetsCompactionTimeoutWhenConfigured(t *testing.T) {
 func TestRenderConfigRoundsCompactionTimeoutUpToWholeSeconds(t *testing.T) {
 	model := testModel()
 	model.CompactionTimeoutMs = 1500
-	content, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", false, "", "", false, "", "")
+	content, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestRenderConfigSelectsSGLangProviderWithoutSerializingKey(t *testing.T) {
 	model := testModel()
 	model.Provider = "sglang"
 	model.APIKeyEnv = "SGLANG_API_KEY"
-	content, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", false, "", "", false, "", "")
+	content, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestRenderConfigNormalizesAndStrictlyValidatesSGLangBaseURL(t *testing.T) {
 	model := testModel()
 	model.Provider = "sglang"
 	model.BaseURL += "/"
-	content, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", false, "", "", false, "", "")
+	content, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +189,7 @@ func TestRenderConfigNormalizesAndStrictlyValidatesSGLangBaseURL(t *testing.T) {
 	}
 	for _, invalid := range []string{"http://host/v1/v1", "http://host/v1?", "http://host/v%31"} {
 		model.BaseURL = invalid
-		if _, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", false, "", "", false, "", ""); err == nil {
+		if _, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", ""); err == nil {
 			t.Fatalf("accepted SGLang base URL %q", invalid)
 		}
 	}
@@ -209,7 +209,7 @@ func TestRenderConfigRejectsInvalidInputs(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			model, endpoint := testModel(), testEndpoint()
 			mutate(&model, &endpoint)
-			if _, err := renderConfig(model, endpoint, false, "", false, false, false, 0, "", "", false, "", "", false, "", ""); err == nil {
+			if _, err := renderConfig(model, endpoint, false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", ""); err == nil {
 				t.Fatal("invalid input was accepted")
 			}
 		})
@@ -219,13 +219,13 @@ func TestRenderConfigRejectsInvalidInputs(t *testing.T) {
 func TestRenderConfigAcceptsLowercaseEnvironmentName(t *testing.T) {
 	model := testModel()
 	model.APIKeyEnv = "aries_fake_api_key"
-	if _, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", false, "", "", false, "", ""); err != nil {
+	if _, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", ""); err != nil {
 		t.Fatalf("renderConfig() rejected a valid environment name: %v", err)
 	}
 }
 
 func TestRenderConfigOmitsWebSearchWhenDisabled(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, false, false, 0, "", "", false, "", "", false, "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +245,7 @@ func TestRenderConfigOmitsWebSearchWhenDisabled(t *testing.T) {
 }
 
 func TestRenderConfigEnablesSearXNGWebSearch(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), true, "", false, false, false, 0, "", "", false, "", "", false, "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), true, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +278,7 @@ func TestRenderConfigEnablesSearXNGWebSearch(t *testing.T) {
 }
 
 func TestRenderConfigOmitsAMEMPluginWhenDisabled(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, false, false, 0, "", "", false, "", "", false, "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,7 +299,7 @@ func TestRenderConfigOmitsAMEMPluginWhenDisabled(t *testing.T) {
 
 func TestRenderConfigEnablesAMEMPlugin(t *testing.T) {
 	model := testModel()
-	content, err := renderConfig(model, testEndpoint(), false, "", false, false, true, 0, "", "", false, "", "", false, "", "")
+	content, err := renderConfig(model, testEndpoint(), false, "", false, false, true, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +346,7 @@ func TestRenderConfigEnablesAMEMPlugin(t *testing.T) {
 
 func TestRenderConfigAMEMPluginOverridesLLM(t *testing.T) {
 	model := testModel()
-	content, err := renderConfig(model, testEndpoint(), false, "", false, false, true, 0, "https://api.deepseek.com", "deepseek-v4-flash", false, "", "", false, "", "")
+	content, err := renderConfig(model, testEndpoint(), false, "", false, false, true, 0, "https://api.deepseek.com", "deepseek-v4-flash", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,7 +362,7 @@ func TestRenderConfigAMEMPluginOverridesLLM(t *testing.T) {
 }
 
 func TestRenderConfigOmitsLosslessClawPluginWhenDisabled(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, false, false, 0, "", "", false, "", "", false, "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -380,7 +380,7 @@ func TestRenderConfigOmitsLosslessClawPluginWhenDisabled(t *testing.T) {
 
 func TestRenderConfigEnablesLosslessClawPluginReusingPrimaryModel(t *testing.T) {
 	model := testModel()
-	content, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", true, "", "", false, "", "")
+	content, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", false, true, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -433,7 +433,7 @@ func TestRenderConfigEnablesLosslessClawPluginReusingPrimaryModel(t *testing.T) 
 
 func TestRenderConfigLosslessClawPluginOverridesLLM(t *testing.T) {
 	model := testModel()
-	content, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", true, "https://api.deepseek.com", "deepseek-v4-flash", false, "", "")
+	content, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", false, true, "https://api.deepseek.com", "deepseek-v4-flash", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -466,7 +466,7 @@ func TestRenderConfigLosslessClawPluginOverridesLLM(t *testing.T) {
 }
 
 func TestRenderConfigOmitsMem0PluginWhenDisabled(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, false, false, 0, "", "", false, "", "", false, "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -487,7 +487,7 @@ func TestRenderConfigOmitsMem0PluginWhenDisabled(t *testing.T) {
 
 func TestRenderConfigEnablesMem0Plugin(t *testing.T) {
 	model := testModel()
-	content, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", false, "", "", true, "", "")
+	content, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", true, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -548,7 +548,7 @@ func TestRenderConfigEnablesMem0Plugin(t *testing.T) {
 
 func TestRenderConfigMem0PluginOverridesLLM(t *testing.T) {
 	model := testModel()
-	content, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", false, "", "", true, "https://api.deepseek.com", "deepseek-v4-flash")
+	content, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", true, "", "https://api.deepseek.com", "deepseek-v4-flash", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -576,7 +576,7 @@ func TestRenderConfigRejectsMem0AndAMEMSameSlotByDesign(t *testing.T) {
 	// but document renderConfig's own last-wins behavior here too so a
 	// future refactor doesn't assume calling both is safe at this layer.
 	model := testModel()
-	content, err := renderConfig(model, testEndpoint(), false, "", false, false, true, 0, "", "", false, "", "", true, "", "")
+	content, err := renderConfig(model, testEndpoint(), false, "", false, false, true, 0, "", "", false, false, "", "", true, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -597,7 +597,7 @@ func TestRenderConfigMergesAMEMAndLosslessClawSlotsTogether(t *testing.T) {
 	// amem+lossless-claw and mem0+lossless-claw are legitimate combinations
 	// that must not clobber one another's slot entry.
 	model := testModel()
-	content, err := renderConfig(model, testEndpoint(), false, "", false, false, true, 0, "", "", true, "", "", false, "", "")
+	content, err := renderConfig(model, testEndpoint(), false, "", false, false, true, 0, "", "", false, true, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -614,7 +614,7 @@ func TestRenderConfigMergesAMEMAndLosslessClawSlotsTogether(t *testing.T) {
 }
 
 func TestRenderConfigEnablesTavilyExtractAlongsideSearXNGSearch(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), true, "", true, false, false, 0, "", "", false, "", "", false, "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), true, "", true, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -651,7 +651,7 @@ func TestRenderConfigEnablesTavilyExtractAlongsideSearXNGSearch(t *testing.T) {
 }
 
 func TestRenderConfigUsesFirecrawlAsSearchProvider(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), true, "firecrawl", false, false, false, 0, "", "", false, "", "", false, "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), true, "firecrawl", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -679,7 +679,7 @@ func TestRenderConfigUsesFirecrawlAsSearchProvider(t *testing.T) {
 }
 
 func TestRenderConfigCombinesFirecrawlSearchWithTavilyExtract(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), true, "firecrawl", true, false, false, 0, "", "", false, "", "", false, "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), true, "firecrawl", true, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -700,7 +700,7 @@ func TestRenderConfigCombinesFirecrawlSearchWithTavilyExtract(t *testing.T) {
 }
 
 func TestRenderConfigUsesTavilyAsSearchProvider(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), true, "tavily", false, false, false, 0, "", "", false, "", "", false, "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), true, "tavily", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -728,7 +728,7 @@ func TestRenderConfigUsesTavilyAsSearchProvider(t *testing.T) {
 }
 
 func TestRenderConfigTavilySearchAndExtractShareOnePluginEntry(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), true, "tavily", true, false, false, 0, "", "", false, "", "", false, "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), true, "tavily", true, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -751,7 +751,7 @@ func TestRenderConfigTavilySearchAndExtractShareOnePluginEntry(t *testing.T) {
 }
 
 func TestRenderConfigIgnoresExtractWhenWebSearchDisabled(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, "", true, false, false, 0, "", "", false, "", "", false, "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), false, "", true, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -768,7 +768,7 @@ func TestRenderConfigIgnoresExtractWhenWebSearchDisabled(t *testing.T) {
 }
 
 func TestRenderConfigAllowsSubagentsWhenEnabled(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, true, false, 0, "", "", false, "", "", false, "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, true, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -782,7 +782,7 @@ func TestRenderConfigAllowsSubagentsWhenEnabled(t *testing.T) {
 }
 
 func TestRenderConfigSetsMaxConcurrentSubagentsWhenEnabled(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, true, false, 2, "", "", false, "", "", false, "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, true, false, 2, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -796,7 +796,7 @@ func TestRenderConfigSetsMaxConcurrentSubagentsWhenEnabled(t *testing.T) {
 }
 
 func TestRenderConfigOmitsSubagentsBlockWhenNoLimitSet(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, true, false, 0, "", "", false, "", "", false, "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, true, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -810,7 +810,7 @@ func TestRenderConfigOmitsSubagentsBlockWhenNoLimitSet(t *testing.T) {
 }
 
 func TestRenderConfigIgnoresMaxConcurrentWhenSubagentsDisabled(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, false, false, 2, "", "", false, "", "", false, "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, false, false, 2, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -824,7 +824,7 @@ func TestRenderConfigIgnoresMaxConcurrentWhenSubagentsDisabled(t *testing.T) {
 }
 
 func TestLauncherUsesFileSecretAndDirectExec(t *testing.T) {
-	script := string(launcherScript("ARIES_FAKE_API_KEY", "OPENAI_API_KEY", false, false, false, false, false, false, false, false))
+	script := string(launcherScript("ARIES_FAKE_API_KEY", "OPENAI_API_KEY", false, false, false, false, false, false, false, false, false, false))
 	for _, required := range []string{"model_key=$(cat /run/aries/model.key)", "gateway_key=$(cat /run/aries/gateway.key)", "export ARIES_FAKE_API_KEY=\"$model_key\"", "export OPENCLAW_GATEWAY_TOKEN=\"$gateway_key\"", "exec \"$@\""} {
 		if !strings.Contains(script, required) {
 			t.Fatalf("launcher missing %q: %s", required, script)
@@ -835,40 +835,40 @@ func TestLauncherUsesFileSecretAndDirectExec(t *testing.T) {
 			t.Fatalf("launcher missing realtime export %q: %s", required, script)
 		}
 	}
-	agentScript := string(launcherScript("ARIES_FAKE_API_KEY", "", false, false, false, false, false, false, false, false))
+	agentScript := string(launcherScript("ARIES_FAKE_API_KEY", "", false, false, false, false, false, false, false, false, false, false))
 	if strings.Contains(agentScript, "realtime.key") || strings.Contains(agentScript, "OPENAI_API_KEY") {
 		t.Fatalf("agent launcher exports realtime key: %s", agentScript)
 	}
 }
 
 func TestLauncherExportsTavilyKeyWhenExtractEnabled(t *testing.T) {
-	script := string(launcherScript("ARIES_FAKE_API_KEY", "", true, false, false, false, false, false, false, false))
+	script := string(launcherScript("ARIES_FAKE_API_KEY", "", true, false, false, false, false, false, false, false, false, false))
 	for _, required := range []string{"tavily_key=$(cat /run/aries/tavily.key)", "export TAVILY_API_KEY=\"$tavily_key\"", "unset tavily_key"} {
 		if !strings.Contains(script, required) {
 			t.Fatalf("launcher missing tavily export %q: %s", required, script)
 		}
 	}
-	disabledScript := string(launcherScript("ARIES_FAKE_API_KEY", "", false, false, false, false, false, false, false, false))
+	disabledScript := string(launcherScript("ARIES_FAKE_API_KEY", "", false, false, false, false, false, false, false, false, false, false))
 	if strings.Contains(disabledScript, "tavily.key") || strings.Contains(disabledScript, "TAVILY_API_KEY") {
 		t.Fatalf("launcher exports tavily key when extract is disabled: %s", disabledScript)
 	}
 }
 
 func TestLauncherExportsFirecrawlKeyWhenEnabled(t *testing.T) {
-	script := string(launcherScript("ARIES_FAKE_API_KEY", "", false, true, false, false, false, false, false, false))
+	script := string(launcherScript("ARIES_FAKE_API_KEY", "", false, true, false, false, false, false, false, false, false, false))
 	for _, required := range []string{"firecrawl_key=$(cat /run/aries/firecrawl.key)", "export FIRECRAWL_API_KEY=\"$firecrawl_key\"", "unset firecrawl_key"} {
 		if !strings.Contains(script, required) {
 			t.Fatalf("launcher missing firecrawl export %q: %s", required, script)
 		}
 	}
-	disabledScript := string(launcherScript("ARIES_FAKE_API_KEY", "", false, false, false, false, false, false, false, false))
+	disabledScript := string(launcherScript("ARIES_FAKE_API_KEY", "", false, false, false, false, false, false, false, false, false, false))
 	if strings.Contains(disabledScript, "firecrawl.key") || strings.Contains(disabledScript, "FIRECRAWL_API_KEY") {
 		t.Fatalf("launcher exports firecrawl key when disabled: %s", disabledScript)
 	}
 }
 
 func TestLauncherExportsTavilyKeyWhenSearchProviderEnabled(t *testing.T) {
-	script := string(launcherScript("ARIES_FAKE_API_KEY", "", false, false, true, false, false, false, false, false))
+	script := string(launcherScript("ARIES_FAKE_API_KEY", "", false, false, true, false, false, false, false, false, false, false))
 	for _, required := range []string{"tavily_key=$(cat /run/aries/tavily.key)", "export TAVILY_API_KEY=\"$tavily_key\"", "unset tavily_key"} {
 		if !strings.Contains(script, required) {
 			t.Fatalf("launcher missing tavily export %q: %s", required, script)
@@ -876,18 +876,18 @@ func TestLauncherExportsTavilyKeyWhenSearchProviderEnabled(t *testing.T) {
 	}
 	// The export must fire exactly once even if both extract and the tavily
 	// search provider are enabled together (same underlying credential/env var).
-	combinedScript := string(launcherScript("ARIES_FAKE_API_KEY", "", true, false, true, false, false, false, false, false))
+	combinedScript := string(launcherScript("ARIES_FAKE_API_KEY", "", true, false, true, false, false, false, false, false, false, false))
 	if strings.Count(combinedScript, "export TAVILY_API_KEY=") != 1 {
 		t.Fatalf("launcher exported TAVILY_API_KEY more than once: %s", combinedScript)
 	}
-	disabledScript := string(launcherScript("ARIES_FAKE_API_KEY", "", false, false, false, false, false, false, false, false))
+	disabledScript := string(launcherScript("ARIES_FAKE_API_KEY", "", false, false, false, false, false, false, false, false, false, false))
 	if strings.Contains(disabledScript, "tavily.key") || strings.Contains(disabledScript, "TAVILY_API_KEY") {
 		t.Fatalf("launcher exports tavily key when disabled: %s", disabledScript)
 	}
 }
 
 func TestLauncherExportsLosslessClawLLMKeyOnlyWhenOverridden(t *testing.T) {
-	script := string(launcherScript("ARIES_FAKE_API_KEY", "", false, false, false, false, false, true, false, false))
+	script := string(launcherScript("ARIES_FAKE_API_KEY", "", false, false, false, false, false, true, false, false, false, false))
 	for _, required := range []string{"lcm_llm_key=$(cat /run/aries/lossless-claw-llm.key)", "export LOSSLESS_CLAW_LLM_API_KEY=\"$lcm_llm_key\"", "unset lcm_llm_key"} {
 		if !strings.Contains(script, required) {
 			t.Fatalf("launcher missing lossless-claw LLM export %q: %s", required, script)
@@ -896,7 +896,7 @@ func TestLauncherExportsLosslessClawLLMKeyOnlyWhenOverridden(t *testing.T) {
 	// Unlike amem, lossless-claw's default (unset override) path never
 	// exports the env var at all: renderConfig never registers the extra
 	// provider entry that would reference it.
-	defaultScript := string(launcherScript("ARIES_FAKE_API_KEY", "", false, false, false, false, false, false, false, false))
+	defaultScript := string(launcherScript("ARIES_FAKE_API_KEY", "", false, false, false, false, false, false, false, false, false, false))
 	if strings.Contains(defaultScript, "lossless-claw-llm.key") || strings.Contains(defaultScript, "LOSSLESS_CLAW_LLM_API_KEY") {
 		t.Fatalf("launcher exports lossless-claw LLM key without an override: %s", defaultScript)
 	}
@@ -906,20 +906,20 @@ func TestLauncherExportsMem0LLMKey(t *testing.T) {
 	// Like amem, mem0's default (unset override) path reuses the
 	// already-loaded primary model key rather than staging a separate secret
 	// file.
-	defaultScript := string(launcherScript("ARIES_FAKE_API_KEY", "", false, false, false, false, false, false, true, false))
+	defaultScript := string(launcherScript("ARIES_FAKE_API_KEY", "", false, false, false, false, false, false, true, false, false, false))
 	if !strings.Contains(defaultScript, "export MEM0_LLM_API_KEY=\"$model_key\"") {
 		t.Fatalf("launcher missing default mem0 LLM export: %s", defaultScript)
 	}
 	if strings.Contains(defaultScript, "mem0-llm.key") {
 		t.Fatalf("launcher stages a separate mem0 LLM key file without an override: %s", defaultScript)
 	}
-	overrideScript := string(launcherScript("ARIES_FAKE_API_KEY", "", false, false, false, false, false, false, true, true))
+	overrideScript := string(launcherScript("ARIES_FAKE_API_KEY", "", false, false, false, false, false, false, true, true, false, false))
 	for _, required := range []string{"mem0_llm_key=$(cat /run/aries/mem0-llm.key)", "export MEM0_LLM_API_KEY=\"$mem0_llm_key\"", "unset mem0_llm_key"} {
 		if !strings.Contains(overrideScript, required) {
 			t.Fatalf("launcher missing mem0 LLM override export %q: %s", required, overrideScript)
 		}
 	}
-	disabledScript := string(launcherScript("ARIES_FAKE_API_KEY", "", false, false, false, false, false, false, false, false))
+	disabledScript := string(launcherScript("ARIES_FAKE_API_KEY", "", false, false, false, false, false, false, false, false, false, false))
 	if strings.Contains(disabledScript, "MEM0_LLM_API_KEY") || strings.Contains(disabledScript, "mem0-llm.key") {
 		t.Fatalf("launcher exports mem0 LLM key when mem0 is disabled: %s", disabledScript)
 	}

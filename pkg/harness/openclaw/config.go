@@ -89,6 +89,17 @@ const (
 	// modelKeyPath so the primary task model's key and mem0's own key can
 	// differ.
 	mem0LLMKeyPath = "/run/aries/mem0-llm.key"
+	// mem0PlatformAPIKeyEnv is the fixed container-side env var mem0's own
+	// source reads for its platform-mode account API key (the plugin's
+	// configSchema's top-level "apiKey" description names this literal env
+	// var, unlike mem0LLMAPIKeyEnv which ARIES itself chose) — always
+	// exported from mem0PlatformKeyPath, staged from the host env var a
+	// profile names via harness.mem0.api_key_env; see launcherScript.
+	mem0PlatformAPIKeyEnv = "MEM0_API_KEY"
+	// mem0PlatformKeyPath stages the mem0 platform account API key when a
+	// profile sets harness.mem0.mode "platform" — separate from
+	// mem0LLMKeyPath, which is open-source-mode only.
+	mem0PlatformKeyPath = "/run/aries/mem0-platform.key"
 	// searxngBaseURL matches the fixed network alias
 	// (pkg/sandbox/docker/docker.go's `networkAlias = "task-sandbox"`) and
 	// port (images/deep-research-bench/Dockerfile) that the DRB task
@@ -240,6 +251,11 @@ type amemPluginConfig struct {
 	LLMProvider string `json:"llmProvider"`
 	LLMBaseURL  string `json:"llmBaseURL"`
 	LLMModel    string `json:"llmModel"`
+	// DisableTaskTraceFallback opts out of the fork's previous-turn
+	// goal-trace fallback for memory_search's current_task (see
+	// AmemPluginConfig.disableTaskTraceFallback in the fork's storage.ts).
+	// Omitted (false) leaves the fallback on, which is the fork's default.
+	DisableTaskTraceFallback bool `json:"disableTaskTraceFallback,omitempty"`
 }
 
 // losslessClawPluginConfig is lossless-claw's
@@ -278,8 +294,14 @@ type losslessClawPluginConfig struct {
 // plugin's own local-storage default — no sidecar container is needed for
 // this to work (see HarnessMem0Config's doc comment in pkg/config).
 type mem0PluginConfig struct {
-	Mode string       `json:"mode"`
-	OSS  mem0OSSConfig `json:"oss"`
+	Mode string `json:"mode"`
+	// APIKey/BaseURL are platform-mode only (mem0PluginConfig's own
+	// configSchema puts them as top-level siblings of "oss", never nested
+	// under it) — always the "${MEM0_API_KEY}" placeholder syntax, never a
+	// literal secret; see renderConfig's mem0 block.
+	APIKey  string        `json:"apiKey,omitempty"`
+	BaseURL string        `json:"baseURL,omitempty"`
+	OSS     mem0OSSConfig `json:"oss,omitzero"`
 }
 
 type mem0OSSConfig struct {
@@ -434,7 +456,7 @@ var mem0ToolNames = []string{
 	"memory_update", "memory_delete", "memory_event_list", "memory_event_status",
 }
 
-func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchEnabled bool, searchProvider string, extractEnabled, subagentsEnabled, amemEnabled bool, maxConcurrentSubagents int, amemLLMBaseURL, amemLLMModel string, losslessClawEnabled bool, losslessClawLLMBaseURL, losslessClawLLMModel string, mem0Enabled bool, mem0LLMBaseURL, mem0LLMModel string) ([]byte, error) {
+func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchEnabled bool, searchProvider string, extractEnabled, subagentsEnabled, amemEnabled bool, maxConcurrentSubagents int, amemLLMBaseURL, amemLLMModel string, amemDisableTaskTraceFallback bool, losslessClawEnabled bool, losslessClawLLMBaseURL, losslessClawLLMModel string, mem0Enabled bool, mem0Mode, mem0LLMBaseURL, mem0LLMModel, mem0PlatformBaseURL string) ([]byte, error) {
 	if err := validateModel(model); err != nil {
 		return nil, err
 	}
@@ -587,9 +609,10 @@ func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchE
 			Enabled: true,
 			Hooks:   &pluginHooksBlock{AllowConversationAccess: true},
 			Config: &amemPluginConfig{
-				LLMProvider: "openai",
-				LLMBaseURL:  llmBaseURL,
-				LLMModel:    llmModel,
+				LLMProvider:              "openai",
+				LLMBaseURL:               llmBaseURL,
+				LLMModel:                 llmModel,
+				DisableTaskTraceFallback: amemDisableTaskTraceFallback,
 			},
 		}
 		pluginAllow = append(pluginAllow, amemPluginID)
@@ -664,31 +687,44 @@ func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchE
 		// gated by the same sandbox tools.alsoAllow list as every other
 		// plugin here (mem0ToolNames).
 		//
-		// mode "open-source" selects mem0's self-hosted path (as opposed to
-		// "platform", mem0's cloud offering, which needs a MEM0_API_KEY
-		// instead — not wired here). oss.llm/oss.embedder route mem0's own
-		// internal calls through an OpenAI-compatible endpoint (see
-		// mem0PluginConfig's doc comment); the API key is exported
-		// separately by launcherScript under mem0LLMAPIKeyEnv, never placed
-		// in this rendered JSON. oss.vectorStore is left unset, accepting
-		// the plugin's own local-storage default — no sidecar container is
-		// needed for mem0 to work, unlike amem's Qdrant requirement.
+		// mode "open-source" (default, empty mem0Mode) selects mem0's
+		// self-hosted path; oss.llm/oss.embedder route mem0's own internal
+		// calls through an OpenAI-compatible endpoint (see mem0PluginConfig's
+		// doc comment); the API key is exported separately by launcherScript
+		// under mem0LLMAPIKeyEnv, never placed in this rendered JSON.
+		// oss.vectorStore is left unset, accepting the plugin's own
+		// local-storage default — no sidecar container is needed for mem0 to
+		// work in this mode, unlike amem's Qdrant requirement.
 		//
-		// By default this reuses the primary task model/endpoint (empty
-		// mem0LLMBaseURL/mem0LLMModel). A profile can override both
-		// together (harness.mem0.llm_base_url/llm_model/llm_api_key_env) to
-		// point mem0's own calls at a different model, mirroring amem's
-		// equivalent override.
-		llmBaseURL, llmModel := model.BaseURL, model.Model
-		if mem0LLMBaseURL != "" {
-			llmBaseURL = mem0LLMBaseURL
-		}
-		if mem0LLMModel != "" {
-			llmModel = mem0LLMModel
-		}
-		providerCfg := mem0ProviderConfig{
-			Provider: "openai",
-			Config:   mem0ProviderConfigDetail{APIKey: "${" + mem0LLMAPIKeyEnv + "}", BaseURL: llmBaseURL, Model: llmModel},
+		// mode "platform" instead routes through mem0's cloud API — apiKey is
+		// always the "${MEM0_API_KEY}" placeholder (the literal secret is
+		// exported separately by launcherScript, staged from
+		// mem0PlatformKeyPath, the same never-inline-a-secret pattern as
+		// open-source mode's LLM key), and oss is left entirely unset since
+		// platform mode doesn't use it.
+		cfg := &mem0PluginConfig{Mode: "open-source"}
+		if mem0Mode == "platform" {
+			cfg.Mode = "platform"
+			cfg.APIKey = "${" + mem0PlatformAPIKeyEnv + "}"
+			cfg.BaseURL = mem0PlatformBaseURL
+		} else {
+			// By default this reuses the primary task model/endpoint (empty
+			// mem0LLMBaseURL/mem0LLMModel). A profile can override both
+			// together (harness.mem0.llm_base_url/llm_model/llm_api_key_env)
+			// to point mem0's own calls at a different model, mirroring
+			// amem's equivalent override.
+			llmBaseURL, llmModel := model.BaseURL, model.Model
+			if mem0LLMBaseURL != "" {
+				llmBaseURL = mem0LLMBaseURL
+			}
+			if mem0LLMModel != "" {
+				llmModel = mem0LLMModel
+			}
+			providerCfg := mem0ProviderConfig{
+				Provider: "openai",
+				Config:   mem0ProviderConfigDetail{APIKey: "${" + mem0LLMAPIKeyEnv + "}", BaseURL: llmBaseURL, Model: llmModel},
+			}
+			cfg.OSS = mem0OSSConfig{LLM: providerCfg, Embedder: providerCfg}
 		}
 		pluginEntries[mem0PluginID] = pluginEntry{
 			Enabled: true,
@@ -701,11 +737,8 @@ func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchE
 			// (see pluginHooksBlock's doc comment) — this is OpenClaw's
 			// generic gate for any non-bundled plugin's agent_end hook, not
 			// something specific to amem.
-			Hooks: &pluginHooksBlock{AllowConversationAccess: true},
-			Config: &mem0PluginConfig{
-				Mode: "open-source",
-				OSS:  mem0OSSConfig{LLM: providerCfg, Embedder: providerCfg},
-			},
+			Hooks:  &pluginHooksBlock{AllowConversationAccess: true},
+			Config: cfg,
 		}
 		pluginAllow = append(pluginAllow, mem0PluginID)
 		if pluginSlots == nil {
@@ -824,7 +857,7 @@ func validEnvironmentName(value string) bool {
 	return value != ""
 }
 
-func launcherScript(apiKeyEnv, realtimeAPIKeyEnv string, extractEnabled, firecrawlEnabled, tavilySearchEnabled, amemEnabled, amemLLMOverride, losslessClawLLMOverride, mem0Enabled, mem0LLMOverride bool) []byte {
+func launcherScript(apiKeyEnv, realtimeAPIKeyEnv string, extractEnabled, firecrawlEnabled, tavilySearchEnabled, amemEnabled, amemLLMOverride, losslessClawLLMOverride, mem0Enabled, mem0LLMOverride, mem0PlatformMode, mem0PlatformKeySet bool) []byte {
 	script := "#!/bin/sh\nset -eu\nmodel_key=$(cat " + modelKeyPath + ")\ngateway_key=$(cat " + gatewayKeyPath + ")\nexport " + apiKeyEnv + "=\"$model_key\"\nexport " + gatewayTokenEnv + "=\"$gateway_key\"\n"
 	if realtimeAPIKeyEnv != "" {
 		script += "realtime_key=$(cat " + realtimeKeyPath + ")\nexport " + realtimeAPIKeyEnv + "=\"$realtime_key\"\nunset realtime_key\n"
@@ -861,12 +894,19 @@ func launcherScript(apiKeyEnv, realtimeAPIKeyEnv string, extractEnabled, firecra
 		// calls (harness.mem0.llm_*, see Options.Mem0LLMAPIKeyEnv) — its key is
 		// staged separately, never derived from the primary model key.
 		script += "mem0_llm_key=$(cat " + mem0LLMKeyPath + ")\nexport " + mem0LLMAPIKeyEnv + "=\"$mem0_llm_key\"\nunset mem0_llm_key\n"
-	} else if mem0Enabled {
-		// Default: reuses the already-loaded primary model key rather than
-		// staging a separate secret file — mem0's own LLM/embedder calls are
-		// configured (see mem0PluginConfig) to route through the same
-		// OpenAI-compatible endpoint as the primary task model.
+	} else if mem0Enabled && !mem0PlatformMode {
+		// Default (open-source mode only): reuses the already-loaded primary
+		// model key rather than staging a separate secret file — mem0's own
+		// LLM/embedder calls are configured (see mem0PluginConfig) to route
+		// through the same OpenAI-compatible endpoint as the primary task
+		// model. Platform mode has no LLM/embedder of its own to key here.
 		script += "export " + mem0LLMAPIKeyEnv + "=\"$model_key\"\n"
+	}
+	if mem0PlatformKeySet {
+		// harness.mem0.mode "platform" — the account API key, staged from
+		// mem0PlatformKeyPath, exported under the fixed name the plugin's own
+		// config schema expects (mem0PlatformAPIKeyEnv).
+		script += "mem0_platform_key=$(cat " + mem0PlatformKeyPath + ")\nexport " + mem0PlatformAPIKeyEnv + "=\"$mem0_platform_key\"\nunset mem0_platform_key\n"
 	}
 	script += "unset model_key gateway_key\nexec \"$@\"\n"
 	return []byte(script)

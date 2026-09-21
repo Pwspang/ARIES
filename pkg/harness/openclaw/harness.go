@@ -96,17 +96,44 @@ type Options struct {
 	// adjudication) instead of reusing the primary task model — see
 	// amemPluginConfig's doc comment in config.go. Must be set together or not
 	// at all (validated in pkg/config).
-	AMEMLLMBaseURL      string
-	AMEMLLMModel        string
-	AMEMLLMAPIKeyEnv    string
+	AMEMLLMBaseURL   string
+	AMEMLLMModel     string
+	AMEMLLMAPIKeyEnv string
 	// AMEMScope selects how amem's Qdrant memory store is shared across task
 	// occurrences in a run: "" or "task" (default) gives every task
 	// occurrence its own private store, torn down at the end of that task;
 	// "repo" shares one store across every task occurrence in the run that
 	// targets the same Task.Repository at the same Task.BaseCommit, torn
 	// down only once the run ends (see amem_qdrant.go/amem_pool.go).
-	AMEMScope           string
-	LosslessClawEnabled bool
+	AMEMScope string
+	// AMEMRerankModel/AMEMRerankThreshold/AMEMRerankDevice configure the
+	// fork's post-BFS cross-encoder reranker. Unlike AMEMLLM*/AMEMScope
+	// above, these are not part of the plugin's JSON config schema — the
+	// fork reads them as plain process environment variables
+	// (AMEM_RERANK_MODEL/AMEM_RERANK_THRESHOLD/AMEM_RERANK_DEVICE), so they
+	// are threaded into the container's environment directly (see
+	// gatewayLauncherScript/containerConfig.Env) rather than rendered into
+	// amemPluginConfig. Each is independent — no "set together" requirement.
+	AMEMRerankModel     string
+	AMEMRerankThreshold *float64
+	AMEMRerankDevice    string
+	// AMEMDisableTaskTraceFallback opts out of the fork's previous-turn
+	// goal-trace fallback for memory_search's current_task. Unlike the
+	// rerank fields above, this IS a real plugin JSON config field
+	// (rendered into amemPluginConfig in config.go).
+	AMEMDisableTaskTraceFallback bool
+	// AMEMDisableGoalEmbedding/AMEMDisableRerank are the ablation-study
+	// control-arm switches for the two methods above: unlike
+	// AMEMRerankThreshold (which only tunes the reranker's filter),
+	// AMEMDisableRerank skips the cross-encoder pass entirely
+	// (AMEM_RERANK_ENABLED=false); AMEMDisableGoalEmbedding forces
+	// current_task to have no effect regardless of what the agent passes
+	// (AMEM_DISABLE_GOAL_EMBED=true) — current_task has no other config
+	// surface to force off, since it's an agent-discretionary tool field.
+	// Both are plain env vars, threaded the same way as the rerank knobs.
+	AMEMDisableGoalEmbedding bool
+	AMEMDisableRerank        bool
+	LosslessClawEnabled      bool
 	// LosslessClawLLMBaseURL/LosslessClawLLMModel/LosslessClawLLMAPIKeyEnv
 	// override the model lossless-claw's own plugin uses internally for
 	// summarization/expansion instead of reusing the primary task model — see
@@ -126,10 +153,24 @@ type Options struct {
 	Mem0LLMBaseURL   string
 	Mem0LLMModel     string
 	Mem0LLMAPIKeyEnv string
-	CleanupTimeout   time.Duration
-	StartTimeout             time.Duration
-	AgentTimeout             time.Duration
-	Logger                   *logrus.Logger
+	// Mem0Mode selects mem0's backend: "" or "open-source" (default,
+	// self-hosted, the Mem0LLM* fields above) or "platform" (mem0's cloud
+	// API, Mem0APIKeyEnv/Mem0BaseURL below instead) — mutually exclusive with
+	// each other (validated in pkg/config). See HarnessMem0Config's doc
+	// comment in pkg/config.
+	Mem0Mode string
+	// Mem0APIKeyEnv names the host environment variable holding the mem0.ai
+	// platform account API key, required when Mem0Mode is "platform". Staged
+	// the same way Mem0LLMAPIKeyEnv is — never placed in profile JSON or
+	// rendered config, only referenced by env-var placeholder.
+	Mem0APIKeyEnv string
+	// Mem0BaseURL optionally overrides the plugin's default platform API
+	// base URL (https://api.mem0.ai), valid only with Mem0Mode "platform".
+	Mem0BaseURL    string
+	CleanupTimeout time.Duration
+	StartTimeout   time.Duration
+	AgentTimeout   time.Duration
+	Logger         *logrus.Logger
 }
 
 type RealtimeOptions struct {
@@ -183,36 +224,42 @@ type dockerClient interface {
 }
 
 type Manager struct {
-	client                   dockerClient
-	image                    string
-	outputDir                string
-	cleanupTimeout           time.Duration
-	startTimeout             time.Duration
-	agentTimeout             time.Duration
-	logger                   *logrus.Logger
-	apiKeyLookup             func(string) ([]byte, bool)
-	mode                     string
-	realtime                 RealtimeOptions
-	webSearchEnabled         bool
-	extractAPIKeyEnv         string
-	searchProvider           string
-	firecrawlAPIKeyEnv       string
-	tavilyAPIKeyEnv          string
-	subagentsEnabled         bool
-	maxConcurrentSubagents   int
-	amemEnabled              bool
-	amemQdrantImage          string
-	amemLLMBaseURL           string
-	amemLLMModel             string
-	amemLLMAPIKeyEnv         string
-	amemScope                string
-	amemQdrant               *amemQdrantState
+	client                       dockerClient
+	image                        string
+	outputDir                    string
+	cleanupTimeout               time.Duration
+	startTimeout                 time.Duration
+	agentTimeout                 time.Duration
+	logger                       *logrus.Logger
+	apiKeyLookup                 func(string) ([]byte, bool)
+	mode                         string
+	realtime                     RealtimeOptions
+	webSearchEnabled             bool
+	extractAPIKeyEnv             string
+	searchProvider               string
+	firecrawlAPIKeyEnv           string
+	tavilyAPIKeyEnv              string
+	subagentsEnabled             bool
+	maxConcurrentSubagents       int
+	amemEnabled                  bool
+	amemQdrantImage              string
+	amemLLMBaseURL               string
+	amemLLMModel                 string
+	amemLLMAPIKeyEnv             string
+	amemScope                    string
+	amemRerankModel              string
+	amemRerankThreshold          *float64
+	amemRerankDevice             string
+	amemDisableTaskTraceFallback bool
+	amemDisableGoalEmbedding     bool
+	amemDisableRerank            bool
+	amemQdrant                   *amemQdrantState
 	// amemQdrantShared marks that amemQdrant is a repo-scoped store shared
 	// with other Manager instances (via amemRepoRegistry in amem_pool.go),
 	// so Close() must not export/tear it down itself — see
 	// exportAMEMMemory/teardownAMEMQdrant.
-	amemQdrantShared bool
-	amemExportDir    string
+	amemQdrantShared         bool
+	amemExportDir            string
 	losslessClawEnabled      bool
 	losslessClawLLMBaseURL   string
 	losslessClawLLMModel     string
@@ -222,6 +269,9 @@ type Manager struct {
 	mem0LLMBaseURL           string
 	mem0LLMModel             string
 	mem0LLMAPIKeyEnv         string
+	mem0Mode                 string
+	mem0APIKeyEnv            string
+	mem0BaseURL              string
 	newID                    func() (string, error)
 	newGateway               func(string, []byte) (gatewayConnection, error)
 	newRealtime              func(realtimeclient.Gateway, realtimeclient.Options) (realtimeRunner, error)
@@ -298,6 +348,7 @@ type session struct {
 	amemLLMAPIKey         []byte
 	losslessClawLLMAPIKey []byte
 	mem0LLMAPIKey         []byte
+	mem0PlatformAPIKey    []byte
 	gatewayToken          []byte
 	gatewayURL            string
 	agentIdempotency      string
@@ -389,11 +440,15 @@ func New(options Options) (*Manager, error) {
 		maxConcurrentSubagents: options.MaxConcurrentSubagents, amemEnabled: options.AMEMEnabled,
 		amemQdrantImage: options.AMEMQdrantImage, amemLLMBaseURL: options.AMEMLLMBaseURL,
 		amemLLMModel: options.AMEMLLMModel, amemLLMAPIKeyEnv: options.AMEMLLMAPIKeyEnv,
-		amemScope: options.AMEMScope,
+		amemScope:       options.AMEMScope,
+		amemRerankModel: options.AMEMRerankModel, amemRerankThreshold: options.AMEMRerankThreshold,
+		amemRerankDevice: options.AMEMRerankDevice, amemDisableTaskTraceFallback: options.AMEMDisableTaskTraceFallback,
+		amemDisableGoalEmbedding: options.AMEMDisableGoalEmbedding, amemDisableRerank: options.AMEMDisableRerank,
 		losslessClawEnabled: options.LosslessClawEnabled, losslessClawLLMBaseURL: options.LosslessClawLLMBaseURL,
 		losslessClawLLMModel: options.LosslessClawLLMModel, losslessClawLLMAPIKeyEnv: options.LosslessClawLLMAPIKeyEnv,
 		mem0Enabled: options.Mem0Enabled, mem0LLMBaseURL: options.Mem0LLMBaseURL,
 		mem0LLMModel: options.Mem0LLMModel, mem0LLMAPIKeyEnv: options.Mem0LLMAPIKeyEnv,
+		mem0Mode: options.Mem0Mode, mem0APIKeyEnv: options.Mem0APIKeyEnv, mem0BaseURL: options.Mem0BaseURL,
 		newID: randomID,
 		newGateway: func(rawURL string, token []byte) (gatewayConnection, error) {
 			return newGatewayClientWithDisposition(rawURL, token, gatewayScopes(options.Mode), gatewayEventDisposition(options.Mode))
@@ -594,7 +649,40 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		}
 		mem0LLMAPIKey = candidate
 	}
-	configuration, err := renderConfig(request.Model, request.Endpoint, manager.webSearchEnabled, manager.searchProvider, extractEnabled, manager.subagentsEnabled, manager.amemEnabled, manager.maxConcurrentSubagents, manager.amemLLMBaseURL, manager.amemLLMModel, manager.losslessClawEnabled, manager.losslessClawLLMBaseURL, manager.losslessClawLLMModel, manager.mem0Enabled, manager.mem0LLMBaseURL, manager.mem0LLMModel)
+	mem0PlatformRequested := manager.mem0Enabled && manager.mem0Mode == "platform" && manager.mem0APIKeyEnv != ""
+	var mem0PlatformAPIKey []byte
+	if mem0PlatformRequested {
+		// Fatal-on-missing: platform mode is unusable without this key (see
+		// HarnessMem0Config's doc comment), so silently proceeding without it
+		// would mask the misconfiguration rather than fail the run cleanly.
+		mem0PlatformSource, ok := manager.apiKeyLookup(manager.mem0APIKeyEnv)
+		if !ok {
+			clear(mem0PlatformSource)
+			clear(extractAPIKey)
+			clear(firecrawlAPIKey)
+			clear(tavilySearchAPIKey)
+			clear(amemLLMAPIKey)
+			clear(losslessClawLLMAPIKey)
+			clear(mem0LLMAPIKey)
+			clear(mem0PlatformAPIKey)
+			return fmt.Errorf("OpenClaw mem0 platform API-key environment %q is not set", manager.mem0APIKeyEnv)
+		}
+		candidate := bytes.Clone(mem0PlatformSource)
+		clear(mem0PlatformSource)
+		if err := validateAPIKey(candidate); err != nil {
+			clear(candidate)
+			clear(extractAPIKey)
+			clear(firecrawlAPIKey)
+			clear(tavilySearchAPIKey)
+			clear(amemLLMAPIKey)
+			clear(losslessClawLLMAPIKey)
+			clear(mem0LLMAPIKey)
+			clear(mem0PlatformAPIKey)
+			return fmt.Errorf("OpenClaw mem0 platform API key: %w", err)
+		}
+		mem0PlatformAPIKey = candidate
+	}
+	configuration, err := renderConfig(request.Model, request.Endpoint, manager.webSearchEnabled, manager.searchProvider, extractEnabled, manager.subagentsEnabled, manager.amemEnabled, manager.maxConcurrentSubagents, manager.amemLLMBaseURL, manager.amemLLMModel, manager.amemDisableTaskTraceFallback, manager.losslessClawEnabled, manager.losslessClawLLMBaseURL, manager.losslessClawLLMModel, manager.mem0Enabled, manager.mem0Mode, manager.mem0LLMBaseURL, manager.mem0LLMModel, manager.mem0BaseURL)
 	if err != nil {
 		clear(extractAPIKey)
 		clear(firecrawlAPIKey)
@@ -602,6 +690,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(amemLLMAPIKey)
 		clear(losslessClawLLMAPIKey)
 		clear(mem0LLMAPIKey)
+		clear(mem0PlatformAPIKey)
 		return err
 	}
 	apiKeySource, ok := manager.apiKeyLookup(request.Model.APIKeyEnv)
@@ -613,6 +702,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(amemLLMAPIKey)
 		clear(losslessClawLLMAPIKey)
 		clear(mem0LLMAPIKey)
+		clear(mem0PlatformAPIKey)
 		return fmt.Errorf("OpenClaw API-key environment %q is not set", request.Model.APIKeyEnv)
 	}
 	apiKey := bytes.Clone(apiKeySource)
@@ -625,6 +715,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(amemLLMAPIKey)
 		clear(losslessClawLLMAPIKey)
 		clear(mem0LLMAPIKey)
+		clear(mem0PlatformAPIKey)
 		return err
 	}
 	var realtimeAPIKey []byte
@@ -639,6 +730,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 			clear(amemLLMAPIKey)
 			clear(losslessClawLLMAPIKey)
 			clear(mem0LLMAPIKey)
+			clear(mem0PlatformAPIKey)
 			return fmt.Errorf("OpenClaw realtime API-key environment %q is not set", manager.realtime.TTS.APIKeyEnv)
 		}
 		realtimeAPIKey = bytes.Clone(realtimeKeySource)
@@ -652,6 +744,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 			clear(amemLLMAPIKey)
 			clear(losslessClawLLMAPIKey)
 			clear(mem0LLMAPIKey)
+			clear(mem0PlatformAPIKey)
 			return fmt.Errorf("OpenClaw realtime API key: %w", err)
 		}
 	}
@@ -664,6 +757,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(amemLLMAPIKey)
 		clear(losslessClawLLMAPIKey)
 		clear(mem0LLMAPIKey)
+		clear(mem0PlatformAPIKey)
 		return errors.New("rendered OpenClaw config contains the API-key value")
 	}
 	if len(realtimeAPIKey) != 0 && bytes.Contains(configuration, realtimeAPIKey) {
@@ -675,6 +769,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(amemLLMAPIKey)
 		clear(losslessClawLLMAPIKey)
 		clear(mem0LLMAPIKey)
+		clear(mem0PlatformAPIKey)
 		return errors.New("rendered OpenClaw config contains the realtime API-key value")
 	}
 	if len(extractAPIKey) != 0 && bytes.Contains(configuration, extractAPIKey) {
@@ -686,6 +781,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(amemLLMAPIKey)
 		clear(losslessClawLLMAPIKey)
 		clear(mem0LLMAPIKey)
+		clear(mem0PlatformAPIKey)
 		return errors.New("rendered OpenClaw config contains the extract API-key value")
 	}
 	if len(firecrawlAPIKey) != 0 && bytes.Contains(configuration, firecrawlAPIKey) {
@@ -697,6 +793,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(amemLLMAPIKey)
 		clear(losslessClawLLMAPIKey)
 		clear(mem0LLMAPIKey)
+		clear(mem0PlatformAPIKey)
 		return errors.New("rendered OpenClaw config contains the Firecrawl API-key value")
 	}
 	if len(tavilySearchAPIKey) != 0 && bytes.Contains(configuration, tavilySearchAPIKey) {
@@ -708,6 +805,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(amemLLMAPIKey)
 		clear(losslessClawLLMAPIKey)
 		clear(mem0LLMAPIKey)
+		clear(mem0PlatformAPIKey)
 		return errors.New("rendered OpenClaw config contains the Tavily API-key value")
 	}
 	if len(amemLLMAPIKey) != 0 && bytes.Contains(configuration, amemLLMAPIKey) {
@@ -719,6 +817,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(amemLLMAPIKey)
 		clear(losslessClawLLMAPIKey)
 		clear(mem0LLMAPIKey)
+		clear(mem0PlatformAPIKey)
 		return errors.New("rendered OpenClaw config contains the amem LLM API-key value")
 	}
 	if len(losslessClawLLMAPIKey) != 0 && bytes.Contains(configuration, losslessClawLLMAPIKey) {
@@ -730,6 +829,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(amemLLMAPIKey)
 		clear(losslessClawLLMAPIKey)
 		clear(mem0LLMAPIKey)
+		clear(mem0PlatformAPIKey)
 		return errors.New("rendered OpenClaw config contains the lossless-claw LLM API-key value")
 	}
 	if len(mem0LLMAPIKey) != 0 && bytes.Contains(configuration, mem0LLMAPIKey) {
@@ -741,7 +841,20 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(amemLLMAPIKey)
 		clear(losslessClawLLMAPIKey)
 		clear(mem0LLMAPIKey)
+		clear(mem0PlatformAPIKey)
 		return errors.New("rendered OpenClaw config contains the mem0 LLM API-key value")
+	}
+	if len(mem0PlatformAPIKey) != 0 && bytes.Contains(configuration, mem0PlatformAPIKey) {
+		clear(apiKey)
+		clear(realtimeAPIKey)
+		clear(extractAPIKey)
+		clear(firecrawlAPIKey)
+		clear(tavilySearchAPIKey)
+		clear(amemLLMAPIKey)
+		clear(losslessClawLLMAPIKey)
+		clear(mem0LLMAPIKey)
+		clear(mem0PlatformAPIKey)
+		return errors.New("rendered OpenClaw config contains the mem0 platform API-key value")
 	}
 	containerConfig := &container.Config{
 		Image: manager.image,
@@ -757,7 +870,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		// crash fetching an IPv6-resolving URL (mdpi.com) — forcing IPv4
 		// first for DNS resolution sidesteps the whole failure class,
 		// regardless of the target's DNS answer order.
-		Env: []string{"OPENCLAW_CONFIG_PATH=" + configContainerPath, "NODE_OPTIONS=--dns-result-order=ipv4first"},
+		Env: append([]string{"OPENCLAW_CONFIG_PATH=" + configContainerPath, "NODE_OPTIONS=--dns-result-order=ipv4first"}, manager.amemAblationEnv()...),
 		Cmd: []string{launcherPath, gatewayLauncherPath},
 		Labels: map[string]string{
 			"aries.managed": "true", "aries.kind": "openclaw-harness",
@@ -787,6 +900,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(amemLLMAPIKey)
 		clear(losslessClawLLMAPIKey)
 		clear(mem0LLMAPIKey)
+		clear(mem0PlatformAPIKey)
 		return fmt.Errorf("generate OpenClaw harness ID: %w", err)
 	}
 	gatewayToken, err := randomSecret(32)
@@ -799,6 +913,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(amemLLMAPIKey)
 		clear(losslessClawLLMAPIKey)
 		clear(mem0LLMAPIKey)
+		clear(mem0PlatformAPIKey)
 		return fmt.Errorf("generate OpenClaw gateway token: %w", err)
 	}
 	agentIdempotency, err := randomID()
@@ -811,6 +926,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(amemLLMAPIKey)
 		clear(losslessClawLLMAPIKey)
 		clear(mem0LLMAPIKey)
+		clear(mem0PlatformAPIKey)
 		clear(gatewayToken)
 		return fmt.Errorf("generate OpenClaw agent idempotency key: %w", err)
 	}
@@ -818,7 +934,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 	active := &session{
 		runID: request.RunID, taskID: request.TaskID, safeTaskID: safeTaskID(request.TaskID), attemptID: id,
 		containerName: "aries-openclaw-" + id, artifactDir: filepath.Join(manager.outputDir, request.TaskID, fmt.Sprintf("harness-turn-%02d", manager.turnCount)),
-		endpoint: request.Endpoint, model: request.Model, agentTimeout: agentTimeout, apiKey: apiKey, realtimeAPIKey: realtimeAPIKey, extractAPIKey: extractAPIKey, firecrawlAPIKey: firecrawlAPIKey, tavilySearchAPIKey: tavilySearchAPIKey, amemLLMAPIKey: amemLLMAPIKey, losslessClawLLMAPIKey: losslessClawLLMAPIKey, mem0LLMAPIKey: mem0LLMAPIKey, gatewayToken: gatewayToken, agentIdempotency: agentIdempotency,
+		endpoint: request.Endpoint, model: request.Model, agentTimeout: agentTimeout, apiKey: apiKey, realtimeAPIKey: realtimeAPIKey, extractAPIKey: extractAPIKey, firecrawlAPIKey: firecrawlAPIKey, tavilySearchAPIKey: tavilySearchAPIKey, amemLLMAPIKey: amemLLMAPIKey, losslessClawLLMAPIKey: losslessClawLLMAPIKey, mem0LLMAPIKey: mem0LLMAPIKey, mem0PlatformAPIKey: mem0PlatformAPIKey, gatewayToken: gatewayToken, agentIdempotency: agentIdempotency,
 	}
 	containerConfig.Labels["aries.attempt"] = active.attemptID
 	fail := func(primary error) error {
@@ -1535,12 +1651,12 @@ func (manager *Manager) validateContainer(ctx context.Context, active *session) 
 		return errors.New("OpenClaw container labels do not match the task")
 	}
 	for _, value := range append(append([]string(nil), configuration.Env...), configuration.Cmd...) {
-		if containsSecret(value, active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.firecrawlAPIKey, active.tavilySearchAPIKey, active.amemLLMAPIKey, active.losslessClawLLMAPIKey, active.mem0LLMAPIKey, active.gatewayToken) {
+		if containsSecret(value, active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.firecrawlAPIKey, active.tavilySearchAPIKey, active.amemLLMAPIKey, active.losslessClawLLMAPIKey, active.mem0LLMAPIKey, active.mem0PlatformAPIKey, active.gatewayToken) {
 			return errors.New("OpenClaw secret entered Docker configuration")
 		}
 	}
 	for _, value := range configuration.Labels {
-		if containsSecret(value, active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.firecrawlAPIKey, active.tavilySearchAPIKey, active.amemLLMAPIKey, active.losslessClawLLMAPIKey, active.mem0LLMAPIKey, active.gatewayToken) {
+		if containsSecret(value, active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.firecrawlAPIKey, active.tavilySearchAPIKey, active.amemLLMAPIKey, active.losslessClawLLMAPIKey, active.mem0LLMAPIKey, active.mem0PlatformAPIKey, active.gatewayToken) {
 			return errors.New("OpenClaw secret entered Docker labels")
 		}
 	}
@@ -1570,7 +1686,7 @@ func (manager *Manager) runtimeArchive(active *session, configuration []byte) ([
 		"run/aries/openclaw.json":    {content: configuration, mode: 0o600},
 		"run/aries/model.key":        {content: active.apiKey, mode: 0o600},
 		"run/aries/gateway.key":      {content: active.gatewayToken, mode: 0o600},
-		"run/aries/launch":           {content: launcherScript(active.model.APIKeyEnv, manager.realtimeAPIKeyEnv(active), len(active.extractAPIKey) != 0, len(active.firecrawlAPIKey) != 0, len(active.tavilySearchAPIKey) != 0, manager.amemEnabled, len(active.amemLLMAPIKey) != 0, len(active.losslessClawLLMAPIKey) != 0, manager.mem0Enabled, len(active.mem0LLMAPIKey) != 0), mode: 0o555},
+		"run/aries/launch":           {content: launcherScript(active.model.APIKeyEnv, manager.realtimeAPIKeyEnv(active), len(active.extractAPIKey) != 0, len(active.firecrawlAPIKey) != 0, len(active.tavilySearchAPIKey) != 0, manager.amemEnabled, len(active.amemLLMAPIKey) != 0, len(active.losslessClawLLMAPIKey) != 0, manager.mem0Enabled, len(active.mem0LLMAPIKey) != 0, manager.mem0Mode == "platform", len(active.mem0PlatformAPIKey) != 0), mode: 0o555},
 		"run/aries/gateway-proxy.js": {content: gatewayProxyScript(), mode: 0o555},
 		"run/aries/gateway-launcher": {content: gatewayLauncherScript(manager.amemEnabled), mode: 0o555},
 		"run/aries/ssh/id_ed25519":   {content: identity, mode: 0o600},
@@ -1602,6 +1718,9 @@ func (manager *Manager) runtimeArchive(active *session, configuration []byte) ([
 	if len(active.mem0LLMAPIKey) != 0 {
 		files["run/aries/mem0-llm.key"] = stagedFile{content: active.mem0LLMAPIKey, mode: 0o600}
 	}
+	if len(active.mem0PlatformAPIKey) != 0 {
+		files["run/aries/mem0-platform.key"] = stagedFile{content: active.mem0PlatformAPIKey, mode: 0o600}
+	}
 	return stageArchive(files)
 }
 
@@ -1619,6 +1738,44 @@ func (manager *Manager) realtimeAPIKeyEnv(active *session) string {
 		return ""
 	}
 	return manager.realtime.TTS.APIKeyEnv
+}
+
+// amemAblationEnv returns the container environment entries for the fork's
+// goal-aware-embedding and post-BFS cross-encoder reranker knobs. These are
+// plain, non-secret process environment variables the fork reads directly
+// (AMEM_RERANK_MODEL/AMEM_RERANK_THRESHOLD/AMEM_RERANK_DEVICE/
+// AMEM_RERANK_ENABLED/AMEM_DISABLE_GOAL_EMBED — see
+// third_party/amem-fork/packages/amem-core/src/reranker.ts and memory.ts),
+// not part of the plugin's JSON config schema, so they're threaded via
+// containerConfig.Env instead of amemPluginConfig. Each is independent and
+// only set when amem itself is enabled and the corresponding profile field
+// is non-empty/non-default.
+func (manager *Manager) amemAblationEnv() []string {
+	if !manager.amemEnabled {
+		return nil
+	}
+	var env []string
+	if manager.amemRerankModel != "" {
+		env = append(env, "AMEM_RERANK_MODEL="+manager.amemRerankModel)
+	}
+	if manager.amemRerankThreshold != nil {
+		env = append(env, "AMEM_RERANK_THRESHOLD="+strconv.FormatFloat(*manager.amemRerankThreshold, 'g', -1, 64))
+	}
+	if manager.amemRerankDevice != "" {
+		env = append(env, "AMEM_RERANK_DEVICE="+manager.amemRerankDevice)
+	}
+	// Full on/off switches for the ablation study's control arm — unlike
+	// AMEMRerankThreshold, which only tunes the filter, DisableRerank skips
+	// the cross-encoder pass entirely; DisableGoalEmbedding forces
+	// current_task to have no effect regardless of what the agent passes,
+	// since current_task itself has no other config surface to force off.
+	if manager.amemDisableRerank {
+		env = append(env, "AMEM_RERANK_ENABLED=false")
+	}
+	if manager.amemDisableGoalEmbedding {
+		env = append(env, "AMEM_DISABLE_GOAL_EMBED=true")
+	}
+	return env
 }
 
 func gatewayLauncherScript(amemEnabled bool) []byte {
@@ -1787,7 +1944,7 @@ func (manager *Manager) collectArtifacts(ctx context.Context, active *session) e
 		if copyErr != nil || closeErr != nil || stdout.exceeded || stderr.exceeded {
 			errs = append(errs, errors.Join(copyErr, closeErr, errors.New("OpenClaw gateway logs exceeded their bound")))
 		} else {
-			content := allowGatewayLogs(append(stdout.Bytes(), stderr.Bytes()...), active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.firecrawlAPIKey, active.tavilySearchAPIKey, active.amemLLMAPIKey, active.losslessClawLLMAPIKey, active.mem0LLMAPIKey, active.gatewayToken)
+			content := allowGatewayLogs(append(stdout.Bytes(), stderr.Bytes()...), active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.firecrawlAPIKey, active.tavilySearchAPIKey, active.amemLLMAPIKey, active.losslessClawLLMAPIKey, active.mem0LLMAPIKey, active.mem0PlatformAPIKey, active.gatewayToken)
 			path := filepath.Join(active.artifactDir, "gateway.log")
 			if err := writeArtifact(path, content); err != nil {
 				errs = append(errs, err)
@@ -1837,7 +1994,7 @@ func (manager *Manager) collectTelemetry(ctx context.Context, active *session) (
 	if err != nil || len(archive) > maxDockerOutput {
 		return nil, errors.New("OpenClaw telemetry archive exceeded its bound")
 	}
-	return extractTelemetry(active.artifactDir, archive, active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.firecrawlAPIKey, active.tavilySearchAPIKey, active.amemLLMAPIKey, active.losslessClawLLMAPIKey, active.mem0LLMAPIKey, active.gatewayToken)
+	return extractTelemetry(active.artifactDir, archive, active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.firecrawlAPIKey, active.tavilySearchAPIKey, active.amemLLMAPIKey, active.losslessClawLLMAPIKey, active.mem0LLMAPIKey, active.mem0PlatformAPIKey, active.gatewayToken)
 }
 
 func failedHarnessResult(active *session, started time.Time, err error) core.HarnessResult {
@@ -2110,13 +2267,15 @@ func clearSessionSecrets(active *session) {
 	active.losslessClawLLMAPIKey = nil
 	clear(active.mem0LLMAPIKey)
 	active.mem0LLMAPIKey = nil
+	clear(active.mem0PlatformAPIKey)
+	active.mem0PlatformAPIKey = nil
 	clear(active.gatewayToken)
 	active.gatewayToken = nil
 	active.agentIdempotency = ""
 }
 
 func redactSession(content []byte, active *session) []byte {
-	return redactSecrets(content, active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.firecrawlAPIKey, active.tavilySearchAPIKey, active.amemLLMAPIKey, active.losslessClawLLMAPIKey, active.mem0LLMAPIKey, active.gatewayToken)
+	return redactSecrets(content, active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.firecrawlAPIKey, active.tavilySearchAPIKey, active.amemLLMAPIKey, active.losslessClawLLMAPIKey, active.mem0LLMAPIKey, active.mem0PlatformAPIKey, active.gatewayToken)
 }
 
 type sessionRedactedError struct {

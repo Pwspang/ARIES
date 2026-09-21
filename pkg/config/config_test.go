@@ -372,6 +372,64 @@ func TestAMEMHarnessScopeValidation(t *testing.T) {
 	}
 }
 
+func TestAMEMHarnessRerankValidation(t *testing.T) {
+	rerankModelWithoutEnabled := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","amem":{"rerank_model":"Xenova/ms-marco-MiniLM-L-6-v2"}}`, 1)
+	if _, err := Decode(strings.NewReader(rerankModelWithoutEnabled)); err == nil {
+		t.Fatal("expected rejection of harness.amem.rerank_model without harness.amem.enabled")
+	}
+
+	rerankThresholdWithoutEnabled := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","amem":{"rerank_threshold":0}}`, 1)
+	if _, err := Decode(strings.NewReader(rerankThresholdWithoutEnabled)); err == nil {
+		t.Fatal("expected rejection of harness.amem.rerank_threshold without harness.amem.enabled")
+	}
+
+	rerankDeviceWithoutEnabled := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","amem":{"rerank_device":"cpu"}}`, 1)
+	if _, err := Decode(strings.NewReader(rerankDeviceWithoutEnabled)); err == nil {
+		t.Fatal("expected rejection of harness.amem.rerank_device without harness.amem.enabled")
+	}
+
+	disableFallbackWithoutEnabled := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","amem":{"disable_task_trace_fallback":true}}`, 1)
+	if _, err := Decode(strings.NewReader(disableFallbackWithoutEnabled)); err == nil {
+		t.Fatal("expected rejection of harness.amem.disable_task_trace_fallback without harness.amem.enabled")
+	}
+
+	disableGoalEmbedWithoutEnabled := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","amem":{"disable_goal_embedding":true}}`, 1)
+	if _, err := Decode(strings.NewReader(disableGoalEmbedWithoutEnabled)); err == nil {
+		t.Fatal("expected rejection of harness.amem.disable_goal_embedding without harness.amem.enabled")
+	}
+
+	disableRerankWithoutEnabled := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","amem":{"disable_rerank":true}}`, 1)
+	if _, err := Decode(strings.NewReader(disableRerankWithoutEnabled)); err == nil {
+		t.Fatal("expected rejection of harness.amem.disable_rerank without harness.amem.enabled")
+	}
+
+	valid := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","amem":{"enabled":true,"rerank_model":"Xenova/ms-marco-MiniLM-L-6-v2","rerank_threshold":0.1,"rerank_device":"cpu","disable_task_trace_fallback":true,"disable_goal_embedding":true,"disable_rerank":true}}`, 1)
+	cfg, err := Decode(strings.NewReader(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Harness.AMEM.RerankModel != "Xenova/ms-marco-MiniLM-L-6-v2" || cfg.Harness.AMEM.RerankDevice != "cpu" || !cfg.Harness.AMEM.DisableTaskTraceFallback {
+		t.Fatalf("harness.amem = %#v", cfg.Harness.AMEM)
+	}
+	if !cfg.Harness.AMEM.DisableGoalEmbedding || !cfg.Harness.AMEM.DisableRerank {
+		t.Fatalf("harness.amem = %#v, want disable_goal_embedding and disable_rerank both true", cfg.Harness.AMEM)
+	}
+	if cfg.Harness.AMEM.RerankThreshold == nil || *cfg.Harness.AMEM.RerankThreshold != 0.1 {
+		t.Fatalf("harness.amem.rerank_threshold = %v, want 0.1", cfg.Harness.AMEM.RerankThreshold)
+	}
+
+	// An explicit 0 threshold (admit every BFS-expanded candidate) must be
+	// distinguishable from "unset" — that's why RerankThreshold is a pointer.
+	zeroThreshold := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","amem":{"enabled":true,"rerank_threshold":0}}`, 1)
+	cfg, err = Decode(strings.NewReader(zeroThreshold))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Harness.AMEM.RerankThreshold == nil || *cfg.Harness.AMEM.RerankThreshold != 0 {
+		t.Fatalf("harness.amem.rerank_threshold = %v, want a set pointer to 0", cfg.Harness.AMEM.RerankThreshold)
+	}
+}
+
 func TestLosslessClawHarnessConfigValidation(t *testing.T) {
 	nonOpenClaw := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"other","lossless_claw":{"enabled":true}}`, 1)
 	if _, err := Decode(strings.NewReader(nonOpenClaw)); err == nil {
@@ -431,6 +489,42 @@ func TestMem0HarnessConfigValidation(t *testing.T) {
 	both := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","amem":{"enabled":true},"mem0":{"enabled":true}}`, 1)
 	if _, err := Decode(strings.NewReader(both)); err == nil {
 		t.Fatal("expected rejection of harness.amem and harness.mem0 enabled together")
+	}
+}
+
+func TestMem0PlatformModeValidation(t *testing.T) {
+	badMode := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","mem0":{"enabled":true,"mode":"cloud"}}`, 1)
+	if _, err := Decode(strings.NewReader(badMode)); err == nil {
+		t.Fatal(`expected rejection of harness.mem0.mode other than "open-source"/"platform"`)
+	}
+
+	modeWithoutEnabled := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","mem0":{"mode":"platform","api_key_env":"MEM0_ACCOUNT_API_KEY"}}`, 1)
+	if _, err := Decode(strings.NewReader(modeWithoutEnabled)); err == nil {
+		t.Fatal("expected rejection of harness.mem0.mode without harness.mem0.enabled")
+	}
+
+	missingAPIKeyEnv := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","mem0":{"enabled":true,"mode":"platform"}}`, 1)
+	if _, err := Decode(strings.NewReader(missingAPIKeyEnv)); err == nil {
+		t.Fatal(`expected rejection of harness.mem0.mode "platform" without harness.mem0.api_key_env`)
+	}
+
+	llmFieldsWithPlatform := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","mem0":{"enabled":true,"mode":"platform","api_key_env":"MEM0_ACCOUNT_API_KEY","llm_model":"deepseek-v4-flash"}}`, 1)
+	if _, err := Decode(strings.NewReader(llmFieldsWithPlatform)); err == nil {
+		t.Fatal(`expected rejection of harness.mem0.llm_* alongside mode "platform"`)
+	}
+
+	apiKeyEnvWithoutPlatform := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","mem0":{"enabled":true,"api_key_env":"MEM0_ACCOUNT_API_KEY"}}`, 1)
+	if _, err := Decode(strings.NewReader(apiKeyEnvWithoutPlatform)); err == nil {
+		t.Fatal(`expected rejection of harness.mem0.api_key_env without mode "platform"`)
+	}
+
+	valid := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","mem0":{"enabled":true,"mode":"platform","api_key_env":"MEM0_ACCOUNT_API_KEY","base_url":"https://mem0.internal.example"}}`, 1)
+	cfg, err := Decode(strings.NewReader(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Harness.Mem0.Enabled || cfg.Harness.Mem0.Mode != "platform" || cfg.Harness.Mem0.APIKeyEnv != "MEM0_ACCOUNT_API_KEY" || cfg.Harness.Mem0.BaseURL != "https://mem0.internal.example" {
+		t.Fatalf("harness.mem0 = %#v", cfg.Harness.Mem0)
 	}
 }
 
@@ -786,7 +880,7 @@ func TestCheckedInProfilesLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 63 {
+	if len(paths) != 69 {
 		t.Fatalf("profiles=%v", paths)
 	}
 	for _, path := range paths {
@@ -929,7 +1023,7 @@ func TestCheckedInVersionCatalogsLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 4 {
+	if len(paths) != 5 {
 		t.Fatalf("catalogs=%v", paths)
 	}
 	for _, path := range paths {
@@ -1190,6 +1284,97 @@ func TestSWEAtlasQACtxLimitArmsDifferFromPilot30OnlyInContextWindow(t *testing.T
 				// within that study's amem arms, where it matters for correctness.
 			}
 		})
+	}
+}
+
+// The goal-embed/rerank ablation study asks whether either new amem method
+// (goal-aware embedding folding current_task into the dense query, and the
+// post-BFS cross-encoder reranker) helps on its own, together, or not at
+// all — reusing the same pilot30-amem-repo task list, judge, and model so a
+// measured difference is attributable to the two methods, not a confound.
+// Four arms, differing ONLY in harness.amem.disable_goal_embedding/
+// disable_rerank: control (both disabled — behaves like pre-fork amem),
+// goalembed (only goal-embedding on), rerank (only reranking on), both (both
+// on). All four also point at the local fork image
+// (versions-amem-fork-dev.json) rather than the pinned upstream image, since
+// the ablation switches only exist in the fork.
+func TestSWEAtlasQAGoalEmbedRerankArmsDifferOnlyInAblationFlags(t *testing.T) {
+	control, err := Load(filepath.Join("..", "..", "profiles", "openclaw-sweatlasqa-pilot30-amem-repo-control-sglang.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	goalEmbed, err := Load(filepath.Join("..", "..", "profiles", "openclaw-sweatlasqa-pilot30-amem-repo-goalembed-sglang.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rerank, err := Load(filepath.Join("..", "..", "profiles", "openclaw-sweatlasqa-pilot30-amem-repo-rerank-sglang.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	both, err := Load(filepath.Join("..", "..", "profiles", "openclaw-sweatlasqa-pilot30-amem-repo-both-sglang.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	arms := []Config{control, goalEmbed, rerank, both}
+	for _, arm := range arms {
+		if !arm.Harness.AMEM.Enabled || arm.Harness.AMEM.Scope != "repo" {
+			t.Fatalf("every arm must have amem enabled with repo scope: %#v", arm.Harness.AMEM)
+		}
+	}
+	wantFlags := []struct{ goalEmbedOn, rerankOn bool }{
+		{false, false}, // control
+		{true, false},  // goalembed
+		{false, true},  // rerank
+		{true, true},   // both
+	}
+	for i, arm := range arms {
+		want := wantFlags[i]
+		gotGoalEmbedOn := !arm.Harness.AMEM.DisableGoalEmbedding
+		gotRerankOn := !arm.Harness.AMEM.DisableRerank
+		if gotGoalEmbedOn != want.goalEmbedOn || gotRerankOn != want.rerankOn {
+			t.Fatalf("arm %d (%s): goal-embed on=%v want %v, rerank on=%v want %v",
+				i, arm.Name, gotGoalEmbedOn, want.goalEmbedOn, gotRerankOn, want.rerankOn)
+		}
+	}
+
+	// Every arm's harness.amem must be identical once the two ablation flags
+	// are zeroed out — anything else is a confound, not part of the ablation
+	// under test.
+	baseline := control.Harness.AMEM
+	baseline.DisableGoalEmbedding, baseline.DisableRerank = false, false
+	for i, arm := range arms {
+		amem := arm.Harness.AMEM
+		amem.DisableGoalEmbedding, amem.DisableRerank = false, false
+		if !reflect.DeepEqual(baseline, amem) {
+			t.Fatalf("arm %d (%s): harness.amem differs beyond the ablation flags: %#v vs control %#v", i, arm.Name, amem, baseline)
+		}
+	}
+
+	for _, arm := range arms[1:] {
+		if !reflect.DeepEqual(control.Benchmark.Tasks, arm.Benchmark.Tasks) {
+			t.Fatalf("%s: task lists diverged from control", arm.Name)
+		}
+		if control.Versions.OpenClaw.Image != arm.Versions.OpenClaw.Image {
+			t.Fatalf("%s: OpenClaw image differs: %q vs %q", arm.Name, control.Versions.OpenClaw.Image, arm.Versions.OpenClaw.Image)
+		}
+		if !reflect.DeepEqual(control.Model, arm.Model) || !reflect.DeepEqual(control.Benchmark.Judge, arm.Benchmark.Judge) {
+			t.Fatalf("%s: model or judge configuration differs from control", arm.Name)
+		}
+		if control.Execution.Concurrency != arm.Execution.Concurrency {
+			t.Fatalf("%s: concurrency differs: %d vs %d", arm.Name, control.Execution.Concurrency, arm.Execution.Concurrency)
+		}
+		if !reflect.DeepEqual(control.Runtime, arm.Runtime) {
+			t.Fatalf("%s: runtime configuration differs from control", arm.Name)
+		}
+	}
+	if control.Execution.Concurrency != 1 {
+		t.Fatalf("ablation study arms must run at concurrency 1 (same rationale as TestSWEAtlasQAStudyArmsDifferOnlyInAMEM): got %d", control.Execution.Concurrency)
+	}
+	// This study needs the local fork build, not the pinned upstream image —
+	// the ablation env vars/plugin config field only exist there.
+	if control.Versions.OpenClaw.Image != "openclaw-amem:aries-fork-dev" {
+		t.Fatalf("ablation study arms must point at the fork image, got %q", control.Versions.OpenClaw.Image)
 	}
 }
 

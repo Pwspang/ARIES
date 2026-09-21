@@ -49,3 +49,6 @@ DEEPSEEK_API.key
 
 # Deep Research Sandbox Dockerfile
 images/**
+
+# Third_party fork 
+third_party/**

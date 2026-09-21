@@ -34,5 +34,4 @@
 # this same image would need that plugin pre-baked here too.
 FROM ghcr.io/openclaw/openclaw:2026.7.1
 USER node
-RUN openclaw plugins install @mem0/openclaw-mem0@1.1.0 --pin \
-    && openclaw plugins install @openclaw/tavily-plugin --pin
+RUN openclaw plugins install @mem0/openclaw-mem0@1.1.0 --pin 

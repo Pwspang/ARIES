@@ -237,6 +237,44 @@ type HarnessAMEMConfig struct {
 	// repository boundary). See pkg/harness/openclaw/amem_qdrant.go and
 	// amem_pool.go.
 	Scope string `json:"scope,omitempty"`
+	// RerankModel/RerankThreshold/RerankDevice configure the fork's post-BFS
+	// cross-encoder reranker (third_party/amem-fork/packages/amem-core/src/
+	// reranker.ts). Unlike LLM*/Scope above, these are not part of the
+	// plugin's JSON config schema — the fork reads them as plain process
+	// environment variables (AMEM_RERANK_MODEL/AMEM_RERANK_THRESHOLD/
+	// AMEM_RERANK_DEVICE), so ARIES threads them into the container's
+	// environment directly (see pkg/harness/openclaw/harness.go's
+	// containerConfig.Env) rather than into amemPluginConfig. Each requires
+	// only AMEM.Enabled, independent of the others and of LLM*/Scope.
+	RerankModel string `json:"rerank_model,omitempty"`
+	// RerankThreshold is a pointer so an explicit 0 (admit every BFS-expanded
+	// candidate) is distinguishable from unset (accept the fork's own
+	// default, DEFAULT_RERANK_THRESHOLD).
+	RerankThreshold *float64 `json:"rerank_threshold,omitempty"`
+	RerankDevice    string   `json:"rerank_device,omitempty"`
+	// DisableTaskTraceFallback opts out of the fork's Method 2 (previous-turn
+	// goal-trace fallback for memory_search's current_task): unlike the
+	// rerank knobs above, this IS a real plugin JSON config field
+	// (AmemPluginConfig.disableTaskTraceFallback in the fork's storage.ts),
+	// rendered into amemPluginConfig (pkg/harness/openclaw/config.go) rather
+	// than threaded as an env var.
+	DisableTaskTraceFallback bool `json:"disable_task_trace_fallback,omitempty"`
+	// DisableGoalEmbedding forces the fork's Method 1 (goal-aware embedding)
+	// off, ignoring any current_task the agent supplies on a memory_search
+	// call, regardless of memory_search's own current_task field or the
+	// Method 2 trace-fallback cache. Threaded as AMEM_DISABLE_GOAL_EMBED
+	// (env var, like the rerank knobs above) rather than plugin JSON config,
+	// since current_task itself is an agent-discretionary tool field with no
+	// other way to force it off — this exists specifically so an ablation
+	// study's control arm can have current_task genuinely have no effect,
+	// not just rely on the agent never choosing to pass it.
+	DisableGoalEmbedding bool `json:"disable_goal_embedding,omitempty"`
+	// DisableRerank skips the post-BFS cross-encoder reranker pass entirely
+	// (AMEM_RERANK_ENABLED=false), unlike RerankThreshold above which only
+	// tunes what the reranker filters — this is the true on/off switch an
+	// ablation study's control arm needs, so it pays neither the reranker's
+	// latency nor its reordering, not just none of its filtering.
+	DisableRerank bool `json:"disable_rerank,omitempty"`
 }
 
 // HarnessLosslessClawConfig enables the lossless-claw context-management
@@ -264,28 +302,49 @@ type HarnessLosslessClawConfig struct {
 
 // HarnessMem0Config enables mem0's first-party OpenClaw plugin
 // (github.com/mem0ai/mem0, integrations/openclaw, npm "@mem0/openclaw-mem0")
-// in open-source (self-hosted) mode as an OpenClaw plugin claiming the
-// "memory" slot (see pkg/harness/openclaw/config.go's mem0PluginConfig) —
-// mutually exclusive with AMEM (see (*HarnessConfig).validate), which claims
-// the same slot. Unlike amem, mem0 needs no sidecar container by default:
-// open-source mode's default vector store is a local file inside the
-// plugin's own state directory, not an external vector DB.
+// as an OpenClaw plugin claiming the "memory" slot (see
+// pkg/harness/openclaw/config.go's mem0PluginConfig) — mutually exclusive
+// with AMEM (see (*HarnessConfig).validate), which claims the same slot.
 //
-// By default mem0's own internal LLM/embedder calls (fact extraction,
-// embeddings) reuse the profile's primary task model and API key — see
-// mem0PluginConfig's doc comment. The LLM* fields below override that with a
-// separate model/endpoint instead. Note that mem0's embedder needs a real
-// embeddings-capable endpoint (mem0's own OSS default is OpenAI's
-// text-embedding-3-small): most chat-completions-only inference servers
-// (e.g. an sglang deployment serving a chat model) do not also serve
-// embeddings, so profiles whose primary model can't do that will likely need
-// LLM* set to an endpoint that can. All three LLM* fields must be set
-// together or not at all — see (*HarnessConfig).validate.
+// Mode selects which of the plugin's two backends is used (confirmed
+// against the plugin's shipped openclaw.plugin.json configSchema, whose
+// "mode" enum is exactly ["platform", "open-source"]): "" or "open-source"
+// (default) is the self-hosted path, needing no sidecar container since its
+// default vector store is a local file inside the plugin's own state
+// directory. "platform" instead routes through mem0's cloud API
+// (https://api.mem0.ai by default) and needs an account API key — see
+// APIKeyEnv/BaseURL below. The two modes are mutually exclusive: LLM*
+// (open-source-mode only) and APIKeyEnv/BaseURL (platform-mode only) cannot
+// mix — see (*HarnessConfig).validate.
+//
+// By default open-source mode's own internal LLM/embedder calls (fact
+// extraction, embeddings) reuse the profile's primary task model and API
+// key — see mem0PluginConfig's doc comment. The LLM* fields below override
+// that with a separate model/endpoint instead. Note that mem0's embedder
+// needs a real embeddings-capable endpoint (mem0's own OSS default is
+// OpenAI's text-embedding-3-small): most chat-completions-only inference
+// servers (e.g. an sglang deployment serving a chat model) do not also
+// serve embeddings, so profiles whose primary model can't do that will
+// likely need LLM* set to an endpoint that can. All three LLM* fields must
+// be set together or not at all.
+//
+// In platform mode, APIKeyEnv names the host environment variable holding
+// the mem0.ai account API key (from https://app.mem0.ai/dashboard/api-keys)
+// — never placed in profile JSON. It is staged the same way LLMAPIKeyEnv is
+// (see mem0PlatformKeyPath's doc comment in pkg/harness/openclaw), read from
+// the named host env var and exported into the container under the fixed
+// name the plugin's config schema expects (MEM0_API_KEY), referenced from
+// rendered config as "${MEM0_API_KEY}". BaseURL optionally overrides the
+// plugin's default https://api.mem0.ai, e.g. for a self-hosted mem0
+// platform-API-compatible endpoint.
 type HarnessMem0Config struct {
 	Enabled      bool   `json:"enabled,omitempty"`
+	Mode         string `json:"mode,omitempty"`
 	LLMBaseURL   string `json:"llm_base_url,omitempty"`
 	LLMModel     string `json:"llm_model,omitempty"`
 	LLMAPIKeyEnv string `json:"llm_api_key_env,omitempty"`
+	APIKeyEnv    string `json:"api_key_env,omitempty"`
+	BaseURL      string `json:"base_url,omitempty"`
 }
 
 // HarnessWebSearchConfig is an OpenClaw/Hermes-only concept (see
@@ -898,6 +957,24 @@ func (h *HarnessConfig) validate() error {
 	if h.AMEM.Scope != "" && !h.AMEM.Enabled {
 		return errors.New("harness.amem.scope requires harness.amem.enabled")
 	}
+	if h.AMEM.RerankModel != "" && !h.AMEM.Enabled {
+		return errors.New("harness.amem.rerank_model requires harness.amem.enabled")
+	}
+	if h.AMEM.RerankThreshold != nil && !h.AMEM.Enabled {
+		return errors.New("harness.amem.rerank_threshold requires harness.amem.enabled")
+	}
+	if h.AMEM.RerankDevice != "" && !h.AMEM.Enabled {
+		return errors.New("harness.amem.rerank_device requires harness.amem.enabled")
+	}
+	if h.AMEM.DisableTaskTraceFallback && !h.AMEM.Enabled {
+		return errors.New("harness.amem.disable_task_trace_fallback requires harness.amem.enabled")
+	}
+	if h.AMEM.DisableGoalEmbedding && !h.AMEM.Enabled {
+		return errors.New("harness.amem.disable_goal_embedding requires harness.amem.enabled")
+	}
+	if h.AMEM.DisableRerank && !h.AMEM.Enabled {
+		return errors.New("harness.amem.disable_rerank requires harness.amem.enabled")
+	}
 	if h.AMEM.LLMBaseURL != "" || h.AMEM.LLMModel != "" || h.AMEM.LLMAPIKeyEnv != "" {
 		if !h.AMEM.Enabled {
 			return errors.New("harness.amem.llm_base_url/llm_model/llm_api_key_env require harness.amem.enabled")
@@ -937,6 +1014,30 @@ func (h *HarnessConfig) validate() error {
 	}
 	if h.AMEM.Enabled && h.Mem0.Enabled {
 		return errors.New("harness.amem and harness.mem0 are mutually exclusive")
+	}
+	if h.Mem0.Mode != "" && h.Mem0.Mode != "open-source" && h.Mem0.Mode != "platform" {
+		return errors.New(`harness.mem0.mode must be "open-source" or "platform"`)
+	}
+	if h.Mem0.Mode != "" && !h.Mem0.Enabled {
+		return errors.New("harness.mem0.mode requires harness.mem0.enabled")
+	}
+	if h.Mem0.Mode == "platform" {
+		if h.Mem0.LLMBaseURL != "" || h.Mem0.LLMModel != "" || h.Mem0.LLMAPIKeyEnv != "" {
+			return errors.New(`harness.mem0.llm_base_url/llm_model/llm_api_key_env are open-source-mode only, not valid with mode "platform"`)
+		}
+		if h.Mem0.APIKeyEnv == "" {
+			return errors.New(`harness.mem0.mode "platform" requires harness.mem0.api_key_env`)
+		}
+		if !validEnvName(h.Mem0.APIKeyEnv) {
+			return errors.New("harness.mem0.api_key_env must be an environment variable name")
+		}
+		if h.Mem0.BaseURL != "" {
+			if err := validateHTTPBaseURL("harness.mem0.base_url", h.Mem0.BaseURL); err != nil {
+				return err
+			}
+		}
+	} else if h.Mem0.APIKeyEnv != "" || h.Mem0.BaseURL != "" {
+		return errors.New(`harness.mem0.api_key_env/base_url require harness.mem0.mode "platform"`)
 	}
 	if h.Mem0.LLMBaseURL != "" || h.Mem0.LLMModel != "" || h.Mem0.LLMAPIKeyEnv != "" {
 		if !h.Mem0.Enabled {
