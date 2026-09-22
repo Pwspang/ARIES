@@ -427,14 +427,18 @@ type sshConfig struct {
 	KnownHostsFile        string `json:"knownHostsFile"`
 }
 
-// amemToolNames is openclaw-amem@2.1.1's full tool surface, with no plugin-ID
-// prefix — confirmed against a live `openclaw gateway run` boot log ("[plugins]
-// openclaw-amem: memory_search, memory_add, memory_list, memory_consolidate,
-// memory_quality_scan tools registered"). A version bump could add/rename
-// tools, in which case this list needs re-capturing from a live run rather
-// than guessed, exactly like the old MCP-based amem's tool list before it.
+// amemToolNames is our fork's full tool surface, with no plugin-ID prefix.
+// Upstream openclaw-amem@2.1.1 registers memory_search, memory_add,
+// memory_list, memory_consolidate, memory_quality_scan (confirmed against a
+// live `openclaw gateway run` boot log). The fork additionally registers
+// memory_add_episodic (third_party/amem-fork/packages/openclaw-amem/src/
+// index.ts), exposing amem-core's addEpisodic — the cheap, no-LLM raw-event
+// write path — as its own tool. A version bump (upstream or fork) could
+// add/rename tools, in which case this list needs re-capturing from a live
+// run rather than guessed, exactly like the old MCP-based amem's tool list
+// before it.
 var amemToolNames = []string{
-	"memory_search", "memory_add", "memory_list", "memory_consolidate", "memory_quality_scan",
+	"memory_search", "memory_add", "memory_add_episodic", "memory_list", "memory_consolidate", "memory_quality_scan",
 }
 
 // losslessClawToolNames is lossless-claw's agent-accessible tool surface per

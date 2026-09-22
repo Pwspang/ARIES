@@ -1,5 +1,5 @@
 {
-  "name": "smoke2-amem-repo-control-fork-dev",
+  "name": "smoke2-amem-repo-both-fork-dev-task1",
   "versions_file": "../configs/versions-amem-fork-dev.json",
   "overrides_file": "",
   "execution": {
@@ -9,8 +9,7 @@
     "type": "sweatlasqa",
     "root": ".cache/swe-atlas-qa",
     "tasks": [
-      "task-6905333b74f22949d97ba9ab",
-      "task-6905333b74f22949d97ba9ae"
+      "task-6905333b74f22949d97ba9ab"
     ],
     "judge": {
       "provider": "deepseek",
@@ -28,8 +27,8 @@
       "llm_model": "Qwen/Qwen3.6-35B-A3B-FP8",
       "llm_api_key_env": "SGLANG_API_KEY",
       "rerank_threshold": 0,
-      "disable_goal_embedding": true,
-      "disable_rerank": true
+      "disable_goal_embedding": false,
+      "disable_rerank": false
     }
   },
   "sandbox": {
