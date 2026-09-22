@@ -384,3 +384,58 @@ func TestTasksAppendsAMEMBootstrapOnlyWhenEnabled(t *testing.T) {
 		})
 	}
 }
+
+func TestTasksAppendsEpisodicBootstrapOnlyWhenEnabled(t *testing.T) {
+	root := writeFixture(t)
+
+	for _, testCase := range []struct {
+		name    string
+		enabled bool
+	}{{name: "disabled"}, {name: "enabled", enabled: true}} {
+		t.Run(testCase.name, func(t *testing.T) {
+			options := testOptions(root, []string{qaTaskID}, t.TempDir())
+			options.EpisodicBootstrap = testCase.enabled
+			benchmark, err := New(options)
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			tasks, err := benchmark.Tasks(context.Background())
+			if err != nil {
+				t.Fatalf("Tasks() error = %v", err)
+			}
+			if len(tasks) != 1 {
+				t.Fatalf("tasks = %#v", tasks)
+			}
+			want := strings.TrimSpace(qaInstruction) + amemBootstrapSuffix(false) + amemEpisodicBootstrapSuffix(testCase.enabled)
+			if tasks[0].Instruction != want {
+				t.Fatalf("Instruction = %q, want %q", tasks[0].Instruction, want)
+			}
+			mentionsEpisodicTool := strings.Contains(tasks[0].Instruction, "memory_add_episodic")
+			if mentionsEpisodicTool != testCase.enabled {
+				t.Fatalf("memory_add_episodic mentioned = %v, want %v", mentionsEpisodicTool, testCase.enabled)
+			}
+		})
+	}
+}
+
+func TestTasksComposesBothBootstrapProtocols(t *testing.T) {
+	root := writeFixture(t)
+	options := testOptions(root, []string{qaTaskID}, t.TempDir())
+	options.AMEMBootstrap = true
+	options.EpisodicBootstrap = true
+	benchmark, err := New(options)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	tasks, err := benchmark.Tasks(context.Background())
+	if err != nil {
+		t.Fatalf("Tasks() error = %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("tasks = %#v", tasks)
+	}
+	want := strings.TrimSpace(qaInstruction) + amemBootstrapSuffix(true) + amemEpisodicBootstrapSuffix(true)
+	if tasks[0].Instruction != want {
+		t.Fatalf("Instruction = %q, want %q", tasks[0].Instruction, want)
+	}
+}

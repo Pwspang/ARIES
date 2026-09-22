@@ -1225,6 +1225,59 @@ func TestSWEAtlasQAStudyArmsDifferOnlyInAMEM(t *testing.T) {
 	}
 }
 
+// TestSWEAtlasQAEpisodicArmDiffersOnlyInEpisodicBootstrap covers the
+// repo-scope episodic-memory arm added alongside H1-H4's control/task/repo/
+// global trio (see docs/benchmarks/swe-atlas-qa.md's episodic memory study,
+// H5/H6): each "-amem-repo-episodic-" profile must be identical to its
+// "-amem-repo-" counterpart in everything except
+// harness.amem.episodic_bootstrap, the same "differs in exactly one field"
+// invariant TestSWEAtlasQAStudyArmsDifferOnlyInAMEM enforces for scope.
+func TestSWEAtlasQAEpisodicArmDiffersOnlyInEpisodicBootstrap(t *testing.T) {
+	for _, prefix := range []string{
+		"openclaw-sweatlasqa-smoke4", "openclaw-sweatlasqa-pilot30", "openclaw-sweatlasqa-pilot30-ctxlimit",
+	} {
+		t.Run(prefix, func(t *testing.T) {
+			repoScoped, err := Load(filepath.Join("..", "..", "profiles", prefix+"-amem-repo-sglang.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			episodic, err := Load(filepath.Join("..", "..", "profiles", prefix+"-amem-repo-episodic-sglang.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if repoScoped.Harness.AMEM.EpisodicBootstrap {
+				t.Fatal("repo-scope arm must have episodic_bootstrap unset")
+			}
+			if !episodic.Harness.AMEM.EpisodicBootstrap {
+				t.Fatal("episodic arm must have episodic_bootstrap enabled")
+			}
+
+			normalizedEpisodic := episodic.Harness.AMEM
+			normalizedEpisodic.EpisodicBootstrap = false
+			if !reflect.DeepEqual(repoScoped.Harness.AMEM, normalizedEpisodic) {
+				t.Fatalf("harness.amem differs beyond episodic_bootstrap: %#v vs %#v", repoScoped.Harness.AMEM, normalizedEpisodic)
+			}
+
+			if !reflect.DeepEqual(repoScoped.Benchmark.Tasks, episodic.Benchmark.Tasks) {
+				t.Fatalf("task lists diverged:\n repo=%v\n episodic=%v", repoScoped.Benchmark.Tasks, episodic.Benchmark.Tasks)
+			}
+			if repoScoped.Versions.OpenClaw.Image != episodic.Versions.OpenClaw.Image {
+				t.Fatalf("OpenClaw image differs: %q vs %q", repoScoped.Versions.OpenClaw.Image, episodic.Versions.OpenClaw.Image)
+			}
+			if !reflect.DeepEqual(repoScoped.Model, episodic.Model) || !reflect.DeepEqual(repoScoped.Benchmark.Judge, episodic.Benchmark.Judge) {
+				t.Fatal("model or judge configuration differs between arms")
+			}
+			if repoScoped.Execution.Concurrency != episodic.Execution.Concurrency {
+				t.Fatalf("concurrency differs: %d vs %d", repoScoped.Execution.Concurrency, episodic.Execution.Concurrency)
+			}
+			if !reflect.DeepEqual(repoScoped.Runtime, episodic.Runtime) {
+				t.Fatal("runtime configuration differs between arms")
+			}
+		})
+	}
+}
+
 // The ctxlimit study exists to ask whether amem's benefit (if any) depends on
 // the harness actually compacting context away, which pilot30's own
 // unconstrained (200k-token) runs never triggered. Each ctxlimit-prefixed

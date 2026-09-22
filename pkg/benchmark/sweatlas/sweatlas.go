@@ -95,6 +95,38 @@ func amemBootstrapSuffix(enabled bool) string {
 	return amemBootstrapInstruction
 }
 
+// amemEpisodicBootstrapInstruction is appended to every task instruction when
+// Options.EpisodicBootstrap is set, in addition to (never instead of)
+// amemBootstrapInstruction above. It mandates the fork's memory_add_episodic
+// tool (third_party/amem-fork/packages/openclaw-amem/src/index.ts) — "log a
+// raw event faithfully, without LLM note construction, dedup, or linking",
+// contrasted in its own description with memory_add's "distilled fact or
+// conclusion" — specifically for failed attempts: a command that errored, a
+// hypothesis about the code that turned out wrong, a search path that was a
+// dead end. amemBootstrapInstruction's memory_add protocol has no natural
+// slot for this kind of content (it is written for substantive findings, not
+// dead ends), so this is a second, independent mandate rather than a
+// rewording of the first. See the plan this was added under
+// (externalising agent-centric episodic memory of failures, as opposed to
+// amem's existing user-centric fact/conclusion memory) for the full
+// rationale and the H5/H6 hypotheses it exists to test.
+const amemEpisodicBootstrapInstruction = "\n\nFailure log protocol (required): whenever an attempted action does not " +
+	"produce the result you expected — a command errors, a hypothesis about the codebase turns out wrong, a search " +
+	"path is a dead end — you must call memory_add_episodic immediately afterward, before trying an alternative " +
+	"approach, recording verbatim what you tried and why it did not work. This applies to every such failure, not " +
+	"just some of them, and skipping it does not satisfy this requirement. This is separate from and in addition to " +
+	"the memory_add protocol above for substantive findings; a failed attempt is not a substantive finding and " +
+	"belongs in memory_add_episodic instead."
+
+// amemEpisodicBootstrapSuffix returns amemEpisodicBootstrapInstruction when
+// enabled, or "" otherwise, mirroring amemBootstrapSuffix.
+func amemEpisodicBootstrapSuffix(enabled bool) string {
+	if !enabled {
+		return ""
+	}
+	return amemEpisodicBootstrapInstruction
+}
+
 // Options selects tasks from one pinned SWE-Atlas checkout and names the
 // judge model the injected verifier grades with. Judge and APIKeyLookup are
 // both mandatory: unlike Deep Research Bench, there is no default judge (no
@@ -117,18 +149,26 @@ type Options struct {
 	// harness config, so callers (cmd/aries/wiring.go) are responsible for
 	// keeping the two in sync.
 	AMEMBootstrap bool
+	// EpisodicBootstrap appends amemEpisodicBootstrapInstruction to every task
+	// instruction, additionally nudging the agent to log failed attempts via
+	// amem's memory_add_episodic tool. Set this from
+	// harness.amem.episodic_bootstrap — like AMEMBootstrap, meaningless
+	// without the amem plugin enabled, and it is the caller's (cmd/aries/
+	// wiring.go) responsibility to keep the two in sync.
+	EpisodicBootstrap bool
 }
 
 // Benchmark discovers selected SWE-Atlas QA tasks and retains their private
 // verifier trees until evaluation.
 type Benchmark struct {
-	root             string
-	taskIDs          []string
-	executionTaskIDs []string
-	outputDir        string
-	revision         string
-	judge            chatter
-	amemBootstrap    bool
+	root              string
+	taskIDs           []string
+	executionTaskIDs  []string
+	outputDir         string
+	revision          string
+	judge             chatter
+	amemBootstrap     bool
+	episodicBootstrap bool
 
 	mu      sync.RWMutex
 	details map[string]taskDetails
@@ -257,14 +297,15 @@ func New(options Options) (*Benchmark, error) {
 	}
 
 	return &Benchmark{
-		root:             filepath.Clean(options.Root),
-		taskIDs:          slices.Clone(options.TaskIDs),
-		executionTaskIDs: slices.Clone(executionIDs),
-		outputDir:        filepath.Clean(options.OutputDir),
-		revision:         options.Revision,
-		judge:            judge,
-		amemBootstrap:    options.AMEMBootstrap,
-		details:          make(map[string]taskDetails, len(options.TaskIDs)),
+		root:              filepath.Clean(options.Root),
+		taskIDs:           slices.Clone(options.TaskIDs),
+		executionTaskIDs:  slices.Clone(executionIDs),
+		outputDir:         filepath.Clean(options.OutputDir),
+		revision:          options.Revision,
+		judge:             judge,
+		amemBootstrap:     options.AMEMBootstrap,
+		episodicBootstrap: options.EpisodicBootstrap,
+		details:           make(map[string]taskDetails, len(options.TaskIDs)),
 	}, nil
 }
 
@@ -286,6 +327,7 @@ func (b *Benchmark) Tasks(ctx context.Context) ([]core.Task, error) {
 		executionID := b.executionTaskIDs[index]
 		task.ID = executionID
 		task.Instruction += amemBootstrapSuffix(b.amemBootstrap)
+		task.Instruction += amemEpisodicBootstrapSuffix(b.episodicBootstrap)
 		tasks = append(tasks, task)
 		details[executionID] = private
 	}
@@ -386,24 +428,24 @@ func loadTask(root, id string) (core.Task, taskDetails, error) {
 		return core.Task{}, taskDetails{}, fmt.Errorf("verifier.timeout_sec: %w", err)
 	}
 	return core.Task{
-			ID:          id,
-			Instruction: instruction,
-			Timeout:     agentTimeout,
-			Repository:  metadata.Repository,
-			BaseCommit:  metadata.BaseCommit,
-			Environment: core.Environment{
-				Image:        image,
-				Workdir:      workdir,
-				CPU:          parsed.Environment.CPUs,
-				MemoryMB:     parsed.Environment.MemoryMB,
-				GPUs:         parsed.Environment.GPUs,
-				AllowNetwork: parsed.Environment.AllowInternet,
-				Env:          cloneMap(parsed.Environment.Env),
-			},
-		}, taskDetails{
-			testsDir: testsDir,
-			timeout:  verifierTimeout,
-		}, nil
+		ID:          id,
+		Instruction: instruction,
+		Timeout:     agentTimeout,
+		Repository:  metadata.Repository,
+		BaseCommit:  metadata.BaseCommit,
+		Environment: core.Environment{
+			Image:        image,
+			Workdir:      workdir,
+			CPU:          parsed.Environment.CPUs,
+			MemoryMB:     parsed.Environment.MemoryMB,
+			GPUs:         parsed.Environment.GPUs,
+			AllowNetwork: parsed.Environment.AllowInternet,
+			Env:          cloneMap(parsed.Environment.Env),
+		},
+	}, taskDetails{
+		testsDir: testsDir,
+		timeout:  verifierTimeout,
+	}, nil
 }
 
 func rejectUnknownExecutionFields(meta toml.MetaData) error {

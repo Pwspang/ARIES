@@ -189,7 +189,8 @@ func newBenchmark(cfg config.Config, outputRoot, logicalID, occurrenceID string,
 			// Kept in sync with the OpenClaw harness's amem plugin here, the
 			// same way the deepresearchbench arm above does it: the benchmark
 			// package has no view of harness config.
-			AMEMBootstrap: cfg.Harness.Type == "openclaw" && cfg.Harness.AMEM.Enabled,
+			AMEMBootstrap:     cfg.Harness.Type == "openclaw" && cfg.Harness.AMEM.Enabled,
+			EpisodicBootstrap: cfg.Harness.Type == "openclaw" && cfg.Harness.AMEM.Enabled && cfg.Harness.AMEM.EpisodicBootstrap,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("construct sweatlasqa benchmark: %w", err)
@@ -465,7 +466,8 @@ func loadPreparationTasks(ctx context.Context, cfg config.Config, taskIDs []stri
 			// Kept in sync with the OpenClaw harness's amem plugin here, the
 			// same way the deepresearchbench arm above does it: the benchmark
 			// package has no view of harness config.
-			AMEMBootstrap: cfg.Harness.Type == "openclaw" && cfg.Harness.AMEM.Enabled,
+			AMEMBootstrap:     cfg.Harness.Type == "openclaw" && cfg.Harness.AMEM.Enabled,
+			EpisodicBootstrap: cfg.Harness.Type == "openclaw" && cfg.Harness.AMEM.Enabled && cfg.Harness.AMEM.EpisodicBootstrap,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("validate sweatlasqa profile: %w", err)

@@ -275,6 +275,17 @@ type HarnessAMEMConfig struct {
 	// ablation study's control arm needs, so it pays neither the reranker's
 	// latency nor its reordering, not just none of its filtering.
 	DisableRerank bool `json:"disable_rerank,omitempty"`
+	// EpisodicBootstrap appends a second, additive mandate (amemEpisodicBootstrapInstruction
+	// in pkg/benchmark/sweatlas) requiring the agent to log failed attempts —
+	// a command that errored, a hypothesis that turned out wrong, a dead-end
+	// search — via amem's memory_add_episodic tool, the fork's cheap raw-event
+	// write path (third_party/amem-fork/packages/openclaw-amem/src/index.ts),
+	// distinct from memory_add's LLM-distilled fact/conclusion path that
+	// AMEMBootstrap alone (via Enabled) already mandates. Meaningless without
+	// Enabled also set; requires no new plugin config, tool wiring, or Qdrant
+	// pool changes, since memory_add_episodic is already allow-listed
+	// (amemToolNames) and shares whatever Scope the arm already selects.
+	EpisodicBootstrap bool `json:"episodic_bootstrap,omitempty"`
 }
 
 // HarnessLosslessClawConfig enables the lossless-claw context-management
@@ -974,6 +985,9 @@ func (h *HarnessConfig) validate() error {
 	}
 	if h.AMEM.DisableRerank && !h.AMEM.Enabled {
 		return errors.New("harness.amem.disable_rerank requires harness.amem.enabled")
+	}
+	if h.AMEM.EpisodicBootstrap && !h.AMEM.Enabled {
+		return errors.New("harness.amem.episodic_bootstrap requires harness.amem.enabled")
 	}
 	if h.AMEM.LLMBaseURL != "" || h.AMEM.LLMModel != "" || h.AMEM.LLMAPIKeyEnv != "" {
 		if !h.AMEM.Enabled {

@@ -385,3 +385,91 @@ third or later repository, whether it depends on the two repositories being
 similar in domain, and whether an interleaved (rather than fully-grouped)
 task order changes the effect are open follow-up questions, not something
 this pilot30-ctxlimit arm itself tests.
+
+### The pilot30 episodic memory study: does logging failures help more than logging facts?
+
+H1-H4 above all concern amem's `memory_add` tool: an LLM-distilled "fact or
+conclusion" about the codebase, deduped and linked into a graph. Nothing in
+those studies asks the agent to record what it *tried and failed at* — a
+command that errored, a hypothesis about the code that turned out wrong, a
+dead-end search path — as a distinct kind of memory. The fork already ships
+the right primitive for this, exposed as an OpenClaw tool but never mandated
+by any ARIES bootstrap protocol until now: `memory_add_episodic` — "log a raw
+event faithfully, without LLM note construction, dedup, or linking — the
+cheap write path", explicitly contrasted in its own tool description with
+`memory_add`'s "distilled fact or conclusion."
+
+`harness.amem.episodic_bootstrap` (independent of, and additive to,
+`harness.amem.enabled`'s existing `memory_add` mandate) appends a second
+required protocol to the task instruction
+(`amemEpisodicBootstrapInstruction` in `pkg/benchmark/sweatlas/sweatlas.go`):
+whenever an attempted action does not produce the expected result, the agent
+must call `memory_add_episodic` immediately, before trying an alternative
+approach, recording verbatim what it tried and why it did not work. No new
+plugin config, tool wiring, or Qdrant/pool changes were needed —
+`memory_add_episodic` was already allow-listed (`amemToolNames` in
+`pkg/harness/openclaw/config.go`) and already shares whatever `harness.amem.scope`
+an arm selects, since amem's scope key is store-level, not tool-level.
+
+**Hypotheses.**
+
+- **H5 — within-repo failure-avoidance transfer.** Among repo-scoped arms,
+  the episodic arm should show a lower repeated-failure rate at later
+  positions in a repository's task sequence than the existing repo-scope
+  fact-only arm (H2's arm), and this should show up as either higher
+  `agg_score` or lower cost — the mechanism H2/H3 could never test, since
+  fact-memory has no natural slot for "this didn't work." A repeated-failure
+  rate of (roughly) zero in the fact-only arm — because nothing in that
+  protocol asks for failures to be logged at all, whether or not it would
+  help — is the expected null result that motivates this study, not a
+  confound in it.
+- **H6 — episodic memory is more robust to context-window compaction.** Under
+  `pilot30-ctxlimit`'s capped context window, the episodic arm's within-repo
+  transfer benefit (delta over control) should degrade less than the
+  fact-only repo-scope arm's, because episodic notes are written immediately
+  on failure to external storage rather than depending on the agent's own
+  compacted conversation history to remember what it already tried.
+
+**Arms.** A one-flag diff from the existing repo-scope arm, per replicate:
+
+- `openclaw-sweatlasqa-<replicate>-amem-repo-episodic-sglang.json` —
+  identical to `...-amem-repo-sglang.json` except
+  `harness.amem.episodic_bootstrap: true`.
+
+`TestSWEAtlasQAEpisodicArmDiffersOnlyInEpisodicBootstrap`
+(`pkg/config/config_test.go`) is the episodic-study analogue of
+`TestSWEAtlasQAStudyArmsDifferOnlyInAMEM`: it asserts the episodic arm has
+`episodic_bootstrap` enabled and the repo-scope arm does not, that
+`harness.amem` is otherwise identical between the two once that one field is
+normalized out, and the same task-list/model/judge/runtime/concurrency
+invariants as H1-H4's arms. A `smoke4` variant
+(`openclaw-sweatlasqa-smoke4-amem-repo-episodic-sglang.json`) exists to
+cheaply confirm `memory_add_episodic` actually fires under the new mandate
+before committing to the full `pilot30` scale, mirroring H1-H4's own
+smoke-before-pilot pattern.
+
+**Metrics and analysis.** All analysis is post-hoc from files already on
+disk, via a new script, `scripts/analyze_episodic_transfer.py`, which extends
+`summarize_sweatlas_arms.py`'s existing per-position/per-repo methodology
+with:
+
+- `n_episodic_writes`: `memory_add_episodic` calls per task occurrence,
+  parsed from `harness-turn-01/telemetry/<session>.jsonl` the same way
+  `extract_memory_retrieval_events.py` already parses `memory_search` calls.
+- A **repeated-failure signature**: normalized `(command, exit_code)` pairs
+  from `exec` tool calls that returned a non-zero `details.exitCode`. A
+  task's `n_repeated_exec_errors` counts how many of its own error
+  signatures were already seen in an *earlier* same-repo task within the
+  same run — the direct, mechanistic counterpart to H5/H6's aggregate-score
+  claim, distinct from (and checkable independently of) whether `agg_score`
+  moved at all.
+- The same paired per-task-delta methodology (same task, arm A − arm B
+  score) H1-H4 established, applied here between the repo-scope and episodic
+  arms specifically.
+
+**Out of scope for this study.** Whether the episodic protocol composes with
+(or trades off against) H4's global-scope cross-repo transfer, whether a
+looser failure-detection signature (fuzzy-matching similar-but-not-identical
+commands) changes the repeated-failure count materially, and whether the
+effect replicates on the full 124-task set are open follow-up questions, not
+something this study itself tests.
