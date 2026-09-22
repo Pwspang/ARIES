@@ -1228,8 +1228,20 @@ func TestSWEAtlasQAStudyArmsDifferOnlyInAMEM(t *testing.T) {
 // TestSWEAtlasQAEpisodicArmDiffersOnlyInEpisodicBootstrap covers the
 // repo-scope episodic-memory arm added alongside H1-H4's control/task/repo/
 // global trio (see docs/benchmarks/swe-atlas-qa.md's episodic memory study,
-// H5/H6): each "-amem-repo-episodic-" profile must be identical to its
-// "-amem-repo-" counterpart in everything except
+// H5/H6). memory_add_episodic only exists in the fork build
+// (openclaw-amem:aries-fork-dev, versions-amem-fork-dev.json) — confirmed
+// live: the plain "-amem-repo-" arm's pinned image
+// (ghcr.io/pwspang/openclaw-amem, versions-amem.json) registers only
+// upstream openclaw-amem@2.1.1's tool set (memory_search, memory_add,
+// memory_list, memory_consolidate, memory_quality_scan — no
+// memory_add_episodic), so a smoke4 run against a first version of this arm
+// based on the plain "-amem-repo-" profile logged zero
+// memory_add_episodic calls despite real exec failures and correctly
+// delivered instruction text. Each "-amem-repo-episodic-" profile is
+// therefore based on its "-amem-repo-control-" sibling instead (the fork
+// image with the goal-embed/rerank ablation flags forced off — the same
+// fork-parity baseline TestSWEAtlasQAGoalEmbedRerankArmsDifferOnlyInAblationFlags's
+// arms use), and must be identical to it in everything except
 // harness.amem.episodic_bootstrap, the same "differs in exactly one field"
 // invariant TestSWEAtlasQAStudyArmsDifferOnlyInAMEM enforces for scope.
 func TestSWEAtlasQAEpisodicArmDiffersOnlyInEpisodicBootstrap(t *testing.T) {
@@ -1237,7 +1249,7 @@ func TestSWEAtlasQAEpisodicArmDiffersOnlyInEpisodicBootstrap(t *testing.T) {
 		"openclaw-sweatlasqa-smoke4", "openclaw-sweatlasqa-pilot30", "openclaw-sweatlasqa-pilot30-ctxlimit",
 	} {
 		t.Run(prefix, func(t *testing.T) {
-			repoScoped, err := Load(filepath.Join("..", "..", "profiles", prefix+"-amem-repo-sglang.json"))
+			control, err := Load(filepath.Join("..", "..", "profiles", prefix+"-amem-repo-control-sglang.json"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1246,32 +1258,36 @@ func TestSWEAtlasQAEpisodicArmDiffersOnlyInEpisodicBootstrap(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if repoScoped.Harness.AMEM.EpisodicBootstrap {
-				t.Fatal("repo-scope arm must have episodic_bootstrap unset")
+			if control.Harness.AMEM.EpisodicBootstrap {
+				t.Fatal("control arm must have episodic_bootstrap unset")
 			}
 			if !episodic.Harness.AMEM.EpisodicBootstrap {
 				t.Fatal("episodic arm must have episodic_bootstrap enabled")
 			}
+			if !control.Harness.AMEM.DisableGoalEmbedding || !control.Harness.AMEM.DisableRerank ||
+				!episodic.Harness.AMEM.DisableGoalEmbedding || !episodic.Harness.AMEM.DisableRerank {
+				t.Fatal("both arms must keep the fork's goal-embed/rerank ablation flags off (disabled), isolating episodic_bootstrap as the only variable under test")
+			}
 
 			normalizedEpisodic := episodic.Harness.AMEM
 			normalizedEpisodic.EpisodicBootstrap = false
-			if !reflect.DeepEqual(repoScoped.Harness.AMEM, normalizedEpisodic) {
-				t.Fatalf("harness.amem differs beyond episodic_bootstrap: %#v vs %#v", repoScoped.Harness.AMEM, normalizedEpisodic)
+			if !reflect.DeepEqual(control.Harness.AMEM, normalizedEpisodic) {
+				t.Fatalf("harness.amem differs beyond episodic_bootstrap: %#v vs %#v", control.Harness.AMEM, normalizedEpisodic)
 			}
 
-			if !reflect.DeepEqual(repoScoped.Benchmark.Tasks, episodic.Benchmark.Tasks) {
-				t.Fatalf("task lists diverged:\n repo=%v\n episodic=%v", repoScoped.Benchmark.Tasks, episodic.Benchmark.Tasks)
+			if !reflect.DeepEqual(control.Benchmark.Tasks, episodic.Benchmark.Tasks) {
+				t.Fatalf("task lists diverged:\n control=%v\n episodic=%v", control.Benchmark.Tasks, episodic.Benchmark.Tasks)
 			}
-			if repoScoped.Versions.OpenClaw.Image != episodic.Versions.OpenClaw.Image {
-				t.Fatalf("OpenClaw image differs: %q vs %q", repoScoped.Versions.OpenClaw.Image, episodic.Versions.OpenClaw.Image)
+			if control.Versions.OpenClaw.Image != episodic.Versions.OpenClaw.Image {
+				t.Fatalf("OpenClaw image differs: %q vs %q", control.Versions.OpenClaw.Image, episodic.Versions.OpenClaw.Image)
 			}
-			if !reflect.DeepEqual(repoScoped.Model, episodic.Model) || !reflect.DeepEqual(repoScoped.Benchmark.Judge, episodic.Benchmark.Judge) {
+			if !reflect.DeepEqual(control.Model, episodic.Model) || !reflect.DeepEqual(control.Benchmark.Judge, episodic.Benchmark.Judge) {
 				t.Fatal("model or judge configuration differs between arms")
 			}
-			if repoScoped.Execution.Concurrency != episodic.Execution.Concurrency {
-				t.Fatalf("concurrency differs: %d vs %d", repoScoped.Execution.Concurrency, episodic.Execution.Concurrency)
+			if control.Execution.Concurrency != episodic.Execution.Concurrency {
+				t.Fatalf("concurrency differs: %d vs %d", control.Execution.Concurrency, episodic.Execution.Concurrency)
 			}
-			if !reflect.DeepEqual(repoScoped.Runtime, episodic.Runtime) {
+			if !reflect.DeepEqual(control.Runtime, episodic.Runtime) {
 				t.Fatal("runtime configuration differs between arms")
 			}
 		})

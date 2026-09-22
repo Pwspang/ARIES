@@ -403,13 +403,48 @@ cheap write path", explicitly contrasted in its own tool description with
 `harness.amem.enabled`'s existing `memory_add` mandate) appends a second
 required protocol to the task instruction
 (`amemEpisodicBootstrapInstruction` in `pkg/benchmark/sweatlas/sweatlas.go`):
-whenever an attempted action does not produce the expected result, the agent
-must call `memory_add_episodic` immediately, before trying an alternative
-approach, recording verbatim what it tried and why it did not work. No new
-plugin config, tool wiring, or Qdrant/pool changes were needed —
-`memory_add_episodic` was already allow-listed (`amemToolNames` in
-`pkg/harness/openclaw/config.go`) and already shares whatever `harness.amem.scope`
-an arm selects, since amem's scope key is store-level, not tool-level.
+every time an `exec` call returns a non-zero exit code, the agent must call
+`memory_add_episodic` immediately, before running another command, recording
+verbatim which command it ran and what the error said. No new plugin config,
+tool wiring, or Qdrant/pool changes were needed — `memory_add_episodic` was
+already allow-listed (`amemToolNames` in `pkg/harness/openclaw/config.go`)
+and already shares whatever `harness.amem.scope` an arm selects, since amem's
+scope key is store-level, not tool-level.
+
+The trigger is deliberately anchored to `exec`'s own non-zero exit code — an
+objective, tool-observable event — rather than a subjective "did this work as
+intended" judgment. A first version of the wording used the subjective
+phrasing and was verified against a real `smoke4` run: the instruction
+reached the agent correctly (confirmed in each task's rendered
+`instruction.md`) and real failures occurred (6 non-zero-exit `exec` calls
+pooled across the 4 tasks), but `memory_add_episodic` was never called once —
+the same failure mode `amemBootstrapInstruction`'s own doc comment already
+recorded for a first, non-mandatory phrasing of the original `memory_add`
+protocol. The exit-code-anchored wording mirrors how that protocol anchors
+its own trigger ("every `web_fetch` call" / "every command that reveals
+structure") to something observable rather than judged.
+
+A second smoke4 run with the exit-code-anchored wording *still* logged zero
+`memory_add_episodic` calls despite 10 non-zero-exit `exec` calls in the
+first task alone — this time not a wording problem at all.
+`gateway.log`'s own plugin-registration line
+(`openclaw-amem: memory_search, memory_add, memory_list, memory_consolidate,
+memory_quality_scan tools registered`) showed `memory_add_episodic` was never
+registered as a tool in the first place: the episodic arm's `versions_file`
+had been inherited unchanged from the plain `-amem-repo-` profile
+(`configs/versions-amem.json`, pinning `ghcr.io/pwspang/openclaw-amem`), which
+bundles **upstream** `openclaw-amem@2.1.1` — confirmed by extracting that
+image's installed plugin and finding no `memory_add_episodic` string
+anywhere in its `dist/`. Only the vendored fork build
+(`openclaw-amem:aries-fork-dev`, `configs/versions-amem-fork-dev.json` —
+already how `amemToolNames`'s doc comment described the split, and already
+how the goal-embed/rerank ablation arms below are pinned) actually registers
+it. The episodic arm was fixed to use the fork image, and — since that also
+requires disabling the fork's goal-embed/rerank behavior to keep the
+comparison uncontaminated by an unrelated ablation dimension — is now based
+on a `-amem-repo-control-` sibling profile (fork image, both ablation flags
+forced off) rather than the plain upstream-image `-amem-repo-` arm; see
+"Arms" below.
 
 **Hypotheses.**
 
@@ -430,23 +465,35 @@ an arm selects, since amem's scope key is store-level, not tool-level.
   on failure to external storage rather than depending on the agent's own
   compacted conversation history to remember what it already tried.
 
-**Arms.** A one-flag diff from the existing repo-scope arm, per replicate:
+**Arms.** A one-flag diff from a fork-image, ablations-off `-amem-repo-control-`
+sibling (not H2's plain `-amem-repo-` arm, which cannot run
+`memory_add_episodic` at all — see above), per replicate:
 
+- `openclaw-sweatlasqa-<replicate>-amem-repo-control-sglang.json` — the
+  fork-parity baseline: `versions_file` pinned to
+  `configs/versions-amem-fork-dev.json` and both
+  `harness.amem.disable_goal_embedding`/`disable_rerank` forced `true`, so it
+  behaves like H2's repo-scope arm but on the image that can actually
+  register `memory_add_episodic`. Already exists at `pilot30` scale (shared
+  with the goal-embed/rerank ablation study below); added at `smoke4` and
+  `pilot30-ctxlimit` scale for this study.
 - `openclaw-sweatlasqa-<replicate>-amem-repo-episodic-sglang.json` —
-  identical to `...-amem-repo-sglang.json` except
+  identical to its `-amem-repo-control-` sibling except
   `harness.amem.episodic_bootstrap: true`.
 
 `TestSWEAtlasQAEpisodicArmDiffersOnlyInEpisodicBootstrap`
 (`pkg/config/config_test.go`) is the episodic-study analogue of
 `TestSWEAtlasQAStudyArmsDifferOnlyInAMEM`: it asserts the episodic arm has
-`episodic_bootstrap` enabled and the repo-scope arm does not, that
-`harness.amem` is otherwise identical between the two once that one field is
-normalized out, and the same task-list/model/judge/runtime/concurrency
-invariants as H1-H4's arms. A `smoke4` variant
+`episodic_bootstrap` enabled and its control sibling does not, that both keep
+the ablation flags off, that `harness.amem` is otherwise identical between
+the two once `episodic_bootstrap` is normalized out, and the same
+task-list/image/model/judge/runtime/concurrency invariants as H1-H4's arms. A
+`smoke4` variant
 (`openclaw-sweatlasqa-smoke4-amem-repo-episodic-sglang.json`) exists to
 cheaply confirm `memory_add_episodic` actually fires under the new mandate
 before committing to the full `pilot30` scale, mirroring H1-H4's own
-smoke-before-pilot pattern.
+smoke-before-pilot pattern — this is the run that caught both failure modes
+above.
 
 **Metrics and analysis.** All analysis is post-hoc from files already on
 disk, via a new script, `scripts/analyze_episodic_transfer.py`, which extends

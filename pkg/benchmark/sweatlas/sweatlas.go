@@ -101,22 +101,33 @@ func amemBootstrapSuffix(enabled bool) string {
 // tool (third_party/amem-fork/packages/openclaw-amem/src/index.ts) — "log a
 // raw event faithfully, without LLM note construction, dedup, or linking",
 // contrasted in its own description with memory_add's "distilled fact or
-// conclusion" — specifically for failed attempts: a command that errored, a
-// hypothesis about the code that turned out wrong, a search path that was a
-// dead end. amemBootstrapInstruction's memory_add protocol has no natural
-// slot for this kind of content (it is written for substantive findings, not
-// dead ends), so this is a second, independent mandate rather than a
-// rewording of the first. See the plan this was added under
-// (externalising agent-centric episodic memory of failures, as opposed to
-// amem's existing user-centric fact/conclusion memory) for the full
-// rationale and the H5/H6 hypotheses it exists to test.
-const amemEpisodicBootstrapInstruction = "\n\nFailure log protocol (required): whenever an attempted action does not " +
-	"produce the result you expected — a command errors, a hypothesis about the codebase turns out wrong, a search " +
-	"path is a dead end — you must call memory_add_episodic immediately afterward, before trying an alternative " +
-	"approach, recording verbatim what you tried and why it did not work. This applies to every such failure, not " +
-	"just some of them, and skipping it does not satisfy this requirement. This is separate from and in addition to " +
-	"the memory_add protocol above for substantive findings; a failed attempt is not a substantive finding and " +
-	"belongs in memory_add_episodic instead."
+// conclusion" — specifically for failed attempts. amemBootstrapInstruction's
+// memory_add protocol has no natural slot for this kind of content (it is
+// written for substantive findings, not dead ends), so this is a second,
+// independent mandate rather than a rewording of the first.
+//
+// A first version of this instruction anchored the trigger to a subjective
+// judgment ("whenever an attempted action does not produce the result you
+// expected") rather than an observable event, mirroring how a first,
+// non-mandatory phrasing of amemBootstrapInstruction was found (see that
+// constant's doc comment) to go unfollowed. A smoke4 run against that
+// version confirmed the same failure mode here: the instruction was
+// delivered verbatim (confirmed in each task's rendered instruction.md) and
+// real exec failures occurred (6 non-zero-exit exec calls pooled across the
+// 4 tasks), but memory_add_episodic was never called once. The wording below
+// instead anchors the trigger to exec's own non-zero exit code — the same
+// concrete, tool-observable signal amemBootstrapInstruction anchors "every
+// web_fetch call"/"every command that reveals structure" to, rather than a
+// self-assessed "did this work as intended" judgment call — and should be
+// re-verified with another smoke4 run before being trusted for the pilot30
+// study.
+const amemEpisodicBootstrapInstruction = "\n\nFailure log protocol (required): every time you run an exec command " +
+	"and its result shows a non-zero exit code, you must call memory_add_episodic immediately afterward, before " +
+	"running another command, recording verbatim which command you ran and what its error output said. This " +
+	"applies to every exec call that returns a non-zero exit code in this task, not just some of them; skipping it " +
+	"for any of them does not satisfy this requirement, and a successful (exit code 0) command never requires this " +
+	"call. This is separate from and in addition to the memory_add protocol above for substantive findings; a " +
+	"failed command is not a substantive finding and belongs in memory_add_episodic instead."
 
 // amemEpisodicBootstrapSuffix returns amemEpisodicBootstrapInstruction when
 // enabled, or "" otherwise, mirroring amemBootstrapSuffix.

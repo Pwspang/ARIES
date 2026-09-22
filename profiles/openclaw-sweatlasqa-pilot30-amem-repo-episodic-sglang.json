@@ -1,6 +1,6 @@
 {
   "name": "openclaw-sweatlasqa-pilot30-amem-repo-episodic-sglang",
-  "versions_file": "../configs/versions-amem.json",
+  "versions_file": "../configs/versions-amem-fork-dev.json",
   "overrides_file": "",
   "execution": {
     "concurrency": 1
@@ -55,6 +55,8 @@
       "llm_base_url": "http://192.168.111.200:8100/v1",
       "llm_model": "Qwen/Qwen3.6-35B-A3B-FP8",
       "llm_api_key_env": "SGLANG_API_KEY",
+      "disable_goal_embedding": true,
+      "disable_rerank": true,
       "episodic_bootstrap": true
     }
   },

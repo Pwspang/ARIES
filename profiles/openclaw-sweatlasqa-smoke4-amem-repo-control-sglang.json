@@ -1,5 +1,5 @@
 {
-  "name": "openclaw-sweatlasqa-smoke4-amem-repo-episodic-sglang",
+  "name": "openclaw-sweatlasqa-smoke4-amem-repo-control-sglang",
   "versions_file": "../configs/versions-amem-fork-dev.json",
   "overrides_file": "",
   "execution": {
@@ -30,8 +30,7 @@
       "llm_model": "Qwen/Qwen3.6-35B-A3B-FP8",
       "llm_api_key_env": "SGLANG_API_KEY",
       "disable_goal_embedding": true,
-      "disable_rerank": true,
-      "episodic_bootstrap": true
+      "disable_rerank": true
     }
   },
   "sandbox": {
