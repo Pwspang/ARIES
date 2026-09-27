@@ -246,15 +246,198 @@ func TestMemRLStartPassesTaskIDAndStagesRewards(t *testing.T) {
 	}
 }
 
-func TestMemRLEnvironmentSelectsRetrieval(t *testing.T) {
-	for retrieval, want := range map[string][]string{
-		"":           {"MEMRL_REWARD_SOURCE=external", "MEMRL_TASK_ID=t-001"},
-		"value":      {"MEMRL_REWARD_SOURCE=external", "MEMRL_TASK_ID=t-001"},
-		"similarity": {"MEMRL_REWARD_SOURCE=external", "MEMRL_TASK_ID=t-001", "MEMRL_LAM=0", "MEMRL_EPSILON=0"},
+func TestMemRLEnvironmentByMode(t *testing.T) {
+	base := []string{"MEMRL_REWARD_SOURCE=external", "MEMRL_TASK_ID=t-001"}
+	for name, test := range map[string]struct {
+		frozen, batch bool
+		want          []string
+	}{
+		"sequential": {want: base},
+		"frozen":     {frozen: true, want: append(slices.Clone(base), "MEMRL_FROZEN=1", "MEMRL_EPSILON=0")},
+		"batched":    {batch: true, want: append(slices.Clone(base), "MEMRL_BATCH=1")},
 	} {
-		if got := memrlEnvironment("t-001", retrieval); !slices.Equal(got, want) {
-			t.Fatalf("memrlEnvironment(%q) = %v, want %v", retrieval, got, want)
+		if got := memrlEnvironment("t-001", test.frozen, test.batch); !slices.Equal(got, test.want) {
+			t.Fatalf("%s environment = %v, want %v", name, got, test.want)
 		}
+	}
+}
+
+func TestMemRLStateByMode(t *testing.T) {
+	fake := newFakeDocker()
+	manager := newMemRLManager(t, fake)
+	run, rewards := sqliteStore("run"), []byte(`{"t-001": 1}`+"\n")
+	if err := replacePrivateFile(manager.memrlStorePath, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := replacePrivateFile(filepath.Join(filepath.Dir(manager.memrlStorePath), memrlRewardsName), rewards); err != nil {
+		t.Fatal(err)
+	}
+	store, staged, err := manager.readMemRLState()
+	if err != nil || !bytes.Equal(store, run) || !bytes.Equal(staged, rewards) {
+		t.Fatalf("sequential state = %q, %q, %v", store, staged, err)
+	}
+	manager.memrlBatch = true
+	store, staged, err = manager.readMemRLState()
+	if err != nil || !bytes.Equal(store, run) || staged != nil {
+		t.Fatalf("batched state = %q, %q, %v: a batch must start from the run store and apply no rewards", store, staged, err)
+	}
+	manager.memrlBatch = false
+	manager.memrlFrozenStore = filepath.Join(t.TempDir(), "trained")
+	trained := sqliteStore("trained")
+	if err := replacePrivateFile(filepath.Join(manager.memrlFrozenStore, memrlStoreName), trained); err != nil {
+		t.Fatal(err)
+	}
+	store, staged, err = manager.readMemRLState()
+	if err != nil || !bytes.Equal(store, trained) || staged != nil {
+		t.Fatalf("frozen state = %q, %q, %v: every frozen task must read the trained store", store, staged, err)
+	}
+	if err := manager.Start(context.Background(), testRequest(t)); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(context.Background())
+	if !slices.Contains(fake.created.Config.Env, "MEMRL_FROZEN=1") {
+		t.Fatalf("env %v lacks MEMRL_FROZEN=1", fake.created.Config.Env)
+	}
+}
+
+func TestMemRLBatchedTaskQueuesItsSessionAndKeepsTheRunStore(t *testing.T) {
+	fake := newFakeDocker()
+	manager := newMemRLManager(t, fake)
+	manager.memrlBatch = true
+	run := sqliteStore("snapshot for this batch")
+	if err := replacePrivateFile(manager.memrlStorePath, run); err != nil {
+		t.Fatal(err)
+	}
+	request := testRequest(t)
+	parked := []byte(`{"task_id": "` + request.TaskID + `", "session_id": "s"}`)
+	fake.copyFiles = map[string][]byte{memrlStoreName: sqliteStore("task's own copy"), memrlPendingName: parked}
+	if err := manager.Start(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(fake.created.Config.Env, "MEMRL_BATCH=1") {
+		t.Fatalf("env %v lacks MEMRL_BATCH=1", fake.created.Config.Env)
+	}
+	if _, err := manager.Run(context.Background(), "task"); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if stored, _ := os.ReadFile(manager.memrlStorePath); !bytes.Equal(stored, run) {
+		t.Fatalf("a batched task replaced the run store with %q", stored)
+	}
+	queued, err := os.ReadFile(filepath.Join(filepath.Dir(manager.memrlStorePath), memrlPendingDir, request.TaskID+".json"))
+	if err != nil || !bytes.Equal(queued, parked) {
+		t.Fatalf("queued session = %q, %v", queued, err)
+	}
+}
+
+func TestMemRLBatchRejectsAnotherTasksSession(t *testing.T) {
+	fake := newFakeDocker()
+	manager := newMemRLManager(t, fake)
+	manager.memrlBatch = true
+	fake.copyFiles = map[string][]byte{memrlStoreName: sqliteStore("copy"), memrlPendingName: []byte(`{"task_id": "someone-else"}`)}
+	if err := manager.Start(context.Background(), testRequest(t)); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(context.Background())
+	if _, err := manager.Run(context.Background(), "task"); err == nil || !strings.Contains(err.Error(), "not a JSON object for this task") {
+		t.Fatalf("Run with a foreign parked session: %v", err)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(filepath.Dir(manager.memrlStorePath), memrlPendingDir)); len(entries) != 0 {
+		t.Fatalf("a foreign session was queued: %v", entries)
+	}
+}
+
+func TestFinalizeMemRLBatchAppliesParkedSessions(t *testing.T) {
+	fake := newFakeDocker()
+	manager := newMemRLManager(t, fake)
+	manager.memrlBatch = true
+	runDir := filepath.Dir(manager.memrlStorePath)
+	if err := manager.FinalizeMemRLBatch(context.Background(), testRequest(t).Model); err != nil || fake.createCalls != 0 {
+		t.Fatalf("an empty batch must do nothing: %v, %d containers", err, fake.createCalls)
+	}
+	for _, task := range []string{"t-001", "t-002"} {
+		if err := replacePrivateFile(filepath.Join(runDir, memrlPendingDir, task+".json"), []byte(`{"task_id": "`+task+`"}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := replacePrivateFile(filepath.Join(runDir, memrlRewardsName), []byte(`{"t-001": 1, "t-002": -1}`+"\n")); err != nil {
+		t.Fatal(err)
+	}
+	updated := sqliteStore("after the batch")
+	fake.copyFiles = map[string][]byte{memrlStoreName: updated}
+	if err := manager.FinalizeMemRLBatch(context.Background(), testRequest(t).Model); err != nil {
+		t.Fatal(err)
+	}
+	if fake.finalizeCalls != 1 || !fake.removed {
+		t.Fatalf("finalize calls = %d, container removed = %v", fake.finalizeCalls, fake.removed)
+	}
+	if fake.created.Config.Labels["aries.kind"] != "hermes-memrl-batch" || string(fake.created.HostConfig.NetworkMode) != "bridge" {
+		t.Fatalf("batch update container = %#v", fake.created)
+	}
+	for _, name := range []string{"t-001.json", "t-002.json", "rewards.json"} {
+		if _, ok := stagedFileContent(t, fake.archive, strings.TrimPrefix(memrlStoreContainerDir, "/")+"/"+map[bool]string{true: memrlPendingDir + "/", false: ""}[name != "rewards.json"]+name); !ok {
+			t.Fatalf("batch update did not stage %s", name)
+		}
+	}
+	if key, ok := stagedFileContent(t, fake.archive, strings.TrimPrefix(modelKeyPath, "/")); !ok || string(key) != "model-secret" {
+		t.Fatal("batch update did not stage the model key file")
+	}
+	if slices.ContainsFunc(fake.created.Config.Env, func(value string) bool { return strings.Contains(value, "model-secret") }) {
+		t.Fatal("the model key reached the container environment")
+	}
+	if stored, _ := os.ReadFile(manager.memrlStorePath); !bytes.Equal(stored, updated) {
+		t.Fatalf("run store = %q", stored)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(runDir, memrlPendingDir)); len(entries) != 0 {
+		t.Fatalf("applied sessions still queued: %v", entries)
+	}
+	for _, name := range []string{"t-001.json", "t-002.json", "finalize.log"} {
+		if _, err := os.Stat(filepath.Join(runDir, memrlBatchesDir, "001", name)); err != nil {
+			t.Fatalf("batch 001 lacks %s: %v", name, err)
+		}
+	}
+}
+
+func TestFinalizeMemRLBatchFailureKeepsTheQueue(t *testing.T) {
+	fake := newFakeDocker()
+	manager := newMemRLManager(t, fake)
+	runDir := filepath.Dir(manager.memrlStorePath)
+	if err := replacePrivateFile(filepath.Join(runDir, memrlPendingDir, "t-001.json"), []byte(`{"task_id": "t-001"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.FinalizeMemRLBatch(context.Background(), testRequest(t).Model); err == nil || !strings.Contains(err.Error(), "no recorded rewards") {
+		t.Fatalf("batch without rewards: %v", err)
+	}
+	if err := replacePrivateFile(filepath.Join(runDir, memrlRewardsName), []byte(`{"t-001": 1}`+"\n")); err != nil {
+		t.Fatal(err)
+	}
+	previous := sqliteStore("before")
+	if err := replacePrivateFile(manager.memrlStorePath, previous); err != nil {
+		t.Fatal(err)
+	}
+	fake.finalizeExit = 3
+	if err := manager.FinalizeMemRLBatch(context.Background(), testRequest(t).Model); err == nil || !strings.Contains(err.Error(), "exited with status 3") {
+		t.Fatalf("failed batch update: %v", err)
+	}
+	if !fake.removed {
+		t.Fatal("failed batch update container was not removed")
+	}
+	if stored, _ := os.ReadFile(manager.memrlStorePath); !bytes.Equal(stored, previous) {
+		t.Fatalf("a failed update changed the run store to %q", stored)
+	}
+	if _, err := os.Stat(filepath.Join(runDir, memrlPendingDir, "t-001.json")); err != nil {
+		t.Fatalf("a failed update dropped the queued session: %v", err)
+	}
+}
+
+func TestMemRLMissingFrozenStoreFailsTheTask(t *testing.T) {
+	fake := newFakeDocker()
+	manager := newMemRLManager(t, fake)
+	manager.memrlFrozenStore = filepath.Join(t.TempDir(), "never-trained")
+	if err := manager.Start(context.Background(), testRequest(t)); err == nil || !strings.Contains(err.Error(), "frozen store") {
+		t.Fatalf("Start with a missing frozen store: %v", err)
 	}
 }
 

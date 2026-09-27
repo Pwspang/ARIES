@@ -50,11 +50,19 @@ type occurrenceSlot struct {
 	err        error
 }
 
-func runProfile(ctx context.Context, name, runID string, taskIDs []string, concurrency int, loopDuration time.Duration, run occurrenceRunner) (core.RunResult, error) {
+// runProfile runs every task occurrence with at most concurrency in flight.
+// A positive batchSize admits the task list in consecutive batches of that
+// many occurrences: each batch finishes completely, then afterBatch runs
+// before the next batch starts (the Hermes MemRL mini-batch update). A failed
+// afterBatch stops admissions. Batches require a fixed task list, not a loop.
+func runProfile(ctx context.Context, name, runID string, taskIDs []string, concurrency int, loopDuration time.Duration, batchSize int, afterBatch func(context.Context) error, run occurrenceRunner) (core.RunResult, error) {
 	started := time.Now()
 	result := core.RunResult{Name: name, RunID: runID}
 	if concurrency <= 0 || len(taskIDs) == 0 {
 		return result, errors.New("execution requires positive concurrency and at least one task")
+	}
+	if batchSize < 0 || batchSize > 0 && (loopDuration > 0 || afterBatch == nil) {
+		return result, errors.New("task batches require a fixed task list and a batch step")
 	}
 	var deadline <-chan time.Time
 	var deadlineAt time.Time
@@ -100,10 +108,33 @@ func runProfile(ctx context.Context, name, runID string, taskIDs []string, concu
 		}()
 		return true
 	}
+	var batchErr error
 	if loopDuration == 0 {
-		for _, logicalID := range taskIDs {
-			if !admit(logicalID) {
+		size := len(taskIDs)
+		if batchSize > 0 {
+			size = batchSize
+		}
+		for start := 0; start < len(taskIDs); start += size {
+			admitted := true
+			for _, logicalID := range taskIDs[start:min(start+size, len(taskIDs))] {
+				if admitted = admit(logicalID); !admitted {
+					break
+				}
+			}
+			if !admitted {
 				break
+			}
+			if batchSize > 0 {
+				// The batch step sees every outcome of this batch, including
+				// failed occurrences, so it runs whatever their errors.
+				wg.Wait()
+				if ctx.Err() != nil {
+					break
+				}
+				if err := afterBatch(ctx); err != nil {
+					batchErr = fmt.Errorf("after task batch %d: %w", start/size+1, err)
+					break
+				}
 			}
 		}
 	} else {
@@ -128,6 +159,9 @@ func runProfile(ctx context.Context, name, runID string, taskIDs []string, concu
 				joined = append(joined, slot.err)
 			}
 		}
+	}
+	if batchErr != nil {
+		joined = append(joined, batchErr)
 	}
 	if ctx.Err() != nil {
 		joined = append(joined, ctx.Err())

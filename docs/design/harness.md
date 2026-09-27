@@ -103,7 +103,8 @@ is handed from task to task by copying:
   be writing.
 
 Because the hand-off is sequential, the profile must set
-`execution.concurrency` to 1.
+`execution.concurrency` to 1, unless it sets `batch_size` or `frozen_store`
+(below).
 
 MemRL learns from the benchmark's verdict, which only exists after evaluation,
 when the task's container is gone. So the harness starts the provider with
@@ -115,9 +116,21 @@ next task's provider applies those rewards before its first recall. The harness
 never sees an evaluation result during its own task, so evaluation stays
 independent of it.
 
-`harness.memrl.retrieval: "similarity"` makes recall rank by similarity alone
-(the harness adds `MEMRL_LAM=0` and `MEMRL_EPSILON=0`). It is an ablation that
-keeps memory writing and utility updates but ignores utility at recall.
+`harness.memrl.frozen_store` evaluates a trained store without learning. Every
+task starts from that directory's `memrl.db`, the provider runs with
+`MEMRL_FROZEN=1`, and `RecordTaskOutcome` records no verdicts. Nothing is
+written back, so concurrency is allowed.
+
+`harness.memrl.batch_size` trains in mini-batches. The run loop admits the
+task list in batches of that size (up to `execution.concurrency` at once) and
+calls the command wiring's `FinishTaskBatch` hook between batches. Each task
+starts from the run's store and parks its session instead of handing the store
+on. The harness queues the parked session under `<run>/memrl/pending`. The hook
+runs `FinalizeMemRLBatch`, a short-lived container of the same image that
+receives the model key as a staged file, like a task container. It applies the
+batch's rewards and replaces the run's store, and the applied sessions move to
+`<run>/memrl/batches/NNN`. A failed batch update stops the run's admissions
+and leaves the queue in place.
 
 ## Customization & Contribution Guide
 

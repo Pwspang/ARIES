@@ -15,6 +15,6 @@
     "image": "ghcr.io/openclaw/openclaw:2026.7.1"
   },
   "hermes": {
-    "image": "aries/hermes-memrl:v2026.5.29.2-memrl2"
+    "image": "aries/hermes-memrl:v2026.5.29.2-memrl4"
   }
 }

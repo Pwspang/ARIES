@@ -485,16 +485,25 @@ func TestMemRLHarnessConfigValidation(t *testing.T) {
 	if _, err := Decode(strings.NewReader(hermes(`{"type":"hermes"}`, `,"execution":{"concurrency":2}`))); err != nil {
 		t.Fatalf("concurrent Hermes without memrl: %v", err)
 	}
-	for _, retrieval := range []string{"value", "similarity"} {
-		if _, err := Decode(strings.NewReader(hermes(`{"type":"hermes","memrl":{"enabled":true,"retrieval":"`+retrieval+`"}}`, ""))); err != nil {
-			t.Fatalf("harness.memrl.retrieval %q: %v", retrieval, err)
+	if _, err := Decode(strings.NewReader(hermes(`{"type":"hermes","memrl":{"frozen_store":"runs/stores/memrl"}}`, ""))); err == nil || !strings.Contains(err.Error(), "require harness.memrl.enabled") {
+		t.Fatalf("harness.memrl.frozen_store without enabled: %v", err)
+	}
+	if _, err := Decode(strings.NewReader(hermes(`{"type":"hermes","memrl":{"enabled":true,"frozen_store":"runs/stores/memrl"}}`, `,"execution":{"concurrency":8}`))); err != nil {
+		t.Fatalf("concurrent harness.memrl.frozen_store: %v", err)
+	}
+	if _, err := Decode(strings.NewReader(hermes(`{"type":"hermes","memrl":{"enabled":true,"batch_size":16}}`, `,"execution":{"concurrency":8}`))); err != nil {
+		t.Fatalf("harness.memrl.batch_size: %v", err)
+	}
+	for name, profile := range map[string]string{
+		"concurrency above batch": hermes(`{"type":"hermes","memrl":{"enabled":true,"batch_size":4}}`, `,"execution":{"concurrency":8}`),
+		"negative batch":          hermes(`{"type":"hermes","memrl":{"enabled":true,"batch_size":-1}}`, ""),
+		"batch of a frozen store": hermes(`{"type":"hermes","memrl":{"enabled":true,"batch_size":4,"frozen_store":"runs/stores/memrl"}}`, ""),
+		"batch without memrl":     hermes(`{"type":"hermes","memrl":{"batch_size":4}}`, ""),
+		"batch with a loop":       hermes(`{"type":"hermes","memrl":{"enabled":true,"batch_size":4}}`, `,"execution":{"concurrency":1,"loop_duration":"1h"}`),
+	} {
+		if _, err := Decode(strings.NewReader(profile)); err == nil {
+			t.Fatalf("%s was accepted", name)
 		}
-	}
-	if _, err := Decode(strings.NewReader(hermes(`{"type":"hermes","memrl":{"enabled":true,"retrieval":"random"}}`, ""))); err == nil || !strings.Contains(err.Error(), "retrieval must be") {
-		t.Fatalf("unknown harness.memrl.retrieval: %v", err)
-	}
-	if _, err := Decode(strings.NewReader(hermes(`{"type":"hermes","memrl":{"retrieval":"similarity"}}`, ""))); err == nil || !strings.Contains(err.Error(), "requires harness.memrl.enabled") {
-		t.Fatalf("harness.memrl.retrieval without enabled: %v", err)
 	}
 }
 
@@ -917,7 +926,7 @@ func TestCheckedInProfilesLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 100 {
+	if len(paths) != 97 {
 		t.Fatalf("profiles=%v", paths)
 	}
 	for _, path := range paths {
@@ -1568,72 +1577,76 @@ func TestSWEAtlasQACtxLimitShuffleArmsDifferOnlyInAMEM(t *testing.T) {
 }
 
 // TestSWEAtlasQAMemRLStudyArmsDifferOnlyInMemRL covers the Hermes episodic
-// memory study (docs/benchmarks/swe-atlas-qa.md): per replicate, a no-memory
-// control, a similarity-only ablation, and full MemRL must share the task
-// list and order, Hermes image, model, judge, runtime, and concurrency 1, so
-// the paired per-task delta isolates the memory condition. The repeat-exposure
-// arm must replay pilot30's order twice under the same settings.
+// memory study (docs/benchmarks/swe-atlas-qa.md). Every arm must share the
+// Hermes image, model, judge, runtime, concurrency, and harness settings apart
+// from memrl, so a paired per-task delta isolates memory. MemRL trains in
+// mini-batches over epochs of the train split, each epoch a permutation of it
+// and each batch inside one epoch. Test and replay recall from the trained
+// store, frozen; test is disjoint from train and replay reruns it.
 func TestSWEAtlasQAMemRLStudyArmsDifferOnlyInMemRL(t *testing.T) {
-	load := func(t *testing.T, name string) Config {
-		t.Helper()
-		cfg, err := Load(filepath.Join("..", "..", "profiles", name+".json"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		return cfg
-	}
-	sameSetup := func(t *testing.T, control, arm Config) {
-		t.Helper()
-		if control.Versions.Hermes.Image != arm.Versions.Hermes.Image {
-			t.Fatalf("Hermes image differs: %q vs %q", control.Versions.Hermes.Image, arm.Versions.Hermes.Image)
-		}
-		if !reflect.DeepEqual(control.Model, arm.Model) || !reflect.DeepEqual(control.Benchmark.Judge, arm.Benchmark.Judge) {
-			t.Fatal("model or judge configuration differs between arms")
-		}
-		if !reflect.DeepEqual(control.Runtime, arm.Runtime) || arm.Execution.Concurrency != 1 {
-			t.Fatal("runtime differs between arms or concurrency is not 1")
-		}
-		withoutMemRL := arm.Harness
-		withoutMemRL.MemRL = HarnessMemRLConfig{}
-		if !reflect.DeepEqual(control.Harness, withoutMemRL) {
-			t.Fatalf("harness differs beyond memrl: %#v vs %#v", control.Harness, arm.Harness)
-		}
-	}
-	for _, replicate := range []string{"smoke4", "pilot30", "pilot30-shuffle1", "pilot30-shuffle2"} {
-		t.Run(replicate, func(t *testing.T) {
-			prefix := "hermes-sweatlasqa-" + replicate
-			control := load(t, prefix+"-deepseek")
-			similarity := load(t, prefix+"-memrl-sim-deepseek")
-			value := load(t, prefix+"-memrl-deepseek")
-			if control.Harness.MemRL != (HarnessMemRLConfig{}) {
-				t.Fatalf("control arm has memrl %#v", control.Harness.MemRL)
-			}
-			if similarity.Harness.MemRL != (HarnessMemRLConfig{Enabled: true, Retrieval: "similarity"}) {
-				t.Fatalf("similarity arm has memrl %#v", similarity.Harness.MemRL)
-			}
-			if value.Harness.MemRL != (HarnessMemRLConfig{Enabled: true}) {
-				t.Fatalf("MemRL arm has memrl %#v", value.Harness.MemRL)
-			}
-			if !strings.HasPrefix(control.Versions.Hermes.Image, "aries/hermes-memrl:") {
-				t.Fatalf("control must run the MemRL image with the provider off, got %q", control.Versions.Hermes.Image)
-			}
-			for _, arm := range []Config{similarity, value} {
-				if !reflect.DeepEqual(control.Benchmark.Tasks, arm.Benchmark.Tasks) {
-					t.Fatalf("task lists diverged:\n control=%v\n other=%v", control.Benchmark.Tasks, arm.Benchmark.Tasks)
+	for study, batch := range map[string]int{"memrl": 15, "memrl-smoke": 2} {
+		t.Run(study, func(t *testing.T) {
+			arms := map[string]Config{}
+			for _, name := range []string{"train-control", "train-memrl", "test-control", "test-memrl", "replay-memrl"} {
+				cfg, err := Load(filepath.Join("..", "..", "profiles", "hermes-sweatlasqa-"+study+"-"+name+"-sglang.json"))
+				if err != nil {
+					t.Fatal(err)
 				}
-				sameSetup(t, control, arm)
+				arms[name] = cfg
+			}
+			stores := "runs/memrl-study/stores/" + study + "-"
+			want := map[string]HarnessMemRLConfig{
+				"train-control": {},
+				"train-memrl":   {Enabled: true, BatchSize: batch},
+				"test-control":  {},
+				"test-memrl":    {Enabled: true, FrozenStore: stores + "memrl"},
+				"replay-memrl":  {Enabled: true, FrozenStore: stores + "memrl"},
+			}
+			control := arms["train-control"]
+			if !strings.HasPrefix(control.Versions.Hermes.Image, "aries/hermes-memrl:") || control.Runtime.Backend != "sglang" {
+				t.Fatalf("study must run the MemRL image (provider off in control) on SGLang, got %q on %q", control.Versions.Hermes.Image, control.Runtime.Backend)
+			}
+			for name, arm := range arms {
+				if arm.Harness.MemRL != want[name] {
+					t.Fatalf("%s has memrl %#v, want %#v", name, arm.Harness.MemRL, want[name])
+				}
+				if arm.Versions.Hermes.Image != control.Versions.Hermes.Image {
+					t.Fatalf("%s Hermes image differs: %q", name, arm.Versions.Hermes.Image)
+				}
+				if !reflect.DeepEqual(control.Model, arm.Model) || !reflect.DeepEqual(control.Benchmark.Judge, arm.Benchmark.Judge) {
+					t.Fatalf("%s model or judge differs", name)
+				}
+				if !reflect.DeepEqual(control.Runtime, arm.Runtime) || arm.Execution.Concurrency != control.Execution.Concurrency {
+					t.Fatalf("%s runtime or concurrency differs", name)
+				}
+				withoutMemRL := arm.Harness
+				withoutMemRL.MemRL = HarnessMemRLConfig{}
+				if !reflect.DeepEqual(control.Harness, withoutMemRL) {
+					t.Fatalf("%s harness differs beyond memrl: %#v", name, arm.Harness)
+				}
+			}
+			train, test := arms["train-control"].Benchmark.Tasks, arms["test-control"].Benchmark.Tasks
+			trained := arms["train-memrl"].Benchmark.Tasks
+			if len(train)%batch != 0 || len(trained) == 0 || len(trained)%len(train) != 0 {
+				t.Fatalf("%d trained occurrences over %d train tasks in batches of %d: batches must not span epochs", len(trained), len(train), batch)
+			}
+			sortedTrain := slices.Sorted(slices.Values(train))
+			for start := 0; start < len(trained); start += len(train) {
+				if !slices.Equal(slices.Sorted(slices.Values(trained[start:start+len(train)])), sortedTrain) {
+					t.Fatalf("epoch starting at %d is not a permutation of the train split", start)
+				}
+			}
+			if !reflect.DeepEqual(train, arms["replay-memrl"].Benchmark.Tasks) {
+				t.Fatal("replay tasks differ from the train split")
+			}
+			if !reflect.DeepEqual(test, arms["test-memrl"].Benchmark.Tasks) {
+				t.Fatal("test-memrl tasks differ from test-control")
+			}
+			for _, task := range test {
+				if slices.Contains(train, task) {
+					t.Fatalf("task %s is in both train and test", task)
+				}
 			}
 		})
 	}
-	t.Run("pilot30-epoch2", func(t *testing.T) {
-		control := load(t, "hermes-sweatlasqa-pilot30-deepseek")
-		epochs := load(t, "hermes-sweatlasqa-pilot30-epoch2-memrl-deepseek")
-		if !reflect.DeepEqual(epochs.Benchmark.Tasks, append(slices.Clone(control.Benchmark.Tasks), control.Benchmark.Tasks...)) {
-			t.Fatal("repeat-exposure arm must run pilot30's order twice")
-		}
-		if epochs.Harness.MemRL != (HarnessMemRLConfig{Enabled: true}) {
-			t.Fatalf("repeat-exposure arm has memrl %#v", epochs.Harness.MemRL)
-		}
-		sameSetup(t, control, epochs)
-	})
 }

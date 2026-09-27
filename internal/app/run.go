@@ -57,6 +57,11 @@ type Wiring struct {
 	// its concurrency slot, so with concurrency 1 the next task sees it.
 	// Optional: nil is a no-op.
 	RecordTaskOutcome func(config.Config, string, core.TaskResult) error
+	// FinishTaskBatch runs after each batch of harness.memrl.batch_size task
+	// occurrences has finished and been recorded, before the next batch
+	// starts: the Hermes MemRL mini-batch update, which folds the batch's
+	// outcomes into the run's memory store. Required when batch_size is set.
+	FinishTaskBatch func(context.Context, config.Config, string, core.ModelConfig, func(string) ([]byte, bool), *logrus.Logger) error
 }
 
 type Dependencies struct {
@@ -245,12 +250,23 @@ func Run(ctx context.Context, profilePath string, stdout io.Writer, dependencies
 		runtimeEntry.WithField("runtime_state", "healthy").Info("model runtime lifecycle")
 	}
 
+	batchSize, afterBatch := 0, func(context.Context) error { return nil }
+	if cfg.Harness.MemRL.BatchSize > 0 {
+		finish := dependencies.Wiring.FinishTaskBatch
+		if finish == nil {
+			return errors.New("harness.memrl.batch_size requires a batch step")
+		}
+		batchSize = cfg.Harness.MemRL.BatchSize
+		afterBatch = func(batchCtx context.Context) error {
+			return finish(batchCtx, cfg, outputRoot, prepared.Model, harnessLookup, logger)
+		}
+	}
 	runCtx, cancelRun := context.WithCancel(ctx)
 	defer cancelRun()
 	completed := make(chan error, 1)
 	go func() {
 		completed <- executeAndRecord(runCtx, func(executionCtx context.Context) (core.RunResult, error) {
-			return runProfile(executionCtx, cfg.Name, runID, cfg.Benchmark.Tasks, cfg.Execution.Concurrency, cfg.Execution.Loop,
+			return runProfile(executionCtx, cfg.Name, runID, cfg.Benchmark.Tasks, cfg.Execution.Concurrency, cfg.Execution.Loop, batchSize, afterBatch,
 				func(taskCtx context.Context, occurrence taskOccurrence) (core.RunResult, error) {
 					experiment, err := buildTaskExperiment(cfg, prepared.Model, prepared.EffectiveGPUIndices, runID, outputRoot, occurrence.logicalID, occurrence.executionID, harnessLookup, logger, dependencies.Wiring)
 					if err != nil {

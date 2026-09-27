@@ -22,6 +22,14 @@ The reward comes from one of two sources (MemRLConfig.reward_source):
   after evaluation, and the next session applies it before its first recall.
   This is how MemRL itself learns: from the environment's success signal.
 
+A frozen provider (MemRLConfig.frozen) only recalls: it never parks, rewards
+or learns from a session. This is MemRL's held-out test phase.
+
+A batched provider (MemRLConfig.batch) trains in mini-batches, as MemRL's own
+runners do: every task in a batch recalls from the same store and parks its
+session in memrl/pending.json. Once the batch is scored, the host runs
+memrl.finalize once over all parked sessions and their rewards.
+
 The intent is the task prompt's <question> block when it has one (see
 MemRLConfig.intent_tag), otherwise the whole prompt.
 
@@ -54,7 +62,7 @@ from .procedure import (
     extract_intent, format_trajectory, hermes_chat, load_session_messages,
 )
 from .reward import heuristic_reward
-from .store import Pending, Store
+from .store import Pending, Store, write_pending
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +82,7 @@ FEEDBACK_PROMPT = (
     "and a short note on what worked or went wrong."
 )
 REWARDS_FILE = "rewards.json"
+PENDING_FILE = "pending.json"
 FINALIZE_WAIT = 600.0
 
 FEEDBACK_SCHEMA = {
@@ -125,6 +134,8 @@ class MemRLConfig:
     script_temperature: float = 0.0  # MemRL uses the run's LLM temperature, 0 in its configs
     intent_tag: str = "question"  # keep only <intent_tag>…</intent_tag> as the intent; "" keeps the whole prompt
     reward_source: str = "agent"  # "agent" (memrl_feedback, else heuristic) or "external" (see module docstring)
+    frozen: bool = False         # recall only: sessions are never stored or rewarded (held-out evaluation)
+    batch: bool = False          # park the session in memrl/pending.json for a batch update (see memrl.finalize)
 
     @classmethod
     def from_env(cls) -> "MemRLConfig":
@@ -132,7 +143,11 @@ class MemRLConfig:
         cfg = cls()
         for f in fields(cls):
             raw = os.environ.get(f"MEMRL_{f.name.upper()}")
-            if raw is not None and (raw or f.name == "intent_tag"):
+            if raw is None or not raw and f.name != "intent_tag":
+                continue
+            if isinstance(getattr(cfg, f.name), bool):
+                setattr(cfg, f.name, raw.strip().lower() in ("1", "true", "yes"))
+            else:
                 setattr(cfg, f.name, type(getattr(cfg, f.name))(raw))
         return cfg
 
@@ -207,7 +222,7 @@ class MemRLMemoryProvider(MemoryProvider):
         # Start loading the embedding model off the conversation thread;
         # prefetch waits for it (see there).
         self._spawn(self._embed, "")
-        if self._external and self._write_enabled:
+        if self._external and self._write_enabled and not self._config.frozen and not self._config.batch:
             # Apply the rewards the host recorded for earlier sessions before
             # this session's first recall (prefetch waits for it).
             self._finalizer = threading.Thread(target=self._apply_external_rewards, name="memrl-finalize", daemon=True)
@@ -345,7 +360,7 @@ class MemRLMemoryProvider(MemoryProvider):
     def _commit(self, session_id: str, messages: Optional[List[Dict[str, Any]]]) -> None:
         """Close the session once: park it for an external reward, or apply its reward now."""
         store = self._store
-        if store is None or not self._write_enabled:
+        if store is None or not self._write_enabled or self._config.frozen:
             return
         try:
             session = store.session(session_id)
@@ -361,6 +376,10 @@ class MemRLMemoryProvider(MemoryProvider):
                 prompt_trajectory=format_trajectory(trajectory, PROMPT_MESSAGE_LIMIT, PROMPT_TRAJECTORY_LIMIT),
                 stored_trajectory=format_trajectory(trajectory, STORED_MESSAGE_LIMIT, STORED_TRAJECTORY_LIMIT),
             )
+            if self._config.batch:
+                write_pending(self._home / "memrl" / PENDING_FILE, pending)
+                logger.info("MemRL parked session %s for task %s's batch update", session_id, self._task_id)
+                return
             if self._external:
                 store.add_pending(pending)
                 logger.info("MemRL parked session %s for task %s's reward", session_id, self._task_id)

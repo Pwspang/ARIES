@@ -49,6 +49,7 @@ func commandWiring() app.Wiring {
 		NewBridge:            newBridge,
 		CleanupHarness:       cleanupHarness,
 		RecordTaskOutcome:    recordTaskOutcome,
+		FinishTaskBatch:      finishTaskBatch,
 	}
 }
 
@@ -69,13 +70,26 @@ func cleanupHarness(ctx context.Context, cfg config.Config, outputRoot string) e
 }
 
 // recordTaskOutcome hands each finished task's verdict to harness state that
-// learns from it: currently only the Hermes harness's MemRL rewards. A no-op
-// for every other harness/config combination.
+// learns from it: currently only the Hermes harness's MemRL rewards, and not
+// when its store is frozen. A no-op for every other harness/config combination.
 func recordTaskOutcome(cfg config.Config, outputRoot string, task core.TaskResult) error {
-	if cfg.Harness.Type != "hermes" || !cfg.Harness.MemRL.Enabled {
+	if cfg.Harness.Type != "hermes" || !cfg.Harness.MemRL.Enabled || cfg.Harness.MemRL.FrozenStore != "" {
 		return nil
 	}
 	return hermesharness.RecordMemRLOutcome(outputRoot, task)
+}
+
+// finishTaskBatch applies a finished batch to harness state that learns in
+// batches: currently only the Hermes harness's MemRL mini-batch update.
+func finishTaskBatch(ctx context.Context, cfg config.Config, outputRoot string, model core.ModelConfig, lookup func(string) ([]byte, bool), logger *logrus.Logger) error {
+	if cfg.Harness.Type != "hermes" || !cfg.Harness.MemRL.Enabled || cfg.Harness.MemRL.BatchSize <= 0 {
+		return nil
+	}
+	manager, err := newHermesManager(cfg, outputRoot, lookup, logger)
+	if err != nil {
+		return fmt.Errorf("construct Hermes harness for the MemRL batch update: %w", err)
+	}
+	return errors.Join(manager.FinalizeMemRLBatch(ctx, model), manager.Close())
 }
 
 func validateComponents(cfg config.Config) error {
@@ -335,14 +349,7 @@ func newHarness(cfg config.Config, outputRoot string, lookup func(string) ([]byt
 		}
 		return app.HarnessInstance{Harness: manager, Close: manager.Close}, nil
 	case "hermes":
-		manager, err := hermesharness.New(hermesharness.Options{
-			Image: cfg.Versions.Hermes.Image, OutputDir: outputRoot, APIKeyLookup: lookup, Logger: logger,
-			WebSearchEnabled: cfg.Harness.WebSearch.Enabled, ExtractAPIKeyEnv: cfg.Harness.WebSearch.ExtractAPIKeyEnv,
-			SubagentsEnabled:       cfg.Harness.Subagents.Enabled != nil && *cfg.Harness.Subagents.Enabled,
-			MaxConcurrentSubagents: cfg.Harness.Subagents.MaxConcurrent,
-			MemRLEnabled:           cfg.Harness.MemRL.Enabled,
-			MemRLRetrieval:         cfg.Harness.MemRL.Retrieval,
-		})
+		manager, err := newHermesManager(cfg, outputRoot, lookup, logger)
 		if err != nil {
 			return app.HarnessInstance{}, fmt.Errorf("construct Hermes harness: %w", err)
 		}
@@ -350,6 +357,18 @@ func newHarness(cfg config.Config, outputRoot string, lookup func(string) ([]byt
 	default:
 		return app.HarnessInstance{}, fmt.Errorf("unsupported harness type %q", cfg.Harness.Type)
 	}
+}
+
+func newHermesManager(cfg config.Config, outputRoot string, lookup func(string) ([]byte, bool), logger *logrus.Logger) (*hermesharness.Manager, error) {
+	return hermesharness.New(hermesharness.Options{
+		Image: cfg.Versions.Hermes.Image, OutputDir: outputRoot, APIKeyLookup: lookup, Logger: logger,
+		WebSearchEnabled: cfg.Harness.WebSearch.Enabled, ExtractAPIKeyEnv: cfg.Harness.WebSearch.ExtractAPIKeyEnv,
+		SubagentsEnabled:       cfg.Harness.Subagents.Enabled != nil && *cfg.Harness.Subagents.Enabled,
+		MaxConcurrentSubagents: cfg.Harness.Subagents.MaxConcurrent,
+		MemRLEnabled:           cfg.Harness.MemRL.Enabled,
+		MemRLFrozenStore:       cfg.Harness.MemRL.FrozenStore,
+		MemRLBatch:             cfg.Harness.MemRL.BatchSize > 0,
+	})
 }
 
 func newSandbox(cfg config.Config, outputRoot, runID, occurrenceID string, gpuIndices []int, logger *logrus.Logger) (app.SandboxInstance, error) {

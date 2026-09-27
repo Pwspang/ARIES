@@ -4,20 +4,21 @@
 Design and hypotheses: docs/benchmarks/swe-atlas-qa.md, "The Hermes
 episodic-memory study". Reads only files ARIES already writes:
 
-  <run>/run-result.json                              profile name -> replicate, arm
+  <run>/run-result.json                              profile name -> study, split, arm
   <run>/task-*-NNN/evaluation/evaluation_results.json agg_score, reward
   <run>/task-*-NNN/evaluation/reward.txt             fallback: judge never finished -> 0
-  <run>/task-*-NNN/harness/telemetry/sessions.jsonl  tokens, API/tool calls
+  <run>/task-*-NNN/harness/telemetry/sessions.jsonl  tokens, API/tool calls, session id
   <run>/task-*-NNN/harness/session-outcome.json      wall-clock duration
   <run>/task-*-NNN/harness/memrl/memrl.db            what this task recalled
-  <run>/memrl/memrl.db                               memory upkeep calls (llm_calls)
+  <run>/memrl/memrl.db                               memory upkeep calls (llm_calls), written by
+                                                     the batch updates in training
   .cache/swe-atlas-qa/data/qa/<task>/task.toml       repository
 
 Usage:
-  scripts/summarize_memrl_study.py runs/memrl-study/*hermes-sweatlasqa-pilot30*
-  scripts/summarize_memrl_study.py --csv tasks.csv runs/memrl-study/*
+  scripts/summarize_memrl_study.py runs/memrl-study/*
+  scripts/summarize_memrl_study.py --study memrl-smoke --csv tasks.csv runs/memrl-study/*
 
-A replicate's latest run is used when a profile was run more than once.
+The latest run is used when a profile was run more than once.
 """
 import argparse
 import csv
@@ -31,10 +32,11 @@ from collections import defaultdict
 from pathlib import Path
 
 TASK_DIR_RE = re.compile(r"^(task-[0-9a-f]+)-(\d+)$")
-NAME_RE = re.compile(r"^hermes-sweatlasqa-(?P<replicate>.+?)(?P<arm>-epoch2-memrl|-memrl-sim|-memrl)?-deepseek$")
-ARMS = {None: "control", "-memrl-sim": "similarity", "-memrl": "memrl", "-epoch2-memrl": "memrl-epoch2"}
+NAME_RE = re.compile(r"^hermes-sweatlasqa-(?P<study>memrl(?:-smoke)?)-(?P<split>train|test|replay)-"
+                     r"(?P<arm>control|memrl)-sglang$")
 ITERATION_CAP = 90  # Hermes max_iterations, recorded in sessions.jsonl model_config
-POSITION_BUCKETS = ((0, 0, "1st in repo"), (1, 4, "2nd-5th"), (5, 9, "6th-10th"), (10, 10**6, "11th+"))
+BATCH_SIZES = {"memrl": 15, "memrl-smoke": 2}  # harness.memrl.batch_size of train-memrl
+METRICS = ("agg_score", "passed", "prompt_tokens", "output_tokens", "api_calls", "tool_calls", "duration_s")
 
 
 def repositories(qa_root):
@@ -75,21 +77,22 @@ def score(task_dir):
     return None, None
 
 
-def task_rows(run_dir, repos):
-    result = load_json(run_dir / "run-result.json") or {}
-    match = NAME_RE.match(result.get("name", ""))
-    if not match:
-        return []
-    replicate, arm = match["replicate"], ARMS[match["arm"]]
+def task_rows(run_dir, name, repos):
+    """One row per occurrence. Train memory arms repeat the split once per
+    epoch; epoch and batch number come from the execution order."""
+    match = NAME_RE.match(name)
+    # Upkeep is keyed by the session that produced the memory, never by task
+    # ID: a frozen run finishes training's last memory under training's ID.
     upkeep = defaultdict(lambda: [0, 0, 0])
-    for task_id, prompt, completion, ms in query(
+    for session, prompt, completion, ms in query(
             run_dir / "memrl" / "memrl.db",
-            "SELECT task_id, prompt_tokens, completion_tokens, duration_ms FROM llm_calls"):
-        upkeep[task_id][0] += prompt
-        upkeep[task_id][1] += completion
-        upkeep[task_id][2] += ms
+            "SELECT session_id, prompt_tokens, completion_tokens, duration_ms FROM llm_calls"):
+        upkeep[session][0] += prompt
+        upkeep[session][1] += completion
+        upkeep[session][2] += ms
     dirs = sorted((int(m[2]), m[1], d) for d in run_dir.iterdir() if (m := TASK_DIR_RE.match(d.name)))
-    task_count = len({task for _, task, _ in dirs})
+    per_epoch = len({task for _, task, _ in dirs}) or 1
+    batch_size = BATCH_SIZES[match["study"]]
     seen_in_repo = defaultdict(int)
     rows = []
     for order, task, task_dir in dirs:
@@ -100,25 +103,21 @@ def task_rows(run_dir, repos):
         if telemetry.is_file():
             session = json.loads(telemetry.read_text().splitlines()[0])
         outcome = load_json(task_dir / "harness" / "session-outcome.json") or {}
-        recalled = query(task_dir / "harness" / "memrl" / "memrl.db",
-                         "SELECT active_ids FROM sessions WHERE session_id = ?", (session.get("id", ""),))
+        store = task_dir / "harness" / "memrl" / "memrl.db"
+        recalled = query(store, "SELECT active_ids FROM sessions WHERE session_id = ?", (session.get("id", ""),))
         recalled_ids = json.loads(recalled[0][0]) if recalled else []
         sources = [r[0] for r in query(
-            task_dir / "harness" / "memrl" / "memrl.db",
-            f"SELECT task_id FROM memories WHERE id IN ({','.join('?' * len(recalled_ids))})", recalled_ids)] \
+            store, f"SELECT task_id FROM memories WHERE id IN ({','.join('?' * len(recalled_ids))})", recalled_ids)] \
             if recalled_ids else []
-        source_tasks = [TASK_DIR_RE.match(s)[1] if TASK_DIR_RE.match(s) else s for s in sources]
-        occurrence = f"{task}-{order:03d}"
-        prompt_tokens = (session.get("input_tokens") or 0) + (session.get("cache_read_tokens") or 0)
-        up_prompt, up_completion, up_ms = upkeep.get(occurrence, (0, 0, 0))
+        source_tasks = [m[1] if (m := TASK_DIR_RE.match(s)) else s for s in sources]
+        up_prompt, up_completion, up_ms = upkeep.get(session.get("id", ""), (0, 0, 0))
         rows.append({
-            "replicate": replicate, "arm": arm, "task": task, "repo": repo, "order": order,
-            "epoch": 1 + (order - 1) * 2 // task_count if arm == "memrl-epoch2" else 1,
-            "position_in_repo": seen_in_repo[repo],
-            "agg_score": agg, "passed": passed,
-            "prompt_tokens": prompt_tokens, "uncached_input_tokens": session.get("input_tokens"),
-            "output_tokens": session.get("output_tokens"), "api_calls": session.get("api_call_count"),
-            "tool_calls": session.get("tool_call_count"),
+            "study": match["study"], "split": match["split"], "arm": match["arm"], "task": task, "repo": repo,
+            "order": order, "epoch": (order - 1) // per_epoch + 1, "batch": (order - 1) // batch_size + 1,
+            "position_in_repo": seen_in_repo[repo], "agg_score": agg, "passed": passed,
+            "prompt_tokens": (session.get("input_tokens") or 0) + (session.get("cache_read_tokens") or 0),
+            "uncached_input_tokens": session.get("input_tokens"), "output_tokens": session.get("output_tokens"),
+            "api_calls": session.get("api_call_count"), "tool_calls": session.get("tool_call_count"),
             "hit_iteration_cap": (session.get("api_call_count") or 0) >= ITERATION_CAP,
             "duration_s": (outcome.get("duration_ms") or 0) / 1000,
             "upkeep_prompt_tokens": up_prompt, "upkeep_output_tokens": up_completion, "upkeep_s": up_ms / 1000,
@@ -130,14 +129,15 @@ def task_rows(run_dir, repos):
     return rows
 
 
-def latest_runs(paths):
-    """The latest run per profile name (run IDs start with a sortable timestamp)."""
+def latest_runs(paths, study):
+    """(name, path) of the latest run per study profile (run IDs start with a sortable timestamp)."""
     by_name = {}
     for path in sorted(paths):
-        name = (load_json(path / "run-result.json") or {}).get("name")
-        if name:
+        name = (load_json(path / "run-result.json") or {}).get("name", "")
+        match = NAME_RE.match(name)
+        if match and match["study"] == study:
             by_name[name] = path
-    return by_name.values()
+    return by_name.items()
 
 
 def mean(values):
@@ -156,21 +156,33 @@ def paired(deltas, rng, draws=10000):
     return observed, (boots[int(0.025 * draws)], boots[int(0.975 * draws)]), (flips + 1) / (draws + 1)
 
 
-METRICS = ("agg_score", "passed", "prompt_tokens", "output_tokens", "api_calls", "tool_calls", "duration_s")
+def contrast_table(title, pairs, cells, rng):
+    """pairs: [(label, arm_a, arm_b)] over cells {(split, arm): {task: row}}; paired on shared tasks."""
+    print(f"\n## {title}\n")
+    print("| contrast | metric | n tasks | mean delta | 95% CI | p |")
+    print("|---|---|---|---|---|---|")
+    for label, a, b in pairs:
+        common = sorted(set(cells.get(a, {})) & set(cells.get(b, {})))
+        if not common:
+            continue
+        for metric in METRICS:
+            d, (lo, hi), p = paired([cells[a][t][metric] - cells[b][t][metric] for t in common], rng)
+            print(f"| {label} | {metric} | {len(common)} | {d:+.3f} | [{lo:+.3f}, {hi:+.3f}] | {p:.3f} |")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("runs", nargs="+", type=Path)
+    parser.add_argument("--study", default="memrl", choices=("memrl", "memrl-smoke"))
     parser.add_argument("--qa-root", type=Path, default=Path(".cache/swe-atlas-qa"))
     parser.add_argument("--csv", type=Path, help="also write one row per task occurrence")
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
     repos = repositories(args.qa_root)
-    rows = [row for run in latest_runs(args.runs) for row in task_rows(run, repos)]
+    rows = [row for name, run in latest_runs(args.runs, args.study) for row in task_rows(run, name, repos)]
     rows = [r for r in rows if r["agg_score"] is not None]
     if not rows:
-        sys.exit("no scored hermes-sweatlasqa tasks found")
+        sys.exit(f"no scored runs of study {args.study!r} found")
     if args.csv:
         with args.csv.open("w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=list(rows[0]))
@@ -179,66 +191,68 @@ def main():
 
     groups = defaultdict(list)
     for r in rows:
-        groups[(r["arm"] if r["epoch"] == 1 else "memrl-epoch2 (2nd pass)")].append(r)
-    print("## Per arm (all replicates pooled)\n")
-    print("| arm | n | agg_score | pass | prompt tok | output tok | API calls | tool calls | at cap | "
+        groups[(r["split"], r["arm"], r["epoch"])].append(r)
+    print("## Per split, arm and epoch\n")
+    print("| split | arm | epoch | n | agg_score | pass | prompt tok | output tok | API calls | tool calls | at cap | "
           "wall s | upkeep tok | recalled | same-repo recall |")
-    print("|---|" + "---|" * 12)
-    for arm, rs in sorted(groups.items()):
-        print(f"| {arm} | {len(rs)} | {mean(r['agg_score'] for r in rs):.3f} | {mean(r['passed'] for r in rs):.2f} | "
-              f"{mean(r['prompt_tokens'] for r in rs):,.0f} | {mean(r['output_tokens'] for r in rs):,.0f} | "
-              f"{mean(r['api_calls'] for r in rs):.1f} | {mean(r['tool_calls'] for r in rs):.1f} | "
-              f"{mean(r['hit_iteration_cap'] for r in rs):.2f} | {mean(r['duration_s'] for r in rs):.0f} | "
+    print("|---|" + "---|" * 14)
+    for (split, arm, epoch), rs in sorted(groups.items()):
+        print(f"| {split} | {arm} | {epoch} | {len(rs)} | {mean(r['agg_score'] for r in rs):.3f} | "
+              f"{mean(r['passed'] for r in rs):.2f} | {mean(r['prompt_tokens'] for r in rs):,.0f} | "
+              f"{mean(r['output_tokens'] for r in rs):,.0f} | {mean(r['api_calls'] for r in rs):.1f} | "
+              f"{mean(r['tool_calls'] for r in rs):.1f} | {mean(r['hit_iteration_cap'] for r in rs):.2f} | "
+              f"{mean(r['duration_s'] for r in rs):.0f} | "
               f"{mean(r['upkeep_prompt_tokens'] + r['upkeep_output_tokens'] for r in rs):,.0f} | "
               f"{mean(r['recalled'] for r in rs):.2f} | {mean(r['recalled_same_repo'] for r in rs):.2f} |")
 
-    # Paired contrasts: per task, average each arm over replicates, then
-    # difference, so task difficulty cancels and replicates are not treated as
-    # independent tasks.
+    print("\n## One-off training cost of MemRL (all epochs of the train split)\n")
+    tests = len({r["task"] for r in rows if r["split"] == "test"})
+    for arm in ("memrl",):
+        rs = [r for r in rows if r["split"] == "train" and r["arm"] == arm]
+        if rs:
+            upkeep = sum(r["upkeep_prompt_tokens"] + r["upkeep_output_tokens"] for r in rs)
+            agent = sum(r["prompt_tokens"] + (r["output_tokens"] or 0) for r in rs)
+            print(f"- {arm}: {upkeep:,} memory-writing tokens, {agent:,} agent tokens over {len(rs)} task runs"
+                  + (f"; {upkeep / tests:,.0f} memory-writing tokens per test task amortized" if tests else ""))
+
     rng = random.Random(args.seed)
-    per_task = defaultdict(lambda: defaultdict(list))
+    # Contrasts pair on task; train-memrl contributes its first epoch,
+    # the only pass that is comparable to a single control pass.
+    cells = {(split, arm): {r["task"]: r for r in rs} for (split, arm, epoch), rs in groups.items() if epoch == 1}
+    contrast_table("Held-out test, frozen memory (H1 accuracy, H2 efficiency)", [
+        ("memrl - control", ("test", "memrl"), ("test", "control")),
+    ], cells, rng)
+    contrast_table("Manipulation check: frozen MemRL replayed on its own train tasks (H0)", [
+        ("replay - train control", ("replay", "memrl"), ("train", "control")),
+        ("replay - memrl's first training epoch", ("replay", "memrl"), ("train", "memrl")),
+    ], cells, rng)
+
+    # H3: the learning curve during training. Each train task in epoch e is
+    # paired with the same task's control run, so epochs compare like with
+    # like; batches show the curve inside the first epoch.
+    print("\n## Training: MemRL - control by epoch, and score by batch (H3)\n")
+    print("| arm | epoch | n | agg_score delta | tool calls delta | prompt tok delta | recalled |")
+    print("|---|---|---|---|---|---|---|")
+    control = cells.get(("train", "control"), {})
+    for arm in ("memrl",):
+        for (split, group_arm, epoch), rs in sorted(groups.items()):
+            if split != "train" or group_arm != arm:
+                continue
+            pairs = [(r, control[r["task"]]) for r in rs if r["task"] in control]
+            if pairs:
+                print(f"| {arm} | {epoch} | {len(pairs)} | {mean(m['agg_score'] - c['agg_score'] for m, c in pairs):+.3f} | "
+                      f"{mean(m['tool_calls'] - c['tool_calls'] for m, c in pairs):+.1f} | "
+                      f"{mean(m['prompt_tokens'] - c['prompt_tokens'] for m, c in pairs):+,.0f} | "
+                      f"{mean(m['recalled'] for m, _ in pairs):.2f} |")
+    print("\n| arm | batch | epoch | n | agg_score | recalled | same-task recall |")
+    print("|---|---|---|---|---|---|---|")
+    by_batch = defaultdict(list)
     for r in rows:
-        if r["epoch"] == 1 and r["arm"] != "memrl-epoch2":
-            per_task[r["arm"]][r["task"]].append(r)
-    contrasts = [("memrl", "control"), ("similarity", "control"), ("memrl", "similarity")]
-    print("\n## Paired per-task contrasts (task means over replicates)\n")
-    print("| contrast | metric | n tasks | mean delta | 95% CI | p |")
-    print("|---|---|---|---|---|---|")
-    for a, b in contrasts:
-        common = sorted(set(per_task[a]) & set(per_task[b]))
-        for metric in METRICS:
-            deltas = [mean(r[metric] for r in per_task[a][t]) - mean(r[metric] for r in per_task[b][t])
-                      for t in common]
-            d, (lo, hi), p = paired(deltas, rng)
-            if common:
-                print(f"| {a} - {b} | {metric} | {len(common)} | {d:+.3f} | [{lo:+.3f}, {hi:+.3f}] | {p:.3f} |")
-
-    # H3: does the benefit grow with same-repo history? Deltas are paired on
-    # (replicate, task) here, because position differs between replicates.
-    print("\n## memrl - control by position within repository (paired on replicate and task)\n")
-    print("| position | n | agg_score delta | tool calls delta | prompt tok delta |")
-    print("|---|---|---|---|---|")
-    control = {(r["replicate"], r["task"]): r for r in rows if r["arm"] == "control"}
-    for lo, hi, label in POSITION_BUCKETS:
-        pairs = [(r, control[(r["replicate"], r["task"])]) for r in rows
-                 if r["arm"] == "memrl" and lo <= r["position_in_repo"] <= hi and (r["replicate"], r["task"]) in control]
-        if pairs:
-            print(f"| {label} | {len(pairs)} | {mean(m['agg_score'] - c['agg_score'] for m, c in pairs):+.3f} | "
-                  f"{mean(m['tool_calls'] - c['tool_calls'] for m, c in pairs):+.1f} | "
-                  f"{mean(m['prompt_tokens'] - c['prompt_tokens'] for m, c in pairs):+,.0f} |")
-
-    epochs = defaultdict(dict)
-    for r in rows:
-        if r["arm"] == "memrl-epoch2":
-            epochs[r["task"]][r["epoch"]] = r
-    both = [e for e in epochs.values() if 1 in e and 2 in e]
-    if both:
-        print("\n## Repeat exposure (manipulation check): 2nd pass - 1st pass, same run\n")
-        for metric in ("agg_score", "passed", "tool_calls", "prompt_tokens"):
-            d, (lo, hi), p = paired([e[2][metric] - e[1][metric] for e in both], rng)
-            print(f"- {metric}: {d:+.3f} [{lo:+.3f}, {hi:+.3f}], p={p:.3f}, n={len(both)}; "
-                  f"2nd pass recalled its own task in {mean(e[2]['recalled_same_task'] > 0 for e in both):.0%}")
-
+        if r["split"] == "train" and r["arm"] != "control":
+            by_batch[(r["arm"], r["batch"])].append(r)
+    for (arm, batch), rs in sorted(by_batch.items()):
+        print(f"| {arm} | {batch} | {rs[0]['epoch']} | {len(rs)} | {mean(r['agg_score'] for r in rs):.3f} | "
+              f"{mean(r['recalled'] for r in rs):.2f} | {mean(r['recalled_same_task'] > 0 for r in rs):.2f} |")
 
 if __name__ == "__main__":
     main()

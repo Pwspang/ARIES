@@ -129,6 +129,8 @@ Tuning comes from environment variables:
 | `MEMRL_INTENT_TAG` | `question` | Keep only `<tag>…</tag>` as the intent; empty uses the whole prompt |
 | `MEMRL_REWARD_SOURCE` | `agent` | `agent` or `external` (see Reward) |
 | `MEMRL_TASK_ID` | none | Task this session belongs to, for `external` rewards |
+| `MEMRL_FROZEN` | 0 | Recall only; never park, reward or store a session |
+| `MEMRL_BATCH` | 0 | Park the session in `memrl/pending.json` for `memrl.finalize` |
 
 
 ## Tests
@@ -147,7 +149,7 @@ Build and tag the image that `configs/versions-memrl.json` pins, then run a
 profile that sets `harness.memrl.enabled`:
 
 ```sh
-docker build -f docker/hermes-memrl/Dockerfile -t aries/hermes-memrl:v2026.5.29.2-memrl2 .
+docker build -f docker/hermes-memrl/Dockerfile -t aries/hermes-memrl:v2026.5.29.2-memrl4 .
 ./bin/aries profiles/hermes-tb2-fix-git-memrl-deepseek.json
 ```
 
@@ -160,12 +162,26 @@ ARIES starts the provider with `MEMRL_REWARD_SOURCE=external` and
 `MEMRL_TASK_ID=<task execution ID>`. After each task's evaluation, it records
 the verdict in `<run>/memrl/rewards.json`, which is staged into the next task
 along with the store. The hand-off is sequential, so the profile must use
-`execution.concurrency` 1.
+`execution.concurrency` 1, unless it sets `batch_size` or `frozen_store`
+(below).
 
-`harness.memrl.retrieval: "similarity"` adds `MEMRL_LAM=0` and
-`MEMRL_EPSILON=0`. Recall then ranks by similarity alone, while memories are
-still written and their Q still updated. It is the ablation arm of the
-swe-atlas-qa episodic-memory study (`docs/benchmarks/swe-atlas-qa.md`).
+`harness.memrl.frozen_store: <dir>` starts every task from a trained
+`<dir>/memrl.db` and sets `MEMRL_FROZEN=1` and `MEMRL_EPSILON=0`. The provider
+only recalls: it never parks, rewards or stores a session, and ARIES records no
+verdicts. The store never changes, so frozen tasks may run concurrently.
+
+`harness.memrl.batch_size: N` trains in mini-batches, as MemRL's runners do.
+It sets `MEMRL_BATCH=1`.
+1. The task list runs N occurrences at a time, up to `execution.concurrency`
+   at once, all from the same store. Each provider parks its session in
+   `$HERMES_HOME/memrl/pending.json`.
+2. ARIES queues the parked sessions, records the verdicts, and after the batch
+   runs `python -m plugins.memory.memrl.finalize` once in a short-lived
+   container of this image. It stages the store, the queued sessions under
+   `memrl/pending/`, `rewards.json`, and the model config and key.
+3. `finalize_batch` applies the sessions in execution order, exactly as the
+   sequential path applies one: EMA updates, then a new experience or
+   reflection. Its store becomes the next batch's.
 
 For that study the store also records two things the algorithm never reads:
 - `memories.task_id`: the task execution that produced each memory, so

@@ -110,6 +110,29 @@ class Pending:
     stored_trajectory: str
 
 
+def write_pending(path: Path, pending: Pending) -> None:
+    """Write a parked session as JSON, atomically, for a batch update."""
+    record = {
+        "session_id": pending.session_id, "task_id": pending.task_id, "intent": pending.intent,
+        "embedding": [float(x) for x in np.asarray(pending.embedding, dtype=np.float32)],
+        "active_ids": list(pending.active_ids),
+        "retrieved_keys": [[k, float(s)] for k, s in pending.retrieved_keys],
+        "prompt_trajectory": pending.prompt_trajectory, "stored_trajectory": pending.stored_trajectory,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps(record))
+    temporary.replace(path)
+
+
+def read_pending(path: Path) -> Pending:
+    record = json.loads(path.read_text())
+    return Pending(record["session_id"], record["task_id"], record["intent"],
+                   np.asarray(record["embedding"], dtype=np.float32), list(record["active_ids"]),
+                   [(k, float(s)) for k, s in record["retrieved_keys"]],
+                   record["prompt_trajectory"], record["stored_trajectory"])
+
+
 def _blob(vector: np.ndarray) -> bytes:
     return np.asarray(vector, dtype=np.float32).tobytes()
 

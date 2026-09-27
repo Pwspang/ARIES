@@ -72,6 +72,11 @@ func TestRenderConfigNormalizesSGLangAndRejectsBadInput(t *testing.T) {
 	if !strings.Contains(string(rendered), `base_url: "http://host:30000/v1"`) {
 		t.Fatalf("SGLang base URL was not normalized:\n%s", rendered)
 	}
+	// The pinned Hermes has no "sglang" provider and rejects it at startup;
+	// local OpenAI-compatible servers go through its "custom" provider.
+	if !strings.Contains(string(rendered), `provider: "custom"`) {
+		t.Fatalf("SGLang must render Hermes's custom provider:\n%s", rendered)
+	}
 	bad := map[string]func(*core.ModelConfig){
 		"provider":  func(m *core.ModelConfig) { m.Provider = "openai" },
 		"base url":  func(m *core.ModelConfig) { m.BaseURL = "ftp://host" },
@@ -384,6 +389,16 @@ func TestAgentWrapperExportsExtractKeyWhenEnabled(t *testing.T) {
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("wrapper is missing %q:\n%s", want, script)
+		}
+	}
+}
+
+// The provider reaches Hermes twice, in config.yaml and as --provider; both
+// must name one that the pinned Hermes resolves.
+func TestHermesProviderMapsSGLangToCustom(t *testing.T) {
+	for provider, want := range map[string]string{"sglang": "custom", "deepseek": "deepseek"} {
+		if got := hermesProvider(provider); got != want {
+			t.Fatalf("hermesProvider(%q) = %q, want %q", provider, got, want)
 		}
 	}
 }

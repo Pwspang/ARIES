@@ -558,3 +558,74 @@ def test_similarity_only_retrieval_ignores_utility(make_provider, embedder):
     seed(p, "close task", "close but useless", -0.9)
     seed(p, "far task", "farther but proven", 0.9)
     assert "close but useless" in p.prefetch("query task")
+
+
+def test_frozen_provider_recalls_but_never_learns(make_provider, monkeypatch, tmp_path, embedder):
+    embedder.pinned = {"train task": unit(1, 0), "test task": unit(1, 0.1)}
+    trainer = make_provider(session_id="a")
+    run_session(trainer, "train task", "did the train task", reward=1.0)
+    (tmp_path / "memrl" / "rewards.json").write_text(json.dumps({"test-001": -1}))
+    frozen = external_provider(make_provider, monkeypatch, "test-001", "b", frozen=True)
+    assert frozen._finalizer is None
+    assert "did the train task" in frozen.prefetch("test task")
+    frozen.sync_turn("q", "a")
+    frozen.shutdown()
+    frozen.initialize("peek", hermes_home=str(tmp_path))
+    (mem,) = frozen._store.get_memories(frozen._store.memory_ids())
+    assert frozen._store.pending() == [] and mem.q_value == 0.0
+    assert not (tmp_path / "memrl" / "pending.json").exists()
+
+
+def test_batch_parks_sessions_and_finalize_applies_them_in_order(make_provider, monkeypatch, tmp_path, embedder):
+    from memrl.finalize import finalize_batch
+    embedder.pinned = {"seed task": unit(1, 0, 0), "task one": unit(1, 0.1, 0), "task two": unit(1, 0.12, 0)}
+    seeder = make_provider(session_id="seed")
+    seed_id = seed(seeder, "seed task", "seed experience", 0.0)
+    seeder.shutdown()
+    pending_dir = tmp_path / "memrl" / "pending"
+    pending_dir.mkdir(parents=True)
+    # Both tasks of the batch recall from the same store, then park.
+    for task, session in (("task-b-002", "two"), ("task-a-001", "one")):
+        p = external_provider(make_provider, monkeypatch, task, session, batch=True)
+        assert p._finalizer is None
+        assert "seed experience" in p.prefetch("task one" if session == "one" else "task two")
+        p.sync_turn("q", f"answer for {task}")
+        p.shutdown()
+        (tmp_path / "memrl" / "pending.json").rename(pending_dir / f"{task}.json")
+        p.initialize("peek", hermes_home=str(tmp_path))
+        assert len(p._store.memory_ids()) == 1 and p._store.pending() == []  # nothing learned in the batch
+        p.shutdown()
+    (tmp_path / "memrl" / "rewards.json").write_text(json.dumps({"task-a-001": 1, "task-b-002": -1}))
+    chat = FakeChat("a script")
+    from memrl import MemRLConfig
+    counts = finalize_batch(tmp_path, chat=chat, config=MemRLConfig(epsilon=0.0, delta=0.38))
+    assert counts == {"applied": 2, "dropped": 0}
+    from memrl.store import Store
+    store = Store(tmp_path / "memrl" / "memrl.db")
+    seed_mem, first, second = store.get_memories(store.memory_ids())
+    # Execution order (-001 before -002), whatever the file order: +1 then -1.
+    assert seed_mem.id == seed_id and seed_mem.q_value == pytest.approx(ema(ema(0.0, 1.0, 0.3), -1.0, 0.3))
+    assert (first.kind, second.kind) == ("experience", "reflection")
+    assert [c[1] for c in store._conn.execute("SELECT task_id, purpose FROM llm_calls ORDER BY rowid")] == ["script", "reflection"]
+    store.close()
+
+
+def test_finalize_requires_every_reward(tmp_path, make_provider, monkeypatch):
+    from memrl.finalize import finalize_batch
+    p = external_provider(make_provider, monkeypatch, "task-001", "a", batch=True)
+    p.prefetch("a question about the repository layout")
+    p.sync_turn("q", "a")
+    p.shutdown()
+    (tmp_path / "memrl" / "pending").mkdir()
+    (tmp_path / "memrl" / "pending.json").rename(tmp_path / "memrl" / "pending" / "task-001.json")
+    (tmp_path / "memrl" / "rewards.json").write_text("{}")
+    with pytest.raises(ValueError, match="task-001"):
+        finalize_batch(tmp_path, chat=FakeChat(""))
+
+
+def test_boolean_settings_parse_from_the_environment(monkeypatch):
+    from memrl import MemRLConfig
+    monkeypatch.setenv("MEMRL_FROZEN", "1")
+    assert MemRLConfig.from_env().frozen is True
+    monkeypatch.setenv("MEMRL_FROZEN", "0")
+    assert MemRLConfig.from_env().frozen is False

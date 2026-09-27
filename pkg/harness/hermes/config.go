@@ -64,7 +64,7 @@ func renderConfig(model core.ModelConfig, maxTurns int, webSearchEnabled, extrac
 	var output bytes.Buffer
 	output.WriteString("model:\n")
 	output.WriteString("  default: " + yamlString(model.Model) + "\n")
-	output.WriteString("  provider: " + yamlString(model.Provider) + "\n")
+	output.WriteString("  provider: " + yamlString(hermesProvider(model.Provider)) + "\n")
 	output.WriteString("  base_url: " + yamlString(model.BaseURL) + "\n")
 	output.WriteString("  api_key: " + yamlString("${"+model.APIKeyEnv+"}") + "\n")
 	output.WriteString("  api_mode: \"chat_completions\"\n")
@@ -214,6 +214,17 @@ func validateModel(model core.ModelConfig) error {
 		return errors.New("Hermes API-key environment name is invalid")
 	}
 	return nil
+}
+
+// hermesProvider names an ARIES model provider the way Hermes does. Hermes
+// knows no "sglang" provider (hermes_cli/auth.py::resolve_provider fails with
+// "Unknown provider"); it serves local OpenAI-compatible endpoints such as
+// vllm or llama.cpp through its "custom" provider.
+func hermesProvider(provider string) string {
+	if provider == "sglang" {
+		return "custom"
+	}
+	return provider
 }
 
 func normalizeSGLangBaseURL(baseURL string) (string, error) {

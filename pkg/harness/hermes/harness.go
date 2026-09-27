@@ -107,10 +107,13 @@ type Options struct {
 	// docker/hermes-memrl image and hands its run-scoped store, kept under
 	// OutputDir/memrl, from task to task (see memrl.go).
 	MemRLEnabled bool
-	// MemRLRetrieval is harness.memrl.retrieval: "similarity" ranks recall
-	// by similarity alone; anything else keeps MemRL's value-aware ranking.
-	MemRLRetrieval string
-	Logger         *logrus.Logger
+	// MemRLFrozenStore is harness.memrl.frozen_store: the directory of a
+	// trained store every task recalls from without learning.
+	MemRLFrozenStore string
+	// MemRLBatch is a positive harness.memrl.batch_size: tasks park their
+	// sessions for FinalizeMemRLBatch instead of handing the store on.
+	MemRLBatch bool
+	Logger     *logrus.Logger
 }
 
 // dockerClient is the small official Engine SDK surface used by the harness.
@@ -145,7 +148,8 @@ type Manager struct {
 	subagentsEnabled       bool
 	maxConcurrentSubagents int
 	memrlEnabled           bool
-	memrlRetrieval         string
+	memrlFrozenStore       string
+	memrlBatch             bool
 	memrlStorePath         string
 	logger                 *logrus.Logger
 	apiKeyLookup           func(string) ([]byte, bool)
@@ -247,7 +251,7 @@ func New(options Options) (*Manager, error) {
 		terminalTimeout: options.TerminalTimeout, webSearchEnabled: options.WebSearchEnabled,
 		extractAPIKeyEnv: options.ExtractAPIKeyEnv, logger: options.Logger,
 		subagentsEnabled: options.SubagentsEnabled, maxConcurrentSubagents: options.MaxConcurrentSubagents,
-		memrlEnabled: options.MemRLEnabled, memrlRetrieval: options.MemRLRetrieval, memrlStorePath: filepath.Join(outputDir, "memrl", memrlStoreName),
+		memrlEnabled: options.MemRLEnabled, memrlFrozenStore: options.MemRLFrozenStore, memrlBatch: options.MemRLBatch, memrlStorePath: filepath.Join(outputDir, "memrl", memrlStoreName),
 		apiKeyLookup: options.APIKeyLookup, newID: randomID,
 	}, nil
 }
@@ -288,7 +292,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		return err
 	}
 	if manager.memrlEnabled {
-		environment = append(environment, memrlEnvironment(request.TaskID, manager.memrlRetrieval)...)
+		environment = append(environment, memrlEnvironment(request.TaskID, manager.memrlFrozenStore != "", manager.memrlBatch)...)
 	}
 	apiKeySource, ok := manager.apiKeyLookup(request.Model.APIKeyEnv)
 	if !ok {
@@ -328,10 +332,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 	}
 	var memrlStore, memrlRewards []byte
 	if manager.memrlEnabled {
-		memrlStore, err = readMemRLStore(manager.memrlStorePath)
-		if err == nil {
-			memrlRewards, err = readMemRLRewards(filepath.Join(filepath.Dir(manager.memrlStorePath), memrlRewardsName))
-		}
+		memrlStore, memrlRewards, err = manager.readMemRLState()
 		if err != nil {
 			clear(apiKey)
 			clear(extractAPIKey)
@@ -468,7 +469,7 @@ func (manager *Manager) Run(ctx context.Context, instruction string) (core.Harne
 
 	runCtx, cancel := context.WithTimeout(ctx, active.agentTimeout)
 	result, runErr := manager.execAttached(runCtx, active.containerID,
-		[]string{agentWrapperPath, active.model.Model, active.model.Provider, instruction}, workspaceRoot)
+		[]string{agentWrapperPath, active.model.Model, hermesProvider(active.model.Provider), instruction}, workspaceRoot)
 	cancel()
 
 	stdout := redactSession(result.stdout, active)
@@ -1064,6 +1065,13 @@ func (manager *Manager) collectArtifacts(ctx context.Context, active *session, s
 			errs = append(errs, err)
 		} else if path != "" {
 			active.logPaths = appendUnique(active.logPaths, path)
+		}
+		if manager.memrlBatch {
+			if path, err := manager.exportMemRLPending(ctx, active); err != nil {
+				errs = append(errs, err)
+			} else if path != "" {
+				active.logPaths = appendUnique(active.logPaths, path)
+			}
 		}
 	}
 	sessionPaths, sessionErr := manager.collectSessions(ctx, active)

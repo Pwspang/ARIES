@@ -425,4 +425,13 @@ func TestRecordTaskOutcomeWritesOnlyForHermesMemRL(t *testing.T) {
 	if err != nil || !strings.Contains(string(content), `"fix-git-001": 1`) {
 		t.Fatalf("rewards = %q, %v", content, err)
 	}
+
+	frozen := t.TempDir()
+	cfg.Harness.MemRL.FrozenStore = "runs/stores/memrl"
+	if err := recordTaskOutcome(cfg, frozen, task); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(rewards(frozen)); !os.IsNotExist(err) {
+		t.Fatalf("a frozen MemRL run recorded a reward: %v", err)
+	}
 }
