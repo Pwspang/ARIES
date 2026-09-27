@@ -30,6 +30,33 @@ time, and the image sets `HF_HUB_OFFLINE=1`, so the plugin works with
 | Utility update | commit | Session reward `r ∈ [-1, 1]`. For each injected memory, `Q ← Q + α(r − Q)` |
 | New triplet | commit | `r ≥ 0` stores the session as an experience with `Q = 0`. `r < 0` stores a `[PATTERN TO AVOID]` reflection with `Q = 0.5`, so it is retrieved immediately |
 
+**Intent.** When the task prompt contains a `<question>…</question>` block, as
+SWE-Atlas QA prompts do, the intent is only that block. Otherwise it is the whole
+prompt. The same text is both the memory's key and the search query.
+
+This departs from MemRL, which embeds each benchmark's task text as given. For
+SWE-Atlas that text is half shared wrapper, which makes every task look alike.
+Set `MEMRL_INTENT_TAG=` (empty) to use the whole prompt, as MemRL does.
+
+**Experience.** This follows MemRL's `proceduralization` build step:
+- On success, the task model writes a 3–5 step high-level script from the
+  trajectory, using MemRL's `generate_script` prompt. The memory stores
+  `Task:` + `SCRIPT:` + `TRAJECTORY:`.
+- On failure, the model writes a reflection, using MemRL's `_generate_reflection`
+  prompt. The memory stores `[PATTERN TO AVOID]` + `TASK REFLECTION:` +
+  `What went wrong:` + `Failed approach:`.
+
+The trajectory, including tool calls and results, is read from Hermes's own
+session store (`$HERMES_HOME/state.db`). In one-shot mode the provider otherwise
+sees only the final answer. The model sees up to 60,000 characters of it, with
+each message capped at 2,000. The stored copy is capped at 6,000 characters, with
+each message capped at 400, so that injecting three memories doesn't flood the
+context. When a trajectory is too long, its middle is dropped.
+
+The model call goes to the `model` section of Hermes's `config.yaml`, which is
+the same OpenAI-compatible endpoint and credential the agent uses. If the call
+fails, the memory is still stored, just without the script or reflection.
+
 The reward comes from the `memrl_feedback` tool, which the system prompt asks
 the agent to call before its final answer. If the agent doesn't call it, a
 heuristic is used:
@@ -65,6 +92,7 @@ Tuning comes from environment variables:
 | `MEMRL_EPSILON` | 0.0 | MemRL ε-greedy exploration |
 | `MEMRL_Q_INIT` | 0.0 | Q of a new experience |
 | `MEMRL_Q_REFLECTION` | 0.5 | Q of a new failure reflection |
+| `MEMRL_INTENT_TAG` | `question` | Keep only `<tag>…</tag>` as the intent; empty uses the whole prompt |
 
 With `bge-small-en-v1.5`, unrelated task descriptions still score about 0.4–0.6
 cosine against each other (paraphrases score about 0.99). The default
@@ -75,11 +103,12 @@ matching.
 ## Tests
 
 ```sh
-uv run --no-project --with numpy --with pytest pytest docker/hermes-memrl/tests -q
+uv run --no-project --with numpy --with pytest --with pyyaml pytest docker/hermes-memrl/tests -q
 ```
 
 Outside the image, `tests/conftest.py` installs a minimal stand-in for
-`agent.memory_provider` and a deterministic fake embedder.
+`agent.memory_provider` and a deterministic fake embedder. The model is replaced
+by a fake chat function.
 
 ## Use in ARIES
 

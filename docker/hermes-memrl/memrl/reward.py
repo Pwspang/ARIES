@@ -1,16 +1,9 @@
-"""Session reward heuristic and failure reflection text.
-
-The reflection layout follows MemRL's ``AdjustmentUpdater._prepare_append_adjust``
-(memrl/service/updater.py, https://github.com/MemTensor/MemRL, MIT License),
-but is filled from a template instead of an extra LLM call.
-"""
+"""Session reward heuristic, used when the agent reports no feedback."""
 
 from __future__ import annotations
 
 import json
 from typing import Any, Dict, List, Optional
-
-TRAJECTORY_LIMIT = 1500
 
 _FAILURE_PHRASES = (
     "i couldn't", "i could not", "i was unable", "i am unable", "i'm unable",
@@ -72,14 +65,3 @@ def heuristic_reward(messages: Optional[List[Dict[str, Any]]], final_text: str) 
         )
         return _final_text_reward(last or "")
     return _final_text_reward(final_text)
-
-
-def failure_reflection(intent: str, trajectory: str, reason: str) -> str:
-    if len(trajectory) > TRAJECTORY_LIMIT:
-        trajectory = trajectory[:TRAJECTORY_LIMIT] + "\n…(truncated)"
-    return (
-        "[PATTERN TO AVOID]\n"
-        f"Task: {intent}\n"
-        f"What went wrong: {reason}\n"
-        f"Failed approach:\n{trajectory}\n"
-    )

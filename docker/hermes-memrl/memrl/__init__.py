@@ -9,8 +9,12 @@ stays frozen; learning happens in the retrieved context:
   and injects the top k2.
 - commit: the session reward r (the memrl_feedback tool, else a heuristic)
   moves each injected memory's Q by Q <- Q + alpha * (r - Q). A successful
-  session is stored as a new experience; a failed one is stored as a
-  "[PATTERN TO AVOID]" reflection with Q = 0.5 so it is retrieved at once.
+  session is stored as a new experience (an LLM-written script plus the
+  trajectory, as in MemRL's proceduralization); a failed one is stored as a
+  "[PATTERN TO AVOID]" LLM reflection with Q = 0.5 so it is retrieved at once.
+
+The intent is the task prompt's <question> block when it has one (see
+MemRLConfig.intent_tag), otherwise the whole prompt.
 
 Hermes one-shot mode (`hermes -z`) exits without calling on_session_end or
 shutdown, so the commit also runs from an atexit handler.
@@ -34,14 +38,18 @@ from agent.memory_provider import MemoryProvider
 
 from ._compat import RecallStatus, is_trivial_prompt, spawn_context_thread
 from .retrieval import ema, phase_a, phase_b
-from .reward import failure_reflection, heuristic_reward
+from .procedure import (
+    PROMPT_MESSAGE_LIMIT, PROMPT_TRAJECTORY_LIMIT, REFLECTION_PROMPT, SCRIPT_PROMPT,
+    STORED_MESSAGE_LIMIT, STORED_TRAJECTORY_LIMIT, ChatFn, build_experience, build_reflection,
+    extract_intent, format_trajectory, hermes_chat, load_session_messages,
+)
+from .reward import heuristic_reward
 from .store import Store
 
 logger = logging.getLogger(__name__)
 
 EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 FEEDBACK_TOOL = "memrl_feedback"
-EXPERIENCE_LIMIT = 2000
 
 SYSTEM_PROMPT_BLOCK = (
     "## MemRL experience memory\n"
@@ -88,6 +96,7 @@ class MemRLConfig:
     epsilon: float = 0.0  # MemRL epsilon-greedy exploration (off by default)
     q_init: float = 0.0   # Q of a new successful experience (MemRL q_init_pos)
     q_reflection: float = 0.5  # Q of a new failure reflection
+    intent_tag: str = "question"  # keep only <intent_tag>…</intent_tag> as the intent; "" keeps the whole prompt
 
     @classmethod
     def from_env(cls) -> "MemRLConfig":
@@ -95,7 +104,7 @@ class MemRLConfig:
         cfg = cls()
         for f in fields(cls):
             raw = os.environ.get(f"MEMRL_{f.name.upper()}")
-            if raw:
+            if raw is not None and (raw or f.name == "intent_tag"):
                 setattr(cfg, f.name, type(getattr(cfg, f.name))(raw))
         return cfg
 
@@ -113,9 +122,13 @@ def _sentence_transformer_embedder() -> Callable[[List[str]], np.ndarray]:
 
 class MemRLMemoryProvider(MemoryProvider):
     def __init__(self, config: Optional[MemRLConfig] = None,
-                 embedder: Optional[Callable[[List[str]], np.ndarray]] = None) -> None:
+                 embedder: Optional[Callable[[List[str]], np.ndarray]] = None,
+                 chat: Optional[ChatFn] = None) -> None:
         self._config = config or MemRLConfig.from_env()
         self._embedder = embedder
+        self._chat_override = chat
+        self._chat: Optional[ChatFn] = chat
+        self._home = Path()
         self._embedder_lock = threading.Lock()
         self._store: Optional[Store] = None
         self._session_id = ""
@@ -148,7 +161,11 @@ class MemRLMemoryProvider(MemoryProvider):
 
     def initialize(self, session_id: str, **kwargs: Any) -> None:
         home = kwargs.get("hermes_home") or os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
-        self._store = Store(Path(home) / "memrl" / "memrl.db")
+        self._home = Path(home)
+        self._store = Store(self._home / "memrl" / "memrl.db")
+        self._chat = self._chat_override or hermes_chat(self._home)
+        if self._chat is None:
+            logger.warning("MemRL found no chat model in config.yaml; experiences will lack a script")
         self._session_id = session_id
         self._write_enabled = kwargs.get("agent_context", "primary") == "primary"
         if not self._atexit_registered:
@@ -182,13 +199,16 @@ class MemRLMemoryProvider(MemoryProvider):
         sid = session_id or self._session_id
         try:
             session = self._store.session(sid)
+            # The intent is both the memory key and the search query, as in
+            # MemRL, so both use the same extracted text.
+            intent = extract_intent(query, self._config.intent_tag)
             if not session.intent:
-                self._store.update_session(sid, intent=query)
+                self._store.update_session(sid, intent=intent)
             # Embedding here, even on a cold start, guarantees the model is
             # loaded before the one-shot exits: its commit runs from atexit,
             # where importing the model's dependencies fails ("can't register
             # atexit after shutdown").
-            chosen = self._retrieve(self._embed(query))
+            chosen = self._retrieve(self._embed(intent))
         except Exception as e:
             logger.warning("MemRL prefetch failed: %s", e)
             return ""
@@ -285,21 +305,47 @@ class MemRLMemoryProvider(MemoryProvider):
             memories = store.get_memories(session.active_ids)
             store.set_q([(m.id, ema(m.q_value, reward, self._config.alpha)) for m in memories])
 
-            # The intent already holds the task, so the experience keeps only
-            # what the agent did. Repeating the user turn let a long task
-            # prompt fill the whole EXPERIENCE_LIMIT and crowd out the answer.
-            trajectory = "\n\n".join(a for _, a in store.steps(session_id) if a) or self._last_final
+            messages = self._trajectory_messages(session_id)
+            prompt_trajectory = format_trajectory(messages, PROMPT_MESSAGE_LIMIT, PROMPT_TRAJECTORY_LIMIT)
+            stored_trajectory = format_trajectory(messages, STORED_MESSAGE_LIMIT, STORED_TRAJECTORY_LIMIT)
             embedding = self._embed(session.intent)
             if reward >= 0:
-                store.add_memory(session.intent, trajectory[:EXPERIENCE_LIMIT], embedding,
-                                 self._config.q_init, "experience")
+                script = self._ask(SCRIPT_PROMPT.format(trajectory=prompt_trajectory), 0.7)
+                store.add_memory(session.intent, build_experience(session.intent, script, stored_trajectory),
+                                 embedding, self._config.q_init, "experience")
             else:
-                reason = self._feedback_note or f"session reward {reward:+.2f}"
-                store.add_memory(session.intent, failure_reflection(session.intent, trajectory, reason),
+                reflection = self._ask(REFLECTION_PROMPT.format(task=session.intent, trajectory=prompt_trajectory), 0.3)
+                reflection = reflection or self._feedback_note or f"session reward {reward:+.2f}"
+                store.add_memory(session.intent, build_reflection(session.intent, reflection, stored_trajectory),
                                  embedding, self._config.q_reflection, "reflection")
             logger.info("MemRL committed session %s: reward=%+.2f updated=%d", session_id, reward, len(memories))
         except Exception as e:
             logger.warning("MemRL commit failed: %s", e)
+
+
+    def _trajectory_messages(self, session_id: str) -> List[Dict[str, str]]:
+        """The full session from Hermes's state.db, else the turn buffer."""
+        try:
+            messages = load_session_messages(self._home / "state.db", session_id)
+        except Exception as e:
+            logger.warning("MemRL could not read the Hermes session store: %s", e)
+            messages = []
+        if messages:
+            return messages
+        steps = self._store.steps(session_id) if self._store else []
+        messages = [m for u, a in steps for m in ({"role": "user", "content": u, "tool_calls": "", "tool_name": ""},
+                                                  {"role": "assistant", "content": a, "tool_calls": "", "tool_name": ""})]
+        return messages or [{"role": "assistant", "content": self._last_final, "tool_calls": "", "tool_name": ""}]
+
+    def _ask(self, prompt: str, temperature: float) -> str:
+        """One model call; a failure costs the script, never the memory."""
+        if self._chat is None:
+            return ""
+        try:
+            return self._chat([{"role": "user", "content": prompt}], temperature)
+        except Exception as e:
+            logger.warning("MemRL model call failed: %s", e)
+            return ""
 
 
 def register(ctx) -> None:

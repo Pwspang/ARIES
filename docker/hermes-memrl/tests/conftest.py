@@ -74,8 +74,8 @@ def make_provider(tmp_path, embedder):
 
     made = []
 
-    def make(session_id="s1", **cfg):
-        p = MemRLMemoryProvider(config=MemRLConfig(**cfg), embedder=embedder)
+    def make(session_id="s1", chat=None, **cfg):
+        p = MemRLMemoryProvider(config=MemRLConfig(**cfg), embedder=embedder, chat=chat)
         p.initialize(session_id, hermes_home=str(tmp_path), platform="cli")
         made.append(p)
         return p
