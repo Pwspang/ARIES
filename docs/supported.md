@@ -17,6 +17,10 @@ plugin discovery.
 | Model service | **DeepSeek** — supported external OpenAI-compatible endpoint | Validates model access; does not own the service | `runtime.backend: "deepseek"`, `runtime.mode: "external"`; `profiles/openclaw-tb2-fix-git-deepseek.json` |
 | Model service | **SGLang** — supported external or ARIES-managed runtime | Validates both modes; in managed mode owns one host process for the profile run | `runtime.backend: "sglang"`; `profiles/openclaw-tb2-fix-git-sglang.json`; `configs/sglang/qwen3-8b-local.yaml` |
 
+`docker/hermes-memrl/` builds an optional Hermes image with a MemRL memory
+provider baked in. ARIES does not wire it into the Hermes harness yet; see
+`docker/hermes-memrl/README.md`.
+
 ## Configuration boundaries
 
 The four Runner implementations are chosen by `benchmark.type`, `harness.type`,
