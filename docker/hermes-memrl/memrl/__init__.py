@@ -106,7 +106,7 @@ def _sentence_transformer_embedder() -> Callable[[List[str]], np.ndarray]:
     model = SentenceTransformer(EMBEDDING_MODEL, device="cpu")
 
     def embed(texts: List[str]) -> np.ndarray:
-        return np.asarray(model.encode(texts, normalize_embeddings=True), dtype=np.float32)
+        return np.asarray(model.encode(texts, normalize_embeddings=True, show_progress_bar=False), dtype=np.float32)
 
     return embed
 
@@ -154,6 +154,9 @@ class MemRLMemoryProvider(MemoryProvider):
         if not self._atexit_registered:
             atexit.register(self.shutdown)
             self._atexit_registered = True
+        # Start loading the embedding model off the conversation thread;
+        # prefetch waits for it (see there).
+        self._spawn(self._embed, "")
 
     def system_prompt_block(self) -> str:
         return SYSTEM_PROMPT_BLOCK
@@ -164,12 +167,12 @@ class MemRLMemoryProvider(MemoryProvider):
                 self._embedder = _sentence_transformer_embedder()
         return np.asarray(self._embedder([text]), dtype=np.float32)[0]
 
-    def _retrieve(self, query: str) -> List[str]:
+    def _retrieve(self, query_vec: np.ndarray) -> List[str]:
         ids, matrix, q_values = self._store.embeddings()
         if not ids:
             return []
         cfg = self._config
-        idx, sims = phase_a(self._embed(query), matrix, cfg.delta, cfg.k1)
+        idx, sims = phase_a(query_vec, matrix, cfg.delta, cfg.k1)
         picked = phase_b(sims, q_values[idx], cfg.lam, cfg.k2, epsilon=cfg.epsilon)
         return [ids[int(idx[p])] for p in picked]
 
@@ -181,7 +184,11 @@ class MemRLMemoryProvider(MemoryProvider):
             session = self._store.session(sid)
             if not session.intent:
                 self._store.update_session(sid, intent=query)
-            chosen = self._retrieve(query)
+            # Embedding here, even on a cold start, guarantees the model is
+            # loaded before the one-shot exits: its commit runs from atexit,
+            # where importing the model's dependencies fails ("can't register
+            # atexit after shutdown").
+            chosen = self._retrieve(self._embed(query))
         except Exception as e:
             logger.warning("MemRL prefetch failed: %s", e)
             return ""

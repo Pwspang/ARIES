@@ -53,6 +53,10 @@ type fakeDocker struct {
 	removeCalls    int
 	closeCalls     int
 	closeErr       error
+	// memrlExport is what the container's MemRL store holds when the harness
+	// copies it out; nil means the provider never created it.
+	memrlExport []byte
+	copyFrom    []string
 }
 
 func newFakeDocker() *fakeDocker {
@@ -97,6 +101,24 @@ func (fake *fakeDocker) CopyToContainer(_ context.Context, id string, options cl
 	fake.archive = content
 	fake.mu.Unlock()
 	return client.CopyToContainerResult{}, nil
+}
+
+func (fake *fakeDocker) CopyFromContainer(_ context.Context, id string, options client.CopyFromContainerOptions) (client.CopyFromContainerResult, error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if id != fake.container.ID || fake.removed {
+		return client.CopyFromContainerResult{}, errdefs.ErrNotFound
+	}
+	fake.copyFrom = append(fake.copyFrom, options.SourcePath)
+	if fake.memrlExport == nil {
+		return client.CopyFromContainerResult{}, errdefs.ErrNotFound
+	}
+	var archive bytes.Buffer
+	writer := tar.NewWriter(&archive)
+	_ = writer.WriteHeader(&tar.Header{Name: filepath.Base(options.SourcePath), Typeflag: tar.TypeReg, Mode: 0o600, Size: int64(len(fake.memrlExport))})
+	_, _ = writer.Write(fake.memrlExport)
+	_ = writer.Close()
+	return client.CopyFromContainerResult{Content: io.NopCloser(&archive)}, nil
 }
 
 func (fake *fakeDocker) ContainerStart(_ context.Context, id string, _ client.ContainerStartOptions) (client.ContainerStartResult, error) {

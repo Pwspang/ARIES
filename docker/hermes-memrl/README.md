@@ -81,11 +81,21 @@ uv run --no-project --with numpy --with pytest pytest docker/hermes-memrl/tests 
 Outside the image, `tests/conftest.py` installs a minimal stand-in for
 `agent.memory_provider` and a deterministic fake embedder.
 
-## Not wired into ARIES yet
+## Use in ARIES
 
-ARIES doesn't use this image today:
-- The Hermes harness renders its own `config.yaml` without `memory.provider`.
-- The harness recreates the container for every task and rejects extra mounts, so the SQLite store would not survive between tasks.
+Build and tag the image that `configs/versions-memrl.json` pins, then run a
+profile that sets `harness.memrl.enabled`:
 
-Cross-task learning in ARIES needs harness changes: a config switch, and a
-run-scoped store mounted or copied between task containers.
+```sh
+docker build -f docker/hermes-memrl/Dockerfile -t aries/hermes-memrl:v2026.5.29.2-memrl1 .
+./bin/aries profiles/hermes-tb2-fix-git-memrl-deepseek.json
+```
+
+The Hermes harness keeps one store per run at `<run>/memrl/memrl.db`:
+- It stages the store into each task's container.
+- After the one-shot exits, it copies the store back. Each task's copy is also
+  retained as `harness/memrl/memrl.db`.
+
+The hand-off is sequential, so the profile must use `execution.concurrency` 1.
+In one-shot mode the heuristic sees only the final answer. The reward is
+therefore meaningful mainly when the agent calls `memrl_feedback`.

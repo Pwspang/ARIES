@@ -259,3 +259,25 @@ def test_shutdown_commits_like_oneshot_exit(make_provider, tmp_path, embedder):
     p.initialize("after", hermes_home=str(tmp_path))
     (mem,) = p._store.get_memories(p._store.embeddings()[0])
     assert mem.kind == "experience"
+
+
+def test_model_is_loaded_before_exit(tmp_path, embedder, monkeypatch):
+    """The one-shot commit runs from atexit, where the model can no longer load.
+
+    initialize starts loading it, and even a cold-start prefetch embeds the
+    query, so the model is ready before the first model call.
+    """
+    import memrl
+    loads, calls = [], []
+
+    def counting(texts):
+        calls.append(list(texts))
+        return embedder(texts)
+
+    monkeypatch.setattr(memrl, "_sentence_transformer_embedder", lambda: loads.append(1) or counting)
+    p = MemRLMemoryProvider(config=memrl.MemRLConfig())
+    p.initialize("warm", hermes_home=str(tmp_path))
+    assert p.prefetch("recover the lost commit and merge it") == ""
+    assert loads == [1]
+    assert ["recover the lost commit and merge it"] in calls
+    p.shutdown()

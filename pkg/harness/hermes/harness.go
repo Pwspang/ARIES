@@ -103,7 +103,11 @@ type Options struct {
 	// delegation.max_concurrent_children. Zero leaves Hermes's own default
 	// (3) in place. Ignored when SubagentsEnabled is false.
 	MaxConcurrentSubagents int
-	Logger                 *logrus.Logger
+	// MemRLEnabled activates the MemRL memory provider baked into the
+	// docker/hermes-memrl image and hands its run-scoped store, kept under
+	// OutputDir/memrl, from task to task (see memrl.go).
+	MemRLEnabled bool
+	Logger       *logrus.Logger
 }
 
 // dockerClient is the small official Engine SDK surface used by the harness.
@@ -111,6 +115,7 @@ type Options struct {
 type dockerClient interface {
 	ContainerCreate(context.Context, client.ContainerCreateOptions) (client.ContainerCreateResult, error)
 	CopyToContainer(context.Context, string, client.CopyToContainerOptions) (client.CopyToContainerResult, error)
+	CopyFromContainer(context.Context, string, client.CopyFromContainerOptions) (client.CopyFromContainerResult, error)
 	ContainerStart(context.Context, string, client.ContainerStartOptions) (client.ContainerStartResult, error)
 	ContainerInspect(context.Context, string, client.ContainerInspectOptions) (client.ContainerInspectResult, error)
 	ContainerTop(context.Context, string, client.ContainerTopOptions) (client.ContainerTopResult, error)
@@ -136,6 +141,8 @@ type Manager struct {
 	extractAPIKeyEnv       string
 	subagentsEnabled       bool
 	maxConcurrentSubagents int
+	memrlEnabled           bool
+	memrlStorePath         string
 	logger                 *logrus.Logger
 	apiKeyLookup           func(string) ([]byte, bool)
 	newID                  func() (string, error)
@@ -161,6 +168,7 @@ type session struct {
 	agentTimeout  time.Duration
 	apiKey        []byte
 	extractAPIKey []byte
+	memrlStore    []byte
 	runAttempted  bool
 	logPaths      []string
 }
@@ -234,6 +242,7 @@ func New(options Options) (*Manager, error) {
 		terminalTimeout: options.TerminalTimeout, webSearchEnabled: options.WebSearchEnabled,
 		extractAPIKeyEnv: options.ExtractAPIKeyEnv, logger: options.Logger,
 		subagentsEnabled: options.SubagentsEnabled, maxConcurrentSubagents: options.MaxConcurrentSubagents,
+		memrlEnabled: options.MemRLEnabled, memrlStorePath: filepath.Join(outputDir, "memrl", memrlStoreName),
 		apiKeyLookup: options.APIKeyLookup, newID: randomID,
 	}, nil
 }
@@ -265,6 +274,9 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 	configuration, err := renderConfig(request.Model, manager.maxTurns, manager.webSearchEnabled, extractEnabled, manager.subagentsEnabled, manager.maxConcurrentSubagents)
 	if err != nil {
 		return err
+	}
+	if manager.memrlEnabled {
+		configuration = append(configuration, memrlConfigBlock...)
 	}
 	environment, err := containerEnvironment(request.Endpoint, workspaceRoot, manager.terminalTimeout, manager.webSearchEnabled)
 	if err != nil {
@@ -306,6 +318,15 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 			return errors.New("rendered Hermes config contains the extract API-key value")
 		}
 	}
+	var memrlStore []byte
+	if manager.memrlEnabled {
+		memrlStore, err = readMemRLStore(manager.memrlStorePath)
+		if err != nil {
+			clear(apiKey)
+			clear(extractAPIKey)
+			return err
+		}
+	}
 	id, err := manager.newID()
 	if err != nil {
 		clear(apiKey)
@@ -331,6 +352,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		artifactDir:   filepath.Join(manager.outputDir, request.TaskID, "harness"),
 		endpoint:      request.Endpoint, model: request.Model,
 		agentTimeout: agentTimeout, apiKey: apiKey, extractAPIKey: extractAPIKey,
+		memrlStore: memrlStore,
 	}
 	fail := func(primary error) error {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), manager.cleanupTimeout)
@@ -826,7 +848,13 @@ func (manager *Manager) runtimeArchive(active *session, configuration []byte) ([
 	if extractEnabled {
 		files[strings.TrimPrefix(extractKeyPath, "/")] = stagedFile{content: active.extractAPIKey, mode: 0o600}
 	}
-	return stageArchive(files)
+	if !manager.memrlEnabled {
+		return stageArchive(files)
+	}
+	if active.memrlStore != nil {
+		files[strings.TrimPrefix(memrlStoreContainerPath, "/")] = stagedFile{content: active.memrlStore, mode: 0o600}
+	}
+	return stageArchive(files, strings.TrimPrefix(memrlStoreContainerDir, "/"))
 }
 
 func containsSecret(value string, secrets ...[]byte) bool {
@@ -843,13 +871,13 @@ type stagedFile struct {
 	mode    int64
 }
 
-func stageArchive(files map[string]stagedFile) ([]byte, error) {
+func stageArchive(files map[string]stagedFile, extraDirectories ...string) ([]byte, error) {
 	var output bytes.Buffer
 	writer := tar.NewWriter(&output)
 	// Everything is owned by the image's unprivileged `hermes` user, because
 	// that is the identity the PATH shim drops to. Modes stay restrictive: the
 	// wrapper still reads the key as root before handing off.
-	directories := []string{"run/aries", "run/aries/hermes", "run/aries/ssh", "run/aries/workspace"}
+	directories := append([]string{"run/aries", "run/aries/hermes", "run/aries/ssh", "run/aries/workspace"}, extraDirectories...)
 	for _, name := range directories {
 		mode := int64(0o700)
 		if name == "run/aries/workspace" {
@@ -1013,6 +1041,15 @@ func (manager *Manager) collectArtifacts(ctx context.Context, active *session, s
 			} else {
 				active.logPaths = appendUnique(active.logPaths, path)
 			}
+		}
+	}
+	// The store is exported only once the one-shot has exited, so its exit
+	// commit is complete; a canceled or failed exec may still be writing.
+	if manager.memrlEnabled && (outcome.EndReason == "completed" || outcome.EndReason == "nonzero_exit") {
+		if path, err := manager.exportMemRLStore(ctx, active); err != nil {
+			errs = append(errs, err)
+		} else if path != "" {
+			active.logPaths = appendUnique(active.logPaths, path)
 		}
 	}
 	sessionPaths, sessionErr := manager.collectSessions(ctx, active)

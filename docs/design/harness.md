@@ -87,6 +87,24 @@ regardless of ownership.
 Second, Hermes requires `/bin/bash` in the task image, because every tool call
 it issues is `bash -c` on the remote.
 
+`harness.memrl.enabled` switches on the MemRL memory provider. The provider is
+baked into the `docker/hermes-memrl` image, which a versions file such as
+`configs/versions-memrl.json` pins. ARIES adds `memory.provider: memrl` to the
+rendered config and keeps one run-scoped SQLite store at
+`<run>/memrl/memrl.db`. The Hermes container still takes no mounts, so the store
+is handed from task to task by copying:
+
+- At start, the current store is staged into `HERMES_HOME` with the rest of the
+  private runtime archive.
+- After the one-shot process exits, the store is copied out, checked to be an
+  SQLite file, retained as `harness/memrl/memrl.db`, and atomically replaces the
+  run copy.
+- A canceled or timed-out run is not copied back, because the process may still
+  be writing.
+
+Because the hand-off is sequential, the profile must set
+`execution.concurrency` to 1.
+
 ## Customization & Contribution Guide
 
 Add a harness only when it can implement the existing `AgentHarness` lifecycle

@@ -63,11 +63,16 @@ class Session:
 
 
 class Store:
+    """One SQLite file in the default rollback-journal mode.
+
+    WAL is deliberately not used: ARIES copies the single database file out of
+    the container after Hermes exits, and a WAL sidecar would be left behind.
+    """
+
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._conn = sqlite3.connect(str(path), check_same_thread=False)
-        self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
 

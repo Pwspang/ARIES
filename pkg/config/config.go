@@ -198,6 +198,17 @@ type HarnessConfig struct {
 	AMEM         HarnessAMEMConfig         `json:"amem,omitempty"`
 	LosslessClaw HarnessLosslessClawConfig `json:"lossless_claw,omitempty"`
 	Mem0         HarnessMem0Config         `json:"mem0,omitempty"`
+	MemRL        HarnessMemRLConfig        `json:"memrl,omitempty"`
+}
+
+// HarnessMemRLConfig enables the MemRL memory provider baked into the
+// docker/hermes-memrl image, so it requires Hermes and a versions file that
+// pins that image. The provider's SQLite store is run-scoped: it is copied
+// into each task's Hermes container at start and copied back after the
+// one-shot exits, so learning carries across the run's tasks. That hand-off
+// is sequential by construction, hence execution.concurrency must be 1.
+type HarnessMemRLConfig struct {
+	Enabled bool `json:"enabled,omitempty"`
 }
 
 // HarnessAMEMConfig enables the amem memory plugin (https://amem.owo.lc, npm
@@ -717,6 +728,9 @@ func (c *Config) validate() error {
 	if c.Harness.Mode == "" {
 		c.Harness.Mode = "agent"
 	}
+	if c.Harness.MemRL.Enabled && c.Execution.Concurrency != 1 {
+		return errors.New("harness.memrl requires execution.concurrency 1: its run-scoped store is handed from task to task")
+	}
 	if err := c.Harness.validate(); err != nil {
 		return err
 	}
@@ -1025,6 +1039,9 @@ func (h *HarnessConfig) validate() error {
 	}
 	if h.Mem0.Enabled && h.Type != "openclaw" {
 		return errors.New("harness.mem0 requires OpenClaw")
+	}
+	if h.MemRL.Enabled && h.Type != "hermes" {
+		return errors.New("harness.memrl requires Hermes")
 	}
 	if h.AMEM.Enabled && h.Mem0.Enabled {
 		return errors.New("harness.amem and harness.mem0 are mutually exclusive")

@@ -461,6 +461,31 @@ func TestLosslessClawHarnessConfigValidation(t *testing.T) {
 	}
 }
 
+func TestMemRLHarnessConfigValidation(t *testing.T) {
+	hermes := func(harness, execution string) string {
+		profile := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":`+harness+execution, 1)
+		return strings.Replace(profile, `"bridge":{"type":"openclaw-ssh"}`, `"bridge":{"type":"hermes-ssh"}`, 1)
+	}
+	cfg, err := Decode(strings.NewReader(hermes(`{"type":"hermes","memrl":{"enabled":true}}`, "")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Harness.MemRL.Enabled {
+		t.Fatalf("harness.memrl = %#v", cfg.Harness.MemRL)
+	}
+	openClaw := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","memrl":{"enabled":true}}`, 1)
+	if _, err := Decode(strings.NewReader(openClaw)); err == nil || !strings.Contains(err.Error(), "requires Hermes") {
+		t.Fatalf("OpenClaw with harness.memrl: %v", err)
+	}
+	concurrent := hermes(`{"type":"hermes","memrl":{"enabled":true}}`, `,"execution":{"concurrency":2}`)
+	if _, err := Decode(strings.NewReader(concurrent)); err == nil || !strings.Contains(err.Error(), "concurrency 1") {
+		t.Fatalf("concurrent harness.memrl: %v", err)
+	}
+	if _, err := Decode(strings.NewReader(hermes(`{"type":"hermes"}`, `,"execution":{"concurrency":2}`))); err != nil {
+		t.Fatalf("concurrent Hermes without memrl: %v", err)
+	}
+}
+
 func TestMem0HarnessConfigValidation(t *testing.T) {
 	nonOpenClaw := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"other","mem0":{"enabled":true}}`, 1)
 	if _, err := Decode(strings.NewReader(nonOpenClaw)); err == nil {
@@ -1023,7 +1048,7 @@ func TestCheckedInVersionCatalogsLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 5 {
+	if len(paths) != 6 {
 		t.Fatalf("catalogs=%v", paths)
 	}
 	for _, path := range paths {
