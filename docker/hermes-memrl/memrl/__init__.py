@@ -285,9 +285,10 @@ class MemRLMemoryProvider(MemoryProvider):
             memories = store.get_memories(session.active_ids)
             store.set_q([(m.id, ema(m.q_value, reward, self._config.alpha)) for m in memories])
 
-            trajectory = "\n".join(
-                f"User: {u}\nAssistant: {a}" for u, a in store.steps(session_id)
-            ) or self._last_final
+            # The intent already holds the task, so the experience keeps only
+            # what the agent did. Repeating the user turn let a long task
+            # prompt fill the whole EXPERIENCE_LIMIT and crowd out the answer.
+            trajectory = "\n\n".join(a for _, a in store.steps(session_id) if a) or self._last_final
             embedding = self._embed(session.intent)
             if reward >= 0:
                 store.add_memory(session.intent, trajectory[:EXPERIENCE_LIMIT], embedding,

@@ -281,3 +281,13 @@ def test_model_is_loaded_before_exit(tmp_path, embedder, monkeypatch):
     assert loads == [1]
     assert ["recover the lost commit and merge it"] in calls
     p.shutdown()
+
+
+def test_experience_keeps_answer_when_prompt_is_long(make_provider):
+    """A task prompt longer than the experience limit must not crowd out the answer."""
+    p = make_provider()
+    task = "explain the alias suffix signing flow " + "context " * 400
+    run_session(p, task, "ANSWER: suffixes are signed with CUSTOM_ALIAS_SECRET", reward=1.0)
+    (mem,) = p._store.get_memories(p._store.embeddings()[0])
+    assert mem.experience.startswith("ANSWER:")
+    assert "context context" not in mem.experience
