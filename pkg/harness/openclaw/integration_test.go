@@ -295,8 +295,9 @@ func TestRunnerFixGitThroughOpenClawSSHBridge(t *testing.T) {
 		t.Fatalf("separate outcomes = %#v", task)
 	}
 	wantToolLogs := []string{
-		filepath.Join(outputDir, "fix-git", "bridge", "tool-calls.jsonl"),
-		filepath.Join(outputDir, "fix-git", "bridge", "ssh_raw.log"),
+		// The OpenClaw bridge keeps one artifact directory per harness turn.
+		filepath.Join(outputDir, "fix-git", "bridge-turn-01", "tool-calls.jsonl"),
+		filepath.Join(outputDir, "fix-git", "bridge-turn-01", "ssh_raw.log"),
 	}
 	if !slices.Equal(task.ToolLogPaths, wantToolLogs) {
 		t.Fatalf("tool logs = %q, want %q", task.ToolLogPaths, wantToolLogs)

@@ -263,25 +263,25 @@ func loadTask(root, id string) (core.Task, taskDetails, error) {
 		return core.Task{}, taskDetails{}, fmt.Errorf("verifier.timeout_sec: %w", err)
 	}
 	return core.Task{
-			ID:          id,
-			Instruction: instruction,
-			Timeout:     agentTimeout,
-			Environment: core.Environment{
-				Image:        image,
-				Workdir:      workdir,
-				CPU:          parsed.Environment.CPUs,
-				MemoryMB:     parsed.Environment.MemoryMB,
-				StorageMB:    parsed.Environment.StorageMB,
-				GPUs:         parsed.Environment.GPUs,
-				AllowNetwork: parsed.Environment.AllowInternet,
-				Env:          cloneMap(parsed.Environment.Env),
-			},
-		}, taskDetails{
-			verifierFiles: verifierFiles,
-			timeout:       verifierTimeout,
-			verifierEnv:   cloneMap(parsed.Verifier.Env),
-			workdir:       workdir,
-		}, nil
+		ID:          id,
+		Instruction: instruction,
+		Timeout:     agentTimeout,
+		Environment: core.Environment{
+			Image:        image,
+			Workdir:      workdir,
+			CPU:          parsed.Environment.CPUs,
+			MemoryMB:     parsed.Environment.MemoryMB,
+			StorageMB:    parsed.Environment.StorageMB,
+			GPUs:         parsed.Environment.GPUs,
+			AllowNetwork: parsed.Environment.AllowInternet,
+			Env:          cloneMap(parsed.Environment.Env),
+		},
+	}, taskDetails{
+		verifierFiles: verifierFiles,
+		timeout:       verifierTimeout,
+		verifierEnv:   cloneMap(parsed.Verifier.Env),
+		workdir:       workdir,
+	}, nil
 }
 
 func rejectUnknownExecutionFields(meta toml.MetaData) error {
