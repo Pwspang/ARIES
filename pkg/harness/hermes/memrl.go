@@ -37,9 +37,14 @@ const (
 )
 
 // memrlEnvironment tells the provider to wait for ARIES's verdict and which
-// task its session belongs to. Neither value is secret.
-func memrlEnvironment(taskID string) []string {
-	return []string{"MEMRL_REWARD_SOURCE=external", "MEMRL_TASK_ID=" + taskID}
+// task its session belongs to. Similarity retrieval zeroes the utility weight
+// and exploration, so recall ranks by similarity alone. No value is secret.
+func memrlEnvironment(taskID, retrieval string) []string {
+	environment := []string{"MEMRL_REWARD_SOURCE=external", "MEMRL_TASK_ID=" + taskID}
+	if retrieval == "similarity" {
+		environment = append(environment, "MEMRL_LAM=0", "MEMRL_EPSILON=0")
+	}
+	return environment
 }
 
 // readMemRLRewards returns the run's recorded verdicts, or nil before the

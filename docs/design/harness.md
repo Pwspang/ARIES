@@ -115,6 +115,10 @@ next task's provider applies those rewards before its first recall. The harness
 never sees an evaluation result during its own task, so evaluation stays
 independent of it.
 
+`harness.memrl.retrieval: "similarity"` makes recall rank by similarity alone
+(the harness adds `MEMRL_LAM=0` and `MEMRL_EPSILON=0`). It is an ablation that
+keeps memory writing and utility updates but ignores utility at recall.
+
 ## Customization & Contribution Guide
 
 Add a harness only when it can implement the existing `AgentHarness` lifecycle

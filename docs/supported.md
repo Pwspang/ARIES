@@ -20,7 +20,8 @@ plugin discovery.
 `harness.memrl.enabled` runs Hermes with the MemRL memory provider from the
 `docker/hermes-memrl/` image, carrying its store from task to task within a
 run. It requires `execution.concurrency` 1 and a versions file that pins that
-image, for example `profiles/hermes-tb2-fix-git-memrl-deepseek.json`. See
+image, for example `profiles/hermes-tb2-fix-git-memrl-deepseek.json`.
+`harness.memrl.retrieval: "similarity"` ranks recall by similarity alone. See
 `docker/hermes-memrl/README.md`.
 
 ## Configuration boundaries

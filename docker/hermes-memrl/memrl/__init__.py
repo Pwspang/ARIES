@@ -37,6 +37,7 @@ import json
 import logging
 import os
 import threading
+import time
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -405,14 +406,15 @@ class MemRLMemoryProvider(MemoryProvider):
         key_id = max(matches)[1] if matches else None
         if reward >= 0:
             script = self._ask(SCRIPT_PROMPT.format(trajectory=pending.prompt_trajectory),
-                               self._config.script_temperature)
+                               self._config.script_temperature, pending, "script")
             store.add_memory(pending.intent, build_experience(pending.intent, script, pending.stored_trajectory),
-                             pending.embedding, self._config.q_init, "experience", key_id)
+                             pending.embedding, self._config.q_init, "experience", key_id, pending.task_id)
         else:
-            reflection = self._ask(REFLECTION_PROMPT.format(task=pending.intent, trajectory=pending.prompt_trajectory), 0.3)
+            reflection = self._ask(REFLECTION_PROMPT.format(task=pending.intent, trajectory=pending.prompt_trajectory),
+                                   0.3, pending, "reflection")
             reflection = reflection or self._feedback_note or f"session reward {reward:+.2f}"
             store.add_memory(pending.intent, build_reflection(pending.intent, reflection, pending.stored_trajectory),
-                             pending.embedding, self._config.q_reflection, "reflection", key_id)
+                             pending.embedding, self._config.q_reflection, "reflection", key_id, pending.task_id)
         store.delete_pending(pending.session_id)
         logger.info("MemRL finalized session %s: reward=%+.2f updated=%d", pending.session_id, reward, len(memories))
 
@@ -430,15 +432,27 @@ class MemRLMemoryProvider(MemoryProvider):
                                                   {"role": "assistant", "content": a, "tool_calls": "", "tool_name": ""})]
         return messages or [{"role": "assistant", "content": self._last_final, "tool_calls": "", "tool_name": ""}]
 
-    def _ask(self, prompt: str, temperature: float) -> str:
-        """One model call; a failure costs the script, never the memory."""
+    def _ask(self, prompt: str, temperature: float, pending: Pending, purpose: str) -> str:
+        """One model call; a failure costs the script, never the memory.
+
+        The call's tokens and latency are recorded against the session that
+        produced the memory, so memory upkeep can be counted as agent cost.
+        """
         if self._chat is None:
             return ""
+        started, reply, ok = time.monotonic(), "", False
         try:
-            return self._chat([{"role": "user", "content": prompt}], temperature)
+            reply, ok = self._chat([{"role": "user", "content": prompt}], temperature), True
         except Exception as e:
             logger.warning("MemRL model call failed: %s", e)
-            return ""
+        usage = (getattr(self._chat, "last_usage", None) or {}) if ok else {}
+        try:
+            self._store.add_llm_call(pending.session_id, pending.task_id, purpose, ok,
+                                     int(usage.get("prompt_tokens") or 0), int(usage.get("completion_tokens") or 0),
+                                     int((time.monotonic() - started) * 1000))
+        except Exception as e:
+            logger.warning("MemRL could not record a model call: %s", e)
+        return reply
 
 
 def register(ctx) -> None:

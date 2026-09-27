@@ -147,7 +147,7 @@ Build and tag the image that `configs/versions-memrl.json` pins, then run a
 profile that sets `harness.memrl.enabled`:
 
 ```sh
-docker build -f docker/hermes-memrl/Dockerfile -t aries/hermes-memrl:v2026.5.29.2-memrl1 .
+docker build -f docker/hermes-memrl/Dockerfile -t aries/hermes-memrl:v2026.5.29.2-memrl2 .
 ./bin/aries profiles/hermes-tb2-fix-git-memrl-deepseek.json
 ```
 
@@ -161,3 +161,17 @@ ARIES starts the provider with `MEMRL_REWARD_SOURCE=external` and
 the verdict in `<run>/memrl/rewards.json`, which is staged into the next task
 along with the store. The hand-off is sequential, so the profile must use
 `execution.concurrency` 1.
+
+`harness.memrl.retrieval: "similarity"` adds `MEMRL_LAM=0` and
+`MEMRL_EPSILON=0`. Recall then ranks by similarity alone, while memories are
+still written and their Q still updated. It is the ablation arm of the
+swe-atlas-qa episodic-memory study (`docs/benchmarks/swe-atlas-qa.md`).
+
+For that study the store also records two things the algorithm never reads:
+- `memories.task_id`: the task execution that produced each memory, so
+  analysis can tell same-task, same-repository, and cross-repository recall
+  apart.
+- `llm_calls`: tokens and latency of each script or reflection call. Hermes's
+  session telemetry never sees these calls, and they belong in the memory
+  arms' cost. A task's memory is written at the start of the next task, so the
+  run's last task has none.

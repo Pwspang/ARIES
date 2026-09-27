@@ -207,8 +207,14 @@ type HarnessConfig struct {
 // into each task's Hermes container at start and copied back after the
 // one-shot exits, so learning carries across the run's tasks. That hand-off
 // is sequential by construction, hence execution.concurrency must be 1.
+//
+// Retrieval selects how recalled memories are ranked: "value" (the default)
+// is MemRL's similarity-plus-utility ranking with exploration; "similarity"
+// ranks by similarity alone, an ablation that stores and updates memories
+// the same way but never lets their learned utility affect recall.
 type HarnessMemRLConfig struct {
-	Enabled bool `json:"enabled,omitempty"`
+	Enabled   bool   `json:"enabled,omitempty"`
+	Retrieval string `json:"retrieval,omitempty"`
 }
 
 // HarnessAMEMConfig enables the amem memory plugin (https://amem.owo.lc, npm
@@ -1042,6 +1048,12 @@ func (h *HarnessConfig) validate() error {
 	}
 	if h.MemRL.Enabled && h.Type != "hermes" {
 		return errors.New("harness.memrl requires Hermes")
+	}
+	if h.MemRL.Retrieval != "" && h.MemRL.Retrieval != "value" && h.MemRL.Retrieval != "similarity" {
+		return errors.New(`harness.memrl.retrieval must be "value" or "similarity"`)
+	}
+	if h.MemRL.Retrieval != "" && !h.MemRL.Enabled {
+		return errors.New("harness.memrl.retrieval requires harness.memrl.enabled")
 	}
 	if h.AMEM.Enabled && h.Mem0.Enabled {
 		return errors.New("harness.amem and harness.mem0 are mutually exclusive")

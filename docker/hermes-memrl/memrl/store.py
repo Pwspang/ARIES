@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS memories (
     usage_count INTEGER NOT NULL DEFAULT 0,
     kind        TEXT NOT NULL DEFAULT 'experience',
     created_at  REAL NOT NULL,
-    updated_at  REAL NOT NULL
+    updated_at  REAL NOT NULL,
+    task_id     TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS steps (
     session_id  TEXT NOT NULL,
@@ -58,7 +59,21 @@ CREATE TABLE IF NOT EXISTS pending (
     stored_trajectory TEXT NOT NULL,
     created_at        REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS llm_calls (
+    session_id        TEXT NOT NULL,
+    task_id           TEXT NOT NULL,
+    purpose           TEXT NOT NULL,
+    ok                INTEGER NOT NULL,
+    prompt_tokens     INTEGER NOT NULL,
+    completion_tokens INTEGER NOT NULL,
+    duration_ms       INTEGER NOT NULL,
+    created_at        REAL NOT NULL
+);
 """
+
+# A memory's task_id names the task that produced it, and llm_calls records
+# the provider's own script and reflection calls, which Hermes's session
+# telemetry never sees. Both exist for experiment analysis only.
 
 
 @dataclass
@@ -111,6 +126,9 @@ class Store:
         self._lock = threading.Lock()
         self._conn = sqlite3.connect(str(path), check_same_thread=False)
         self._conn.executescript(_SCHEMA)
+        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(memories)")}
+        if "task_id" not in columns:  # a store written before task_id existed
+            self._conn.execute("ALTER TABLE memories ADD COLUMN task_id TEXT NOT NULL DEFAULT ''")
         self._conn.commit()
 
     def close(self) -> None:
@@ -123,14 +141,14 @@ class Store:
     # -- memories ----------------------------------------------------------
 
     def add_memory(self, intent: str, experience: str, embedding: np.ndarray, q_value: float, kind: str,
-                   key_id: Optional[str] = None) -> str:
+                   key_id: Optional[str] = None, task_id: str = "") -> str:
         mid = uuid.uuid4().hex
         now = time.time()
         with self._lock:
             self._conn.execute(
                 "INSERT INTO memories (id, key_id, intent, experience, embedding, q_value, usage_count, kind,"
-                " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
-                (mid, key_id or mid, intent, experience, _blob(embedding), float(q_value), kind, now, now),
+                " created_at, updated_at, task_id) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)",
+                (mid, key_id or mid, intent, experience, _blob(embedding), float(q_value), kind, now, now, task_id),
             )
             self._conn.commit()
         return mid
@@ -187,6 +205,16 @@ class Store:
             self._conn.executemany(
                 "UPDATE memories SET q_value = ?, updated_at = ? WHERE id = ?",
                 [(q, now, i) for i, q in updates],
+            )
+            self._conn.commit()
+
+    def add_llm_call(self, session_id: str, task_id: str, purpose: str, ok: bool,
+                     prompt_tokens: int, completion_tokens: int, duration_ms: int) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO llm_calls (session_id, task_id, purpose, ok, prompt_tokens, completion_tokens,"
+                " duration_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (session_id, task_id, purpose, int(ok), prompt_tokens, completion_tokens, duration_ms, time.time()),
             )
             self._conn.commit()
 

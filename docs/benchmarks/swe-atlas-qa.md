@@ -520,3 +520,114 @@ looser failure-detection signature (fuzzy-matching similar-but-not-identical
 commands) changes the repeated-failure count materially, and whether the
 effect replicates on the full 124-task set are open follow-up questions, not
 something this study itself tests.
+
+### The Hermes episodic-memory study: does learning from past trajectories pay?
+
+The amem studies above test note-taking memory in OpenClaw. This study tests
+episodic memory: whole past trajectories, kept with the benchmark's verdict on
+them and recalled on later tasks. The implementation is the MemRL provider
+(`docker/hermes-memrl`). For each finished task it stores the question as the
+intent. On success it stores a model-written script plus the trajectory; on
+failure it stores a `[PATTERN TO AVOID]` reflection. It learns a utility Q per
+memory from later verdicts and recalls by similarity and Q.
+
+The broad hypothesis, "storing past episodes lets the agent learn, and changes
+its accuracy and efficiency", is refined into falsifiable parts. Each part
+separates a mechanism that could otherwise hide inside a single number:
+
+- **H0, manipulation check: the agent uses recalled episodes at all.** On a
+  second pass over the same 30 questions in one run, MemRL recalls its own
+  earlier episode for most tasks, and its second pass scores higher and uses
+  fewer tool calls than its first. This is an upper bound, not transfer. If
+  H0 fails, null results on H1 to H4 say nothing about episodic memory.
+- **H1, accuracy.** On a single pass through a 30-task stream, MemRL's mean
+  `agg_score` exceeds the no-memory control, paired per task.
+- **H2, efficiency.** MemRL needs fewer tool calls and API calls per task than
+  control. It also spends fewer tokens once its costs are counted: the recalled
+  memories stay in context for every call, and the script and reflection calls
+  cost tokens of their own. The competing prediction is that memory buys
+  accuracy at a higher token cost. The study reports both.
+- **H3, compounding.** The MemRL-minus-control gain grows with the number of
+  same-repository tasks already run, and is near zero for a repository's first
+  task. Transfer should be strongest where episodes share a codebase.
+- **H4, learned utility.** MemRL beats a similarity-only arm that stores the
+  same memories but ignores Q at recall. This isolates learning which episodes
+  help from merely having episodes. Over 30 tasks each memory is recalled only
+  a few times, so Q moves little, and H4 is the least powered contrast.
+  Treat it as exploratory.
+
+**Arms.** Each replicate has three profiles, identical except for
+`harness.memrl`. All run Hermes with `deepseek-flash`, a `deepseek-flash`
+judge, `execution.concurrency: 1`, and the same image,
+`aries/hermes-memrl` (`configs/versions-memrl.json`). The provider is simply
+off in control.
+
+- `hermes-sweatlasqa-<replicate>-deepseek.json`: control, no memory. Each task
+  starts in a fresh container, as in every Hermes run.
+- `hermes-sweatlasqa-<replicate>-memrl-sim-deepseek.json`:
+  `harness.memrl.retrieval: "similarity"` (λ = 0, no exploration). This is H4's
+  ablation.
+- `hermes-sweatlasqa-<replicate>-memrl-deepseek.json`: full MemRL, with the
+  defaults in `docker/hermes-memrl/README.md`.
+- `hermes-sweatlasqa-pilot30-epoch2-memrl-deepseek.json`: MemRL over pilot30's
+  order twice, 60 occurrences in one run, for H0.
+
+Replicates reuse pilot30's 30 tasks, 15 each from `simple-login/app` and
+`paperless-ngx/paperless-ngx`, in the same three orders: `pilot30`,
+`pilot30-shuffle1` and `pilot30-shuffle2`. A task's position within its
+repository therefore varies across replicates, which H3 needs. The memory store
+is run-wide, so it spans both repositories and can transfer across them.
+`smoke4` (two tasks per repository) checks the setup before the pilot.
+`TestSWEAtlasQAMemRLStudyArmsDifferOnlyInMemRL` (`pkg/config/config_test.go`)
+enforces these invariants: identical tasks, order, image, model, judge,
+runtime and harness apart from `memrl`; and epoch2 equal to pilot30 twice.
+
+**Running.** `scripts/run-memrl-study.sh smoke`, then `pilot` (270
+occurrences), then `epoch2` (60). A replicate's three arms run in parallel.
+Each is its own run with its own store, sequential inside.
+
+**Metrics.** `scripts/summarize_memrl_study.py runs/memrl-study/*` reads only
+files that ARIES already writes. `--csv` also writes one row per occurrence.
+
+- Accuracy: `agg_score` (primary) and pass rate (`reward == 1`). As in pilot30,
+  a missing judge verdict with a `reward.txt` counts as 0.
+- Efficiency, from Hermes's `harness/telemetry/sessions.jsonl` and
+  `harness/session-outcome.json`:
+  - tool calls (the primary efficiency metric) and API calls;
+  - prompt tokens (uncached plus cache-read) and output tokens;
+  - wall-clock time;
+  - how often a task hits Hermes's 90-iteration cap.
+- Memory cost and use, from the MemRL store:
+  - script and reflection tokens (`llm_calls`). A task's memory is written at
+    the start of the next task, so its latency lands in that task's
+    wall-clock;
+  - memories recalled per task;
+  - how many of them came from the same task or repository
+    (`memories.task_id`).
+
+**Analysis.** The main contrasts are paired per task:
+- MemRL − control, on `agg_score` for H1 and on tool calls for H2;
+- similarity − control;
+- MemRL − similarity, for H4.
+
+For each arm, average each task over the three replicates, then take the
+difference, so task difficulty cancels and replicates aren't counted as
+independent tasks. With n = 30 tasks, report the mean delta, a bootstrap 95%
+CI, and a sign-flip permutation p. H1 and H2 are the confirmatory tests. H3 and
+H4 are exploratory.
+
+H3 pairs on (replicate, task) and stratifies by position within the
+repository. H0 pairs epoch 2 with epoch 1 inside the epoch2 run. The spread of
+control between replicates is the noise floor that any memory effect must
+exceed. At 30 paired tasks this is a pilot: it can resolve effects of roughly
+half a task-level standard deviation, not small ones.
+
+**Threats to validity.**
+- A stored trajectory includes the agent's earlier answer. Across different
+  questions that is the transfer under test. In epoch 2 it is the same
+  question, which is why H0 is only a manipulation check.
+- The reward that trains Q is the verdict of the same judge that scores the
+  arms. This is MemRL's online setting, with the environment's reward after
+  each task. No task sees its own verdict before it is scored.
+- One model, one harness and two repositories limit generality. The judge is
+  the agent's own model family, but that holds for every arm alike.

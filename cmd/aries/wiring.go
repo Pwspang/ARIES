@@ -341,6 +341,7 @@ func newHarness(cfg config.Config, outputRoot string, lookup func(string) ([]byt
 			SubagentsEnabled:       cfg.Harness.Subagents.Enabled != nil && *cfg.Harness.Subagents.Enabled,
 			MaxConcurrentSubagents: cfg.Harness.Subagents.MaxConcurrent,
 			MemRLEnabled:           cfg.Harness.MemRL.Enabled,
+			MemRLRetrieval:         cfg.Harness.MemRL.Retrieval,
 		})
 		if err != nil {
 			return app.HarnessInstance{}, fmt.Errorf("construct Hermes harness: %w", err)

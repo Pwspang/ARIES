@@ -107,7 +107,10 @@ type Options struct {
 	// docker/hermes-memrl image and hands its run-scoped store, kept under
 	// OutputDir/memrl, from task to task (see memrl.go).
 	MemRLEnabled bool
-	Logger       *logrus.Logger
+	// MemRLRetrieval is harness.memrl.retrieval: "similarity" ranks recall
+	// by similarity alone; anything else keeps MemRL's value-aware ranking.
+	MemRLRetrieval string
+	Logger         *logrus.Logger
 }
 
 // dockerClient is the small official Engine SDK surface used by the harness.
@@ -142,6 +145,7 @@ type Manager struct {
 	subagentsEnabled       bool
 	maxConcurrentSubagents int
 	memrlEnabled           bool
+	memrlRetrieval         string
 	memrlStorePath         string
 	logger                 *logrus.Logger
 	apiKeyLookup           func(string) ([]byte, bool)
@@ -243,7 +247,7 @@ func New(options Options) (*Manager, error) {
 		terminalTimeout: options.TerminalTimeout, webSearchEnabled: options.WebSearchEnabled,
 		extractAPIKeyEnv: options.ExtractAPIKeyEnv, logger: options.Logger,
 		subagentsEnabled: options.SubagentsEnabled, maxConcurrentSubagents: options.MaxConcurrentSubagents,
-		memrlEnabled: options.MemRLEnabled, memrlStorePath: filepath.Join(outputDir, "memrl", memrlStoreName),
+		memrlEnabled: options.MemRLEnabled, memrlRetrieval: options.MemRLRetrieval, memrlStorePath: filepath.Join(outputDir, "memrl", memrlStoreName),
 		apiKeyLookup: options.APIKeyLookup, newID: randomID,
 	}, nil
 }
@@ -284,7 +288,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		return err
 	}
 	if manager.memrlEnabled {
-		environment = append(environment, memrlEnvironment(request.TaskID)...)
+		environment = append(environment, memrlEnvironment(request.TaskID, manager.memrlRetrieval)...)
 	}
 	apiKeySource, ok := manager.apiKeyLookup(request.Model.APIKeyEnv)
 	if !ok {

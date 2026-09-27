@@ -22,7 +22,8 @@ import urllib.request
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
-# Called with (messages, temperature) and returns the reply text.
+# Called with (messages, temperature) and returns the reply text. A chat
+# function may expose the last reply's OpenAI usage object as `last_usage`.
 ChatFn = Callable[[List[Dict[str, str]], float], str]
 
 LLM_TIMEOUT = 120.0
@@ -164,6 +165,8 @@ def hermes_chat(hermes_home: Path) -> Optional[ChatFn]:
             "Content-Type": "application/json", "Authorization": f"Bearer {api_key}"})
         with urllib.request.urlopen(request, timeout=LLM_TIMEOUT) as response:
             reply = json.load(response)
+        chat.last_usage = reply.get("usage") or {}
         return str(reply["choices"][0]["message"].get("content") or "").strip()
 
+    chat.last_usage = {}
     return chat

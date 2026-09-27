@@ -1,0 +1,69 @@
+{
+  "name": "hermes-sweatlasqa-pilot30-deepseek",
+  "versions_file": "../configs/versions-memrl.json",
+  "overrides_file": "",
+  "execution": {
+    "concurrency": 1
+  },
+  "benchmark": {
+    "type": "sweatlasqa",
+    "root": ".cache/swe-atlas-qa",
+    "tasks": [
+      "task-6905333b74f22949d97ba9a4",
+      "task-6905333b74f22949d97ba9a5",
+      "task-6905333b74f22949d97ba9a6",
+      "task-6905333b74f22949d97ba9a7",
+      "task-6905333b74f22949d97ba9a8",
+      "task-6905333b74f22949d97ba9a9",
+      "task-6905333b74f22949d97ba9aa",
+      "task-6905333b74f22949d97ba9ab",
+      "task-6905333b74f22949d97ba9ac",
+      "task-6905333b74f22949d97ba9ad",
+      "task-6905333b74f22949d97ba9ae",
+      "task-6905333b74f22949d97ba9af",
+      "task-6905333b74f22949d97ba9b2",
+      "task-6905333b74f22949d97ba9e8",
+      "task-6905333b74f22949d97baa1d",
+      "task-6905333b74f22949d97ba9d0",
+      "task-6905333b74f22949d97ba9d1",
+      "task-6905333b74f22949d97ba9d2",
+      "task-6905333b74f22949d97ba9d3",
+      "task-6905333b74f22949d97ba9d4",
+      "task-6905333b74f22949d97ba9d5",
+      "task-6905333b74f22949d97ba9d6",
+      "task-6905333b74f22949d97ba9d7",
+      "task-6905333b74f22949d97ba9d8",
+      "task-6905333b74f22949d97ba9d9",
+      "task-6905333b74f22949d97ba9db",
+      "task-6905333b74f22949d97ba9dc",
+      "task-6905333b74f22949d97ba9dd",
+      "task-6905333b74f22949d97ba9de",
+      "task-6905333b74f22949d97ba9e0"
+    ],
+    "judge": {
+      "provider": "deepseek",
+      "base_url": "https://api.deepseek.com",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "model": "deepseek-flash"
+    }
+  },
+  "harness": {
+    "type": "hermes"
+  },
+  "sandbox": {
+    "type": "docker"
+  },
+  "bridge": {
+    "type": "hermes-ssh"
+  },
+  "runtime": {
+    "backend": "deepseek",
+    "mode": "external"
+  },
+  "model": {
+    "base_url": "https://api.deepseek.com",
+    "api_key_env": "DEEPSEEK_API_KEY",
+    "id": "deepseek-flash"
+  },
+  "output_dir": "runs/memrl-study/"
+}

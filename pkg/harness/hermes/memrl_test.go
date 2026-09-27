@@ -246,6 +246,18 @@ func TestMemRLStartPassesTaskIDAndStagesRewards(t *testing.T) {
 	}
 }
 
+func TestMemRLEnvironmentSelectsRetrieval(t *testing.T) {
+	for retrieval, want := range map[string][]string{
+		"":           {"MEMRL_REWARD_SOURCE=external", "MEMRL_TASK_ID=t-001"},
+		"value":      {"MEMRL_REWARD_SOURCE=external", "MEMRL_TASK_ID=t-001"},
+		"similarity": {"MEMRL_REWARD_SOURCE=external", "MEMRL_TASK_ID=t-001", "MEMRL_LAM=0", "MEMRL_EPSILON=0"},
+	} {
+		if got := memrlEnvironment("t-001", retrieval); !slices.Equal(got, want) {
+			t.Fatalf("memrlEnvironment(%q) = %v, want %v", retrieval, got, want)
+		}
+	}
+}
+
 func TestMemRLDisabledSetsNoMemRLEnvironment(t *testing.T) {
 	fake := newFakeDocker()
 	manager := newTestManager(t, fake, []byte("model-secret"))

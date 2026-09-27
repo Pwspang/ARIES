@@ -321,13 +321,15 @@ def write_state_db(home, session_id, rows):
 
 
 class FakeChat:
-    def __init__(self, reply="", error=None):
+    def __init__(self, reply="", error=None, usage=None):
         self.reply, self.error, self.calls = reply, error, []
+        self.usage, self.last_usage = usage or {}, {}
 
     def __call__(self, messages, temperature):
         self.calls.append((messages[0]["content"], temperature))
         if self.error:
             raise self.error
+        self.last_usage = self.usage
         return self.reply
 
 
@@ -413,7 +415,8 @@ def test_hermes_chat_uses_the_configured_model(tmp_path, monkeypatch):
         def do_POST(self):
             seen["path"], seen["auth"] = self.path, self.headers["Authorization"]
             seen["body"] = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            reply = json.dumps({"choices": [{"message": {"content": " the script "}}]}).encode()
+            reply = json.dumps({"choices": [{"message": {"content": " the script "}}],
+                                "usage": {"prompt_tokens": 11, "completion_tokens": 3}}).encode()
             self.send_response(200)
             self.send_header("Content-Length", str(len(reply)))
             self.end_headers()
@@ -433,6 +436,7 @@ def test_hermes_chat_uses_the_configured_model(tmp_path, monkeypatch):
         monkeypatch.setenv("TEST_MEMRL_KEY", "sk-test")
         chat = hermes_chat(tmp_path)
         assert chat([{"role": "user", "content": "hi"}], 0.7) == "the script"
+        assert chat.last_usage == {"prompt_tokens": 11, "completion_tokens": 3}
     finally:
         server.shutdown()
     assert seen["path"] == "/v1/chat/completions" and seen["auth"] == "Bearer sk-test"
@@ -509,3 +513,48 @@ def test_external_null_reward_drops_and_unknown_task_waits(make_provider, monkey
     p3.prefetch("third question about the repository layout")
     assert [x.task_id for x in p3._store.pending()] == ["task-002"]
     assert p3._store.memory_ids() == []
+
+
+# -- experiment bookkeeping -----------------------------------------------------
+
+def test_memory_upkeep_calls_and_source_task_are_recorded(make_provider, monkeypatch, tmp_path):
+    chat = FakeChat("1. run it", usage={"prompt_tokens": 900, "completion_tokens": 40})
+    p = external_provider(make_provider, monkeypatch, "task-001", "a", chat=FakeChat(error=TimeoutError("unused")))
+    p.prefetch("how is the worker queue configured in this repository")
+    p.sync_turn("q", "a")
+    p.shutdown()
+    (tmp_path / "memrl" / "rewards.json").write_text(json.dumps({"task-001": 1}))
+    # Task 001's memory is written by the next session, with that session's model.
+    p2 = external_provider(make_provider, monkeypatch, "task-002", "b", chat=chat)
+    p2.prefetch("an unrelated second question about the repository")
+    (mem,) = p2._store.get_memories(p2._store.memory_ids())
+    rows = p2._store._conn.execute(
+        "SELECT session_id, task_id, purpose, ok, prompt_tokens, completion_tokens FROM llm_calls").fetchall()
+    source = p2._store._conn.execute("SELECT task_id FROM memories WHERE id = ?", (mem.id,)).fetchone()
+    assert rows == [("a", "task-001", "script", 1, 900, 40)]
+    assert source == ("task-001",)
+
+
+def test_store_written_before_task_id_is_migrated(tmp_path):
+    import sqlite3
+    from memrl.store import Store
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE memories (id TEXT PRIMARY KEY, key_id TEXT NOT NULL, intent TEXT NOT NULL,"
+                 " experience TEXT NOT NULL, embedding BLOB NOT NULL, q_value REAL NOT NULL,"
+                 " usage_count INTEGER NOT NULL DEFAULT 0, kind TEXT NOT NULL DEFAULT 'experience',"
+                 " created_at REAL NOT NULL, updated_at REAL NOT NULL)")
+    conn.close()
+    store = Store(path)
+    mid = store.add_memory("i", "e", np.ones(4, dtype=np.float32), 0.0, "experience", task_id="task-009")
+    assert store._conn.execute("SELECT task_id FROM memories WHERE id = ?", (mid,)).fetchone() == ("task-009",)
+    store.close()
+
+
+def test_similarity_only_retrieval_ignores_utility(make_provider, embedder):
+    """The ablation arm (MEMRL_LAM=0, MEMRL_EPSILON=0) ranks by similarity alone."""
+    embedder.pinned = {"query task": unit(1, 0, 0), "close task": unit(1, 0.1, 0), "far task": unit(1, 0.6, 0)}
+    p = make_provider(lam=0.0, k2=1)
+    seed(p, "close task", "close but useless", -0.9)
+    seed(p, "far task", "farther but proven", 0.9)
+    assert "close but useless" in p.prefetch("query task")
