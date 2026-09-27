@@ -4,11 +4,15 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/hyscale-lab/aries/pkg/core"
 )
 
 func sqliteStore(body string) []byte {
@@ -215,5 +219,92 @@ func TestSingleRegularFileRejectsUnexpectedEntries(t *testing.T) {
 		if _, err := singleRegularFile(bytes.NewReader(archive), memrlStoreName); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+}
+
+func TestMemRLStartPassesTaskIDAndStagesRewards(t *testing.T) {
+	fake := newFakeDocker()
+	manager := newMemRLManager(t, fake)
+	rewards := []byte(`{"fix-git-000": 1}` + "\n")
+	if err := replacePrivateFile(filepath.Join(filepath.Dir(manager.memrlStorePath), memrlRewardsName), rewards); err != nil {
+		t.Fatal(err)
+	}
+	request := testRequest(t)
+	if err := manager.Start(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(context.Background())
+	env := fake.created.Config.Env
+	for _, want := range []string{"MEMRL_REWARD_SOURCE=external", "MEMRL_TASK_ID=" + request.TaskID} {
+		if !slices.Contains(env, want) {
+			t.Fatalf("env %v lacks %s", env, want)
+		}
+	}
+	staged, ok := stagedFileContent(t, fake.archive, strings.TrimPrefix(memrlStoreContainerDir+"/"+memrlRewardsName, "/"))
+	if !ok || !bytes.Equal(staged, rewards) {
+		t.Fatalf("staged rewards = %q", staged)
+	}
+}
+
+func TestMemRLDisabledSetsNoMemRLEnvironment(t *testing.T) {
+	fake := newFakeDocker()
+	manager := newTestManager(t, fake, []byte("model-secret"))
+	if err := manager.Start(context.Background(), testRequest(t)); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(context.Background())
+	for _, value := range fake.created.Config.Env {
+		if strings.HasPrefix(value, "MEMRL_") {
+			t.Fatalf("env carries %s", value)
+		}
+	}
+}
+
+func TestRecordMemRLOutcomeMapsVerdicts(t *testing.T) {
+	dir := t.TempDir()
+	outcomes := map[string]core.Evaluation{
+		"pass-001":    {Status: core.StatusSucceeded, Reward: 1},
+		"fail-002":    {Status: core.StatusFailed, Reward: 0, Score: 0.9},
+		"error-003":   {Status: core.StatusFailed, Error: "judge unavailable"},
+		"blocked-004": {Status: core.StatusBlockedIsolation},
+		"notrun-005":  {Status: core.StatusNotRun},
+	}
+	for id, evaluation := range outcomes {
+		if err := RecordMemRLOutcome(dir, core.TaskResult{TaskID: id, Evaluation: evaluation}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	content, err := readMemRLRewards(filepath.Join(dir, "memrl", memrlRewardsName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rewards map[string]*float64
+	if err := json.Unmarshal(content, &rewards); err != nil {
+		t.Fatal(err)
+	}
+	if len(rewards) != 5 || *rewards["pass-001"] != 1 || *rewards["fail-002"] != -1 {
+		t.Fatalf("rewards = %s", content)
+	}
+	for _, id := range []string{"error-003", "blocked-004", "notrun-005"} {
+		if value, ok := rewards[id]; !ok || value != nil {
+			t.Fatalf("%s: want an explicit null, got %s", id, content)
+		}
+	}
+	info, err := os.Stat(filepath.Join(dir, "memrl", memrlRewardsName))
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("rewards mode = %v, %v", info, err)
+	}
+}
+
+func TestRecordMemRLOutcomeRejectsBadInput(t *testing.T) {
+	dir := t.TempDir()
+	if err := RecordMemRLOutcome(dir, core.TaskResult{TaskID: "../escape"}); err == nil {
+		t.Fatal("unsafe task ID accepted")
+	}
+	if err := replacePrivateFile(filepath.Join(dir, "memrl", memrlRewardsName), []byte("[not an object]")); err != nil {
+		t.Fatal(err)
+	}
+	if err := RecordMemRLOutcome(dir, core.TaskResult{TaskID: "task-001"}); err == nil {
+		t.Fatal("corrupt rewards file accepted")
 	}
 }

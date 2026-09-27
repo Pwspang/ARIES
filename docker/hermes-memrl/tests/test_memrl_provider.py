@@ -94,15 +94,34 @@ def test_provider_drops_memories_below_threshold(make_provider, embedder):
 def test_phase_b_utility_outranks_pure_similarity():
     sims = np.array([0.90, 0.85])
     qs = np.array([-0.8, 0.9])
-    assert phase_b(sims, qs, lam=0.5, k2=1) == [1]
-    assert phase_b(sims, qs, lam=0.0, k2=1) == [0]
+    assert phase_b(sims, qs, lam=0.5, k2=1, sim_mean=0.68, sim_std=0.057) == [1]
+    assert phase_b(sims, qs, lam=0.0, k2=1, sim_mean=0.68, sim_std=0.057) == [0]
+
+
+def test_phase_b_uses_fixed_similarity_statistics():
+    """MemRL z-scores similarity with corpus statistics, not the candidates' own."""
+    sims, qs = np.array([0.80, 0.74]), np.array([0.0, 0.6])
+    # Wide corpus spread: the 0.06 similarity gap is small, Q decides.
+    assert phase_b(sims, qs, lam=0.5, k2=1, sim_mean=0.5, sim_std=0.5) == [1]
+    # Narrow corpus spread: the same gap is two standard deviations, similarity decides.
+    assert phase_b(sims, qs, lam=0.5, k2=1, sim_mean=0.7, sim_std=0.03) == [0]
+
+
+def test_phase_b_epsilon_greedy_samples_all_candidates():
+    import random
+    sims, qs = np.array([0.9, 0.8, 0.7, 0.6]), np.zeros(4)
+    picks = {tuple(phase_b(sims, qs, lam=0.5, k2=1, sim_mean=0.7, sim_std=0.1, epsilon=1.0, rng=random.Random(i)))
+             for i in range(50)}
+    assert len(picks) > 1
+    assert phase_b(sims, qs, lam=0.5, k2=1, sim_mean=0.7, sim_std=0.1, epsilon=0.0) == [0]
 
 
 def test_phase_b_edge_cases():
-    assert phase_b(np.array([]), np.array([]), lam=0.5, k2=3) == []
-    assert phase_b(np.array([0.5]), np.array([0.2]), lam=0.5, k2=3) == [0]
+    kw = dict(lam=0.5, k2=3, sim_mean=0.68, sim_std=0.057)
+    assert phase_b(np.array([]), np.array([]), **kw) == []
+    assert phase_b(np.array([0.5]), np.array([0.2]), **kw) == [0]
     # equal Q: ranking falls back to similarity and stays finite
-    assert phase_b(np.array([0.4, 0.9, 0.6]), np.zeros(3), lam=0.5, k2=3) == [1, 2, 0]
+    assert phase_b(np.array([0.4, 0.9, 0.6]), np.zeros(3), **kw) == [1, 2, 0]
 
 
 def test_provider_injects_high_utility_memory_first(make_provider, embedder):
@@ -162,11 +181,10 @@ def test_commit_updates_injected_memory_once(make_provider, tmp_path, embedder):
 def test_successful_session_is_stored_as_experience(make_provider):
     p = make_provider()
     run_session(p, "compile the rust crate with features", "cargo build --features x worked", reward=1.0)
-    ids, _, qs = p._store.embeddings()
-    (mem,) = p._store.get_memories(ids)
+    (mem,) = p._store.get_memories(p._store.memory_ids())
     assert mem.kind == "experience"
     assert "cargo build" in mem.experience
-    assert qs[0] == pytest.approx(0.0)
+    assert mem.q_value == pytest.approx(0.0)
 
 
 # -- failure reflections ---------------------------------------------------
@@ -174,12 +192,11 @@ def test_successful_session_is_stored_as_experience(make_provider):
 def test_failure_seeds_reflection_that_is_retrieved_first(make_provider):
     p = make_provider(session_id="fail")
     run_session(p, "migrate the postgres schema safely", "ran DROP TABLE users", reward=-1.0)
-    ids, _, qs = p._store.embeddings()
-    (mem,) = p._store.get_memories(ids)
+    (mem,) = p._store.get_memories(p._store.memory_ids())
     assert mem.kind == "reflection"
     assert mem.experience.startswith("[PATTERN TO AVOID]")
     assert "tests failed" in mem.experience
-    assert qs[0] == pytest.approx(0.5)
+    assert mem.q_value == pytest.approx(0.0)  # MemRL q_init_neg
 
     p2 = make_provider(session_id="next")  # same hermes_home, same DB
     seed(p2, "migrate the postgres schema quickly", "neutral hint", 0.0)
@@ -197,7 +214,7 @@ def test_heuristic_reward_without_feedback(make_provider):
         {"role": "tool", "content": json.dumps({"output": "", "exit_code": 2})},
     ]
     p._commit(p._session_id, messages)
-    (mem,) = p._store.get_memories(p._store.embeddings()[0])
+    (mem,) = p._store.get_memories(p._store.memory_ids())
     assert mem.kind == "reflection"
 
 
@@ -246,7 +263,7 @@ def test_non_primary_context_does_not_write(tmp_path, embedder):
     p.handle_tool_call(FEEDBACK_TOOL, {"reward": 1})
     p._join_pending()
     p._commit("sub", None)
-    assert p._store.embeddings()[0] == []
+    assert p._store.memory_ids() == []
     assert p._store.steps("sub") == []
     p.shutdown()
 
@@ -257,30 +274,8 @@ def test_shutdown_commits_like_oneshot_exit(make_provider, tmp_path, embedder):
     p.sync_turn("summarize the repository layout", "The repo has cmd/ and pkg/.")
     p.shutdown()  # what the atexit hook runs
     p.initialize("after", hermes_home=str(tmp_path))
-    (mem,) = p._store.get_memories(p._store.embeddings()[0])
+    (mem,) = p._store.get_memories(p._store.memory_ids())
     assert mem.kind == "experience"
-
-
-def test_model_is_loaded_before_exit(tmp_path, embedder, monkeypatch):
-    """The one-shot commit runs from atexit, where the model can no longer load.
-
-    initialize starts loading it, and even a cold-start prefetch embeds the
-    query, so the model is ready before the first model call.
-    """
-    import memrl
-    loads, calls = [], []
-
-    def counting(texts):
-        calls.append(list(texts))
-        return embedder(texts)
-
-    monkeypatch.setattr(memrl, "_sentence_transformer_embedder", lambda: loads.append(1) or counting)
-    p = MemRLMemoryProvider(config=memrl.MemRLConfig())
-    p.initialize("warm", hermes_home=str(tmp_path))
-    assert p.prefetch("recover the lost commit and merge it") == ""
-    assert loads == [1]
-    assert ["recover the lost commit and merge it"] in calls
-    p.shutdown()
 
 
 def test_model_is_loaded_before_exit(tmp_path, embedder, monkeypatch):
@@ -343,7 +338,7 @@ def test_intent_is_the_question_block(make_provider):
     p.handle_tool_call(FEEDBACK_TOOL, {"reward": 1})
     p._join_pending()
     p._commit(p._session_id, None)
-    (mem,) = p._store.get_memories(p._store.embeddings()[0])
+    (mem,) = p._store.get_memories(p._store.memory_ids())
     assert mem.intent == "How does the backend start in dev mode?"
 
 
@@ -372,20 +367,20 @@ def test_success_stores_script_plus_trajectory_from_session_store(make_provider,
         ("assistant", "It runs server.py.", "", ""),
     ])
     run_session(p, SWE_PROMPT.format(q="How is the dev server started?"), "It runs server.py.", reward=1.0)
-    (mem,) = p._store.get_memories(p._store.embeddings()[0])
+    (mem,) = p._store.get_memories(p._store.memory_ids())
     assert mem.experience.startswith("Task: How is the dev server started?\n\nSCRIPT:\n1. Start postgres on 15432")
     assert "TRAJECTORY:\n" in mem.experience
     assert 'call terminal({"command": "ls /app"})' in mem.experience
     assert "tool terminal:" in mem.experience
     (prompt, temperature), = chat.calls
-    assert "high-level script" in prompt and "call terminal(" in prompt and temperature == 0.7
+    assert "high-level script" in prompt and "call terminal(" in prompt and temperature == 0.0
 
 
 def test_failure_stores_model_reflection(make_provider):
     chat = FakeChat("Assumed the default DB port; check tests/test.env first.")
     p = make_provider(chat=chat)
     run_session(p, "migrate the postgres schema safely", "ran DROP TABLE users", reward=-1.0)
-    (mem,) = p._store.get_memories(p._store.embeddings()[0])
+    (mem,) = p._store.get_memories(p._store.memory_ids())
     assert mem.kind == "reflection" and mem.experience.startswith("[PATTERN TO AVOID]\nTASK REFLECTION:")
     assert "What went wrong:\nAssumed the default DB port" in mem.experience
     assert "Failed approach:\n" in mem.experience and "DROP TABLE" in mem.experience
@@ -395,7 +390,7 @@ def test_failure_stores_model_reflection(make_provider):
 def test_model_failure_still_stores_the_trajectory(make_provider):
     p = make_provider(chat=FakeChat(error=TimeoutError("slow")))
     run_session(p, "compile the rust crate with features", "cargo build worked", reward=1.0)
-    (mem,) = p._store.get_memories(p._store.embeddings()[0])
+    (mem,) = p._store.get_memories(p._store.memory_ids())
     assert "SCRIPT:" not in mem.experience and "cargo build worked" in mem.experience
 
 
@@ -442,3 +437,75 @@ def test_hermes_chat_uses_the_configured_model(tmp_path, monkeypatch):
         server.shutdown()
     assert seen["path"] == "/v1/chat/completions" and seen["auth"] == "Bearer sk-test"
     assert seen["body"]["model"] == "deepseek-flash" and seen["body"]["temperature"] == 0.7
+
+
+# -- MemRL parity: defaults, key grouping, external rewards --------------------
+
+def test_defaults_follow_memrl_bcb_config():
+    from memrl import MemRLConfig
+    cfg = MemRLConfig()
+    assert (cfg.k1, cfg.k2, cfg.lam, cfg.alpha, cfg.epsilon) == (5, 5, 0.5, 0.3, 0.1)
+    assert (cfg.q_init, cfg.q_reflection, cfg.add_similarity, cfg.script_temperature) == (0.0, 0.0, 0.9, 0.0)
+    assert (cfg.delta, cfg.sim_norm_mean, cfg.sim_norm_std) == (0.72, 0.679, 0.0567)
+    assert cfg.reward_source == "agent"
+
+
+def test_near_duplicate_task_joins_the_retrieved_key(make_provider, embedder):
+    embedder.pinned = {"task a": unit(1, 0, 0), "task a again": unit(1, 0.05, 0), "task b": unit(0.6, 0.8, 0)}
+    p = make_provider(session_id="one")
+    run_session(p, "task a", "did a", reward=1.0)
+    p2 = make_provider(session_id="two")
+    run_session(p2, "task a again", "did a again", reward=1.0)  # cosine ~0.999 >= 0.9
+    p3 = make_provider(session_id="three")
+    run_session(p3, "task b", "did b", reward=1.0)  # cosine 0.6 < 0.9
+    first, second, third = p3._store.get_memories(p3._store.memory_ids())
+    assert second.key_id == first.id == first.key_id
+    assert third.key_id == third.id
+    key_ids, _ = p3._store.keys()
+    assert key_ids == [first.id, third.id]
+    # Both memories under the key are candidates when the key is retrieved.
+    p4 = make_provider(session_id="four")
+    block = p4.prefetch("task a")
+    assert "did a" in block and "did a again" in block
+
+
+def external_provider(make_provider, monkeypatch, task_id, session_id, **cfg):
+    monkeypatch.setenv("MEMRL_TASK_ID", task_id)
+    return make_provider(session_id=session_id, reward_source="external", **cfg)
+
+
+def test_external_rewards_are_applied_before_the_next_recall(make_provider, monkeypatch, tmp_path, embedder):
+    embedder.pinned = {"query task": unit(1, 0), "past task": unit(1, 0.1)}
+    p = external_provider(make_provider, monkeypatch, "task-001", "s1")
+    assert p.get_tool_schemas() == [] and FEEDBACK_TOOL not in p.system_prompt_block()
+    past = seed(p, "past task", "past experience", 0.0)
+    p.prefetch("query task")
+    p.sync_turn("query task", "an answer")
+    p.shutdown()  # one-shot exit: parked, nothing learned yet
+    p.initialize("peek", hermes_home=str(tmp_path))
+    p._finalizer.join()
+    assert [x.task_id for x in p._store.pending()] == ["task-001"]
+    (mem,) = p._store.get_memories([past])
+    assert mem.q_value == 0.0 and len(p._store.memory_ids()) == 1
+    p.shutdown()
+
+    (tmp_path / "memrl" / "rewards.json").write_text(json.dumps({"task-001": -1}))
+    p2 = external_provider(make_provider, monkeypatch, "task-002", "s2")
+    p2.prefetch("an unrelated follow-up question here")
+    assert p2._store.pending() == []
+    past_mem, new = p2._store.get_memories(p2._store.memory_ids())
+    assert past_mem.q_value == pytest.approx(-0.3)
+    assert new.kind == "reflection" and new.intent == "query task"
+
+
+def test_external_null_reward_drops_and_unknown_task_waits(make_provider, monkeypatch, tmp_path):
+    for task, session in (("task-001", "a"), ("task-002", "b")):
+        p = external_provider(make_provider, monkeypatch, task, session)
+        p.prefetch(f"question for {task} about the repository")
+        p.sync_turn("q", "a")
+        p.shutdown()
+    (tmp_path / "memrl" / "rewards.json").write_text(json.dumps({"task-001": None}))
+    p3 = external_provider(make_provider, monkeypatch, "task-003", "c")
+    p3.prefetch("third question about the repository layout")
+    assert [x.task_id for x in p3._store.pending()] == ["task-002"]
+    assert p3._store.memory_ids() == []

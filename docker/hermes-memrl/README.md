@@ -25,10 +25,24 @@ time, and the image sets `HF_HUB_OFFLINE=1`, so the plugin works with
 
 | Step | Where | What |
 | --- | --- | --- |
-| Phase A | `prefetch` | Compare the query with every stored intent embedding by cosine similarity; keep those `>= delta`, at most `k1` |
-| Phase B | `prefetch` | Z-score similarity and Q over the candidates (Q z-score clamped to ±3). Score = `(1-λ)·ẑ_sim + λ·ẑ_Q`; inject the top `k2` |
-| Utility update | commit | Session reward `r ∈ [-1, 1]`. For each injected memory, `Q ← Q + α(r − Q)` |
-| New triplet | commit | `r ≥ 0` stores the session as an experience with `Q = 0`. `r < 0` stores a `[PATTERN TO AVOID]` reflection with `Q = 0.5`, so it is retrieved immediately |
+| Phase A | `prefetch` | Compare the query with every retrieval key's intent embedding by cosine similarity; keep keys `>= delta`, at most `k1` |
+| Phase B | `prefetch` | Every memory filed under those keys is a candidate, scored `(1-λ)·ẑ_sim + λ·ẑ_Q`. Similarity uses fixed corpus statistics (`sim_norm_mean`, `sim_norm_std`); Q uses the candidates' own, clamped to ±3. Inject the top `k2`, or with probability `epsilon` a random `k2` |
+| Utility update | after the reward | Reward `r ∈ [-1, 1]`. For each injected memory, `Q ← Q + α(r − Q)` |
+| New memory | after the reward | `r ≥ 0` stores an experience; `r < 0` stores a `[PATTERN TO AVOID]` reflection. Both start at `Q = 0`. When the task matched a retrieved key with similarity `>= add_similarity`, the memory joins that key; otherwise it starts a new one |
+
+These are MemRL's `retrieve_query`, `QValueUpdater` and `dict_memory` rules.
+Defaults come from its BigCodeBench config (`k_retrieve` 5, `topk` 5, ε 0.1,
+`q_init_pos`/`q_init_neg` 0, `add_similarity_threshold` 0.9, and an LLM
+temperature of 0).
+
+`delta` and the similarity statistics were re-measured for `bge-small-en-v1.5`:
+- Over the 124 SWE-Atlas QA questions, pairwise cosine has mean 0.679 and std
+  0.057. Same-repository pairs average 0.77, cross-repository pairs 0.67.
+- `delta = 0.72` is mean + 0.75 std, the same placement MemRL's thresholds have
+  against its own statistics (BigCodeBench 0.38 at mean + 0.7 std, ALFWorld 0.62
+  at mean + 0.84 std).
+- Other benchmarks should re-measure and set `MEMRL_DELTA`, `MEMRL_SIM_NORM_MEAN`
+  and `MEMRL_SIM_NORM_STD`.
 
 **Intent.** When the task prompt contains a `<question>…</question>` block, as
 SWE-Atlas QA prompts do, the intent is only that block. Otherwise it is the whole
@@ -57,20 +71,37 @@ The model call goes to the `model` section of Hermes's `config.yaml`, which is
 the same OpenAI-compatible endpoint and credential the agent uses. If the call
 fails, the memory is still stored, just without the script or reflection.
 
-The reward comes from the `memrl_feedback` tool, which the system prompt asks
-the agent to call before its final answer. If the agent doesn't call it, a
-heuristic is used:
-- With a transcript, the heuristic is `1 − 2·(failed tool results / classified tool results)`.
-- Without one, it looks only at the final answer: an empty or give-up answer scores −0.5, anything else scores +0.25.
+**Reward.** `MEMRL_REWARD_SOURCE` selects where the reward comes from:
 
-The commit runs once per session. It is triggered by the first of
-`on_session_end`, `shutdown`, or an `atexit` hook. The `atexit` hook exists
-because Hermes one-shot (`hermes -z`) exits without calling the other two.
+- **`external`**, which ARIES sets. The benchmark's verdict is used, as in MemRL:
+  - At exit, the session is parked as pending under `MEMRL_TASK_ID`.
+  - Once evaluation finishes, the host writes `{task_id: reward}` to
+    `$HERMES_HOME/memrl/rewards.json`. The reward is +1 for full reward, −1
+    otherwise, and `null` when the benchmark reached no verdict.
+  - The next session applies the recorded rewards before its first recall, then
+    builds the memories.
+  
+  A `null` reward drops the session. The last task of a run stays pending,
+  because no later task exists to use it.
+- **`agent`**, the default outside ARIES. The agent reports the reward with the
+  `memrl_feedback` tool. Otherwise a heuristic is used:
+  - With a transcript: `1 − 2·(failed tool results / classified tool results)`.
+  - Without one, only the final answer counts: an empty or give-up answer scores
+    −0.5, anything else +0.25.
+
+A session is closed once, by the first of `on_session_end`, `shutdown`, or an
+`atexit` hook. The `atexit` hook exists because Hermes one-shot (`hermes -z`)
+exits without calling the other two.
 
 Pure retrieval and update math lives in `memrl/retrieval.py`, ported from
 MemRL's `MemoryService.retrieve_query` and `QValueUpdater.update`. MemRL itself
-depends on MemOS, so it isn't imported. One deliberate difference: similarity
-is z-scored over the candidate set, not with MemRL's fixed corpus statistics.
+depends on MemOS, so it isn't imported.
+
+Remaining differences from MemRL:
+- The `<question>` intent (above).
+- A local embedder, where MemRL uses OpenAI `text-embedding-3-large`.
+- The stored trajectory is capped at 6,000 characters.
+- Updates happen per task, with no training epochs.
 
 Background writes use `spawn_context_thread`, `RecallStatus` and
 `is_trivial_prompt` from `agent.memory_provider` when Hermes provides them.
@@ -84,21 +115,21 @@ Tuning comes from environment variables:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `MEMRL_DELTA` | 0.38 | Phase A cosine threshold |
-| `MEMRL_K1` | 15 | Phase A candidate cap |
-| `MEMRL_K2` | 3 | Memories injected per turn |
-| `MEMRL_LAM` | 0.5 | Phase B weight on Q |
+| `MEMRL_DELTA` | 0.72 | Phase A cosine threshold (MemRL `sim_threshold`) |
+| `MEMRL_K1` | 5 | Retrieval keys kept by Phase A (`k_retrieve`) |
+| `MEMRL_K2` | 5 | Memories injected (`topk`) |
+| `MEMRL_LAM` | 0.5 | Phase B weight on Q (`weight_q`; `weight_sim` = 1 − λ) |
 | `MEMRL_ALPHA` | 0.3 | EMA step size |
-| `MEMRL_EPSILON` | 0.0 | MemRL ε-greedy exploration |
-| `MEMRL_Q_INIT` | 0.0 | Q of a new experience |
-| `MEMRL_Q_REFLECTION` | 0.5 | Q of a new failure reflection |
+| `MEMRL_EPSILON` | 0.1 | ε-greedy exploration |
+| `MEMRL_Q_INIT` | 0.0 | Q of a new experience (`q_init_pos`) |
+| `MEMRL_Q_REFLECTION` | 0.0 | Q of a new reflection (`q_init_neg`) |
+| `MEMRL_ADD_SIMILARITY` | 0.9 | Join a retrieved key at or above this similarity |
+| `MEMRL_SIM_NORM_MEAN` / `MEMRL_SIM_NORM_STD` | 0.679 / 0.0567 | Fixed similarity z-score statistics |
+| `MEMRL_SCRIPT_TEMPERATURE` | 0.0 | Temperature of the script call |
 | `MEMRL_INTENT_TAG` | `question` | Keep only `<tag>…</tag>` as the intent; empty uses the whole prompt |
+| `MEMRL_REWARD_SOURCE` | `agent` | `agent` or `external` (see Reward) |
+| `MEMRL_TASK_ID` | none | Task this session belongs to, for `external` rewards |
 
-With `bge-small-en-v1.5`, unrelated task descriptions still score about 0.4–0.6
-cosine against each other (paraphrases score about 0.99). The default
-`delta = 0.38` therefore filters very little on its own, and Phase B does most
-of the selection. Raise `MEMRL_DELTA` (around 0.7) for stricter topical
-matching.
 
 ## Tests
 
@@ -125,6 +156,8 @@ The Hermes harness keeps one store per run at `<run>/memrl/memrl.db`:
 - After the one-shot exits, it copies the store back. Each task's copy is also
   retained as `harness/memrl/memrl.db`.
 
-The hand-off is sequential, so the profile must use `execution.concurrency` 1.
-In one-shot mode the heuristic sees only the final answer. The reward is
-therefore meaningful mainly when the agent calls `memrl_feedback`.
+ARIES starts the provider with `MEMRL_REWARD_SOURCE=external` and
+`MEMRL_TASK_ID=<task execution ID>`. After each task's evaluation, it records
+the verdict in `<run>/memrl/rewards.json`, which is staged into the next task
+along with the store. The hand-off is sequential, so the profile must use
+`execution.concurrency` 1.

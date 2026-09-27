@@ -169,6 +169,7 @@ type session struct {
 	apiKey        []byte
 	extractAPIKey []byte
 	memrlStore    []byte
+	memrlRewards  []byte
 	runAttempted  bool
 	logPaths      []string
 }
@@ -282,6 +283,9 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 	if err != nil {
 		return err
 	}
+	if manager.memrlEnabled {
+		environment = append(environment, memrlEnvironment(request.TaskID)...)
+	}
 	apiKeySource, ok := manager.apiKeyLookup(request.Model.APIKeyEnv)
 	if !ok {
 		clear(apiKeySource)
@@ -318,9 +322,12 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 			return errors.New("rendered Hermes config contains the extract API-key value")
 		}
 	}
-	var memrlStore []byte
+	var memrlStore, memrlRewards []byte
 	if manager.memrlEnabled {
 		memrlStore, err = readMemRLStore(manager.memrlStorePath)
+		if err == nil {
+			memrlRewards, err = readMemRLRewards(filepath.Join(filepath.Dir(manager.memrlStorePath), memrlRewardsName))
+		}
 		if err != nil {
 			clear(apiKey)
 			clear(extractAPIKey)
@@ -352,7 +359,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		artifactDir:   filepath.Join(manager.outputDir, request.TaskID, "harness"),
 		endpoint:      request.Endpoint, model: request.Model,
 		agentTimeout: agentTimeout, apiKey: apiKey, extractAPIKey: extractAPIKey,
-		memrlStore: memrlStore,
+		memrlStore: memrlStore, memrlRewards: memrlRewards,
 	}
 	fail := func(primary error) error {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), manager.cleanupTimeout)
@@ -853,6 +860,9 @@ func (manager *Manager) runtimeArchive(active *session, configuration []byte) ([
 	}
 	if active.memrlStore != nil {
 		files[strings.TrimPrefix(memrlStoreContainerPath, "/")] = stagedFile{content: active.memrlStore, mode: 0o600}
+	}
+	if active.memrlRewards != nil {
+		files[strings.TrimPrefix(memrlStoreContainerDir+"/"+memrlRewardsName, "/")] = stagedFile{content: active.memrlRewards, mode: 0o600}
 	}
 	return stageArchive(files, strings.TrimPrefix(memrlStoreContainerDir, "/"))
 }

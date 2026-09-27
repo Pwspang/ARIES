@@ -50,6 +50,13 @@ type Wiring struct {
 	// Optional: nil is a no-op, and every harness/config combination that
 	// has no such state should also be a no-op here.
 	CleanupHarness func(context.Context, config.Config, string) error
+	// RecordTaskOutcome runs after each task occurrence finishes, once its
+	// evaluation is known, for harness-level state that learns from the
+	// outcome (the Hermes harness's MemRL rewards — see
+	// pkg/harness/hermes/memrl.go). It runs before the occurrence releases
+	// its concurrency slot, so with concurrency 1 the next task sees it.
+	// Optional: nil is a no-op.
+	RecordTaskOutcome func(config.Config, string, core.TaskResult) error
 }
 
 type Dependencies struct {
@@ -249,7 +256,15 @@ func Run(ctx context.Context, profilePath string, stdout io.Writer, dependencies
 					if err != nil {
 						return core.RunResult{}, err
 					}
-					return experiment.Run(taskCtx)
+					result, err := experiment.Run(taskCtx)
+					if record := dependencies.Wiring.RecordTaskOutcome; record != nil {
+						for _, task := range result.Tasks {
+							if recordErr := record(cfg, outputRoot, task); recordErr != nil {
+								err = errors.Join(err, fmt.Errorf("record outcome of %s: %w", task.TaskID, recordErr))
+							}
+						}
+					}
+					return result, err
 				})
 		}, outputRoot, stdout)
 	}()

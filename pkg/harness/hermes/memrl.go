@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 
 	"github.com/containerd/errdefs"
+	"github.com/hyscale-lab/aries/pkg/core"
 	"github.com/moby/moby/client"
 )
 
@@ -19,12 +21,87 @@ import (
 // task: staged into the runtime archive at Start, copied back out after the
 // one-shot exits. Hermes containers take no mounts, so this copy is the only
 // path between tasks, and config validation keeps it sequential.
+//
+// MemRL learns from the environment's success signal, which only exists after
+// evaluation, when the task's container is gone. So the provider runs with
+// external rewards: at exit it parks the session under the task ID, ARIES
+// records the task's verdict in rewards.json once evaluation finishes, and the
+// next task's provider applies it before its first recall.
 const (
 	memrlStoreName          = "memrl.db"
+	memrlRewardsName        = "rewards.json"
 	memrlStoreContainerDir  = stateContainerPath + "/memrl"
 	memrlStoreContainerPath = memrlStoreContainerDir + "/" + memrlStoreName
 	memrlConfigBlock        = "\nmemory:\n  provider: \"memrl\"\n"
+	maxMemRLRewards         = 1 << 20
 )
+
+// memrlEnvironment tells the provider to wait for ARIES's verdict and which
+// task its session belongs to. Neither value is secret.
+func memrlEnvironment(taskID string) []string {
+	return []string{"MEMRL_REWARD_SOURCE=external", "MEMRL_TASK_ID=" + taskID}
+}
+
+// readMemRLRewards returns the run's recorded verdicts, or nil before the
+// first one.
+func readMemRLRewards(path string) ([]byte, error) {
+	content, err := readStablePrivateFile(path, 0o600)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read MemRL rewards: %w", err)
+	}
+	var rewards map[string]*float64
+	if len(content) > maxMemRLRewards || json.Unmarshal(content, &rewards) != nil {
+		return nil, errors.New("MemRL rewards are not a bounded JSON object of task rewards")
+	}
+	return content, nil
+}
+
+// memrlReward maps an evaluation to MemRL's success signal: +1 when the
+// benchmark awarded full reward, -1 otherwise. It is nil when the benchmark
+// reached no verdict (not run, blocked, canceled, or failed with an error of
+// its own), so the provider drops that session instead of learning from it.
+func memrlReward(evaluation core.Evaluation) *float64 {
+	if evaluation.Error != "" || evaluation.Status != core.StatusSucceeded && evaluation.Status != core.StatusFailed {
+		return nil
+	}
+	reward := -1.0
+	if evaluation.Reward >= 1 {
+		reward = 1
+	}
+	return &reward
+}
+
+// RecordMemRLOutcome adds one task's verdict to the run's rewards.json under
+// outputDir/memrl. The run is sequential when MemRL is enabled, so each task
+// is recorded before the next one starts and reads it.
+func RecordMemRLOutcome(outputDir string, task core.TaskResult) error {
+	if err := validateTaskID(task.TaskID); err != nil {
+		return err
+	}
+	path := filepath.Join(outputDir, "memrl", memrlRewardsName)
+	rewards := map[string]*float64{}
+	existing, err := readMemRLRewards(path)
+	if err != nil {
+		return err
+	}
+	if existing != nil {
+		if err := json.Unmarshal(existing, &rewards); err != nil {
+			return err
+		}
+	}
+	rewards[task.TaskID] = memrlReward(task.Evaluation)
+	encoded, err := json.MarshalIndent(rewards, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := replacePrivateFile(path, append(encoded, '\n')); err != nil {
+		return fmt.Errorf("record MemRL reward: %w", err)
+	}
+	return nil
+}
 
 var sqliteHeader = []byte("SQLite format 3\x00")
 

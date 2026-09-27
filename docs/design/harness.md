@@ -105,6 +105,16 @@ is handed from task to task by copying:
 Because the hand-off is sequential, the profile must set
 `execution.concurrency` to 1.
 
+MemRL learns from the benchmark's verdict, which only exists after evaluation,
+when the task's container is gone. So the harness starts the provider with
+`MEMRL_REWARD_SOURCE=external` and the task execution ID, and the provider parks
+the finished session. After each occurrence, the command wiring's
+`RecordTaskOutcome` hook writes the verdict to `<run>/memrl/rewards.json`: +1
+for full reward, −1 otherwise, and null when evaluation reached no verdict. The
+next task's provider applies those rewards before its first recall. The harness
+never sees an evaluation result during its own task, so evaluation stays
+independent of it.
+
 ## Customization & Contribution Guide
 
 Add a harness only when it can implement the existing `AgentHarness` lifecycle

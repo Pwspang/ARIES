@@ -1,5 +1,5 @@
 {
-  "name": "hermes-sweatlasqa-smoke2-memrl-deepseek",
+  "name": "hermes-sweatlasqa-smoke3-memrl-deepseek",
   "versions_file": "../configs/versions-memrl.json",
   "overrides_file": "",
   "execution": {
@@ -10,7 +10,8 @@
     "root": ".cache/swe-atlas-qa",
     "tasks": [
       "task-6905333b74f22949d97ba9a4",
-      "task-6905333b74f22949d97ba9a5"
+      "task-6905333b74f22949d97ba9a5",
+      "task-6905333b74f22949d97ba9a8"
     ],
     "judge": {
       "provider": "deepseek",

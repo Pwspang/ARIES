@@ -48,6 +48,7 @@ func commandWiring() app.Wiring {
 		NewSandbox:           newSandbox,
 		NewBridge:            newBridge,
 		CleanupHarness:       cleanupHarness,
+		RecordTaskOutcome:    recordTaskOutcome,
 	}
 }
 
@@ -65,6 +66,16 @@ func cleanupHarness(ctx context.Context, cfg config.Config, outputRoot string) e
 		return nil
 	}
 	return openclawharness.CleanupSharedAMEMRepoScope(ctx, outputRoot)
+}
+
+// recordTaskOutcome hands each finished task's verdict to harness state that
+// learns from it: currently only the Hermes harness's MemRL rewards. A no-op
+// for every other harness/config combination.
+func recordTaskOutcome(cfg config.Config, outputRoot string, task core.TaskResult) error {
+	if cfg.Harness.Type != "hermes" || !cfg.Harness.MemRL.Enabled {
+		return nil
+	}
+	return hermesharness.RecordMemRLOutcome(outputRoot, task)
 }
 
 func validateComponents(cfg config.Config) error {
