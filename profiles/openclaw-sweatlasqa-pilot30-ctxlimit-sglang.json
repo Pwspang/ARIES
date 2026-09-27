@@ -3,7 +3,7 @@
   "versions_file": "../configs/versions-amem.json",
   "overrides_file": "",
   "execution": {
-    "concurrency": 5
+    "concurrency": 1
   },
   "benchmark": {
     "type": "sweatlasqa",
