@@ -103,17 +103,11 @@ type Options struct {
 	// delegation.max_concurrent_children. Zero leaves Hermes's own default
 	// (3) in place. Ignored when SubagentsEnabled is false.
 	MaxConcurrentSubagents int
-	// MemRLEnabled activates the MemRL memory provider baked into the
-	// docker/hermes-memrl image and hands its run-scoped store, kept under
-	// OutputDir/memrl, from task to task (see memrl.go).
-	MemRLEnabled bool
-	// MemRLFrozenStore is harness.memrl.frozen_store: the directory of a
-	// trained store every task recalls from without learning.
-	MemRLFrozenStore string
-	// MemRLBatch is a positive harness.memrl.batch_size: tasks park their
-	// sessions for FinalizeMemRLBatch instead of handing the store on.
-	MemRLBatch bool
-	Logger     *logrus.Logger
+	// Memory selects a memory manager baked into the image and hands its
+	// run-scoped state, kept under OutputDir/memory, from task to task (see
+	// memory.go).
+	Memory MemoryOptions
+	Logger *logrus.Logger
 }
 
 // dockerClient is the small official Engine SDK surface used by the harness.
@@ -147,10 +141,7 @@ type Manager struct {
 	extractAPIKeyEnv       string
 	subagentsEnabled       bool
 	maxConcurrentSubagents int
-	memrlEnabled           bool
-	memrlFrozenStore       string
-	memrlBatch             bool
-	memrlStorePath         string
+	memory                 MemoryOptions
 	logger                 *logrus.Logger
 	apiKeyLookup           func(string) ([]byte, bool)
 	newID                  func() (string, error)
@@ -176,8 +167,7 @@ type session struct {
 	agentTimeout  time.Duration
 	apiKey        []byte
 	extractAPIKey []byte
-	memrlStore    []byte
-	memrlRewards  []byte
+	memory        *memoryState
 	runAttempted  bool
 	logPaths      []string
 }
@@ -204,6 +194,9 @@ func New(options Options) (*Manager, error) {
 	}
 	if strings.TrimSpace(options.OutputDir) == "" {
 		return nil, errors.New("Hermes output directory is required")
+	}
+	if err := options.Memory.validate(options.ExtractAPIKeyEnv); err != nil {
+		return nil, err
 	}
 	outputDir, err := filepath.Abs(options.OutputDir)
 	if err != nil {
@@ -251,7 +244,7 @@ func New(options Options) (*Manager, error) {
 		terminalTimeout: options.TerminalTimeout, webSearchEnabled: options.WebSearchEnabled,
 		extractAPIKeyEnv: options.ExtractAPIKeyEnv, logger: options.Logger,
 		subagentsEnabled: options.SubagentsEnabled, maxConcurrentSubagents: options.MaxConcurrentSubagents,
-		memrlEnabled: options.MemRLEnabled, memrlFrozenStore: options.MemRLFrozenStore, memrlBatch: options.MemRLBatch, memrlStorePath: filepath.Join(outputDir, "memrl", memrlStoreName),
+		memory:       options.Memory,
 		apiKeyLookup: options.APIKeyLookup, newID: randomID,
 	}, nil
 }
@@ -284,15 +277,18 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 	if err != nil {
 		return err
 	}
-	if manager.memrlEnabled {
-		configuration = append(configuration, memrlConfigBlock...)
+	if manager.memory.Provider != "" {
+		if err := manager.memory.validate(request.Model.APIKeyEnv, manager.extractAPIKeyEnv); err != nil {
+			return err
+		}
+		configuration = append(configuration, memoryConfigBlock(manager.memory.Provider)...)
 	}
 	environment, err := containerEnvironment(request.Endpoint, workspaceRoot, manager.terminalTimeout, manager.webSearchEnabled)
 	if err != nil {
 		return err
 	}
-	if manager.memrlEnabled {
-		environment = append(environment, memrlEnvironment(request.TaskID, manager.memrlFrozenStore != "", manager.memrlBatch)...)
+	if manager.memory.Provider != "" {
+		environment = append(environment, memoryEnvironment(request.TaskID, manager.memory.Env)...)
 	}
 	apiKeySource, ok := manager.apiKeyLookup(request.Model.APIKeyEnv)
 	if !ok {
@@ -330,9 +326,13 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 			return errors.New("rendered Hermes config contains the extract API-key value")
 		}
 	}
-	var memrlStore, memrlRewards []byte
-	if manager.memrlEnabled {
-		memrlStore, memrlRewards, err = manager.readMemRLState()
+	var memory *memoryState
+	if manager.memory.Provider != "" {
+		if containsSecret(strings.Join(environment, "\n"), apiKey, extractAPIKey) {
+			err = errors.New("Hermes memory env contains an API-key value")
+		} else {
+			memory, err = manager.readMemoryState()
+		}
 		if err != nil {
 			clear(apiKey)
 			clear(extractAPIKey)
@@ -364,7 +364,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		artifactDir:   filepath.Join(manager.outputDir, request.TaskID, "harness"),
 		endpoint:      request.Endpoint, model: request.Model,
 		agentTimeout: agentTimeout, apiKey: apiKey, extractAPIKey: extractAPIKey,
-		memrlStore: memrlStore, memrlRewards: memrlRewards,
+		memory: memory,
 	}
 	fail := func(primary error) error {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), manager.cleanupTimeout)
@@ -860,16 +860,10 @@ func (manager *Manager) runtimeArchive(active *session, configuration []byte) ([
 	if extractEnabled {
 		files[strings.TrimPrefix(extractKeyPath, "/")] = stagedFile{content: active.extractAPIKey, mode: 0o600}
 	}
-	if !manager.memrlEnabled {
+	if active.memory == nil {
 		return stageArchive(files)
 	}
-	if active.memrlStore != nil {
-		files[strings.TrimPrefix(memrlStoreContainerPath, "/")] = stagedFile{content: active.memrlStore, mode: 0o600}
-	}
-	if active.memrlRewards != nil {
-		files[strings.TrimPrefix(memrlStoreContainerDir+"/"+memrlRewardsName, "/")] = stagedFile{content: active.memrlRewards, mode: 0o600}
-	}
-	return stageArchive(files, strings.TrimPrefix(memrlStoreContainerDir, "/"))
+	return stageArchive(files, stageMemoryState(files, active.memory)...)
 }
 
 func containsSecret(value string, secrets ...[]byte) bool {
@@ -1058,20 +1052,13 @@ func (manager *Manager) collectArtifacts(ctx context.Context, active *session, s
 			}
 		}
 	}
-	// The store is exported only once the one-shot has exited, so its exit
+	// Memory state is exported only once the one-shot has exited, so its exit
 	// commit is complete; a canceled or failed exec may still be writing.
-	if manager.memrlEnabled && (outcome.EndReason == "completed" || outcome.EndReason == "nonzero_exit") {
-		if path, err := manager.exportMemRLStore(ctx, active); err != nil {
+	if active.memory != nil && (outcome.EndReason == "completed" || outcome.EndReason == "nonzero_exit") {
+		if path, err := manager.exportMemoryState(ctx, active); err != nil {
 			errs = append(errs, err)
 		} else if path != "" {
 			active.logPaths = appendUnique(active.logPaths, path)
-		}
-		if manager.memrlBatch {
-			if path, err := manager.exportMemRLPending(ctx, active); err != nil {
-				errs = append(errs, err)
-			} else if path != "" {
-				active.logPaths = appendUnique(active.logPaths, path)
-			}
 		}
 	}
 	sessionPaths, sessionErr := manager.collectSessions(ctx, active)

@@ -1,5 +1,42 @@
 # ARIES Tasks
 
+## R22 — Generic Hermes memory manager contract
+
+Goal: memory systems are built and changed in the separate AgentMemory
+repository. The ARIES binary treats a Hermes memory manager as a black box, so
+a new or edited memory system needs only a new image pin, not a rebuild.
+
+1. [x] Replace `harness.memrl` with `harness.memory`: `provider`, verbatim `env`
+   and `frozen_state`. The provider name and env names are validated in config
+   and again at harness construction and start.
+2. [x] Replace the MemRL-specific SQLite hand-off with a bounded, opaque state
+   directory (`ARIES_MEMORY_DIR`) that is copied in at start and back out after
+   the one-shot exits. The copy rejects links and path escapes, is capped at
+   256 MiB and 4096 entries, and is swapped in atomically.
+3. [x] Delete the RL-specific surface: `RecordTaskOutcome`, verdict rewards,
+   `batch_size`, `FinishTaskBatch`, and the finalize container. Restore
+   `runProfile` to plain admission.
+4. [x] Move `docker/hermes-memrl` to AgentMemory, adapt MemRL to the contract
+   (agent reward only), migrate the MemRL profiles, and pin the AgentMemory
+   image in `configs/versions-memrl.json`.
+
+Protected boundaries: there are still exactly four Runner roles. There is no
+plugin registry in ARIES, since the provider is a Hermes plugin inside the
+image. Key-value checks now cover the rendered env, and the fail-closed
+cleanup and the no-mount isolation are unchanged.
+
+Evidence:
+- `make build test lint` pass. `go test -race ./...` passes inside
+  `golang:1.26`, because the host has no C toolchain for cgo.
+- `make integration` passes. `TestRunnerFixGitThroughOpenClawSSHBridge` failed
+  once on Docker stats that omitted the observation time, and passed on rerun;
+  that code is untouched here.
+- A live DeepSeek `hermes-tb2-fix-git-memrl-deepseek` run scored both tasks 1.
+  The second task recalled the memory the first one stored, via `<run>/memory`.
+- A throwaway plugin edit plus `env` `MEMRL_Q_INIT=0.5`, rebuilt only in
+  AgentMemory, took effect with an unchanged `bin/aries` sha256.
+- A frozen-state run left the frozen directory byte-identical.
+
 ## R21 — GPU metrics data-flow cleanup
 
 Cleanup plan, based on `8b4930c` and executed regression-first:

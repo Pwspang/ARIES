@@ -524,17 +524,29 @@ something this study itself tests.
 ### The Hermes episodic-memory study: does learning from past trajectories pay?
 
 The amem studies above test note-taking memory in OpenClaw. This study tests
-episodic memory: whole past trajectories, kept with the benchmark's verdict on
-them and recalled on later tasks. The implementation is the MemRL provider
-(`docker/hermes-memrl`). For each finished task it stores the question as the
-intent. On success it stores a model-written script plus the trajectory; on
-failure it stores a `[PATTERN TO AVOID]` reflection. It learns a utility Q per
-memory from later verdicts and recalls by similarity and Q.
+episodic memory: whole past trajectories, kept with a reward for them and
+recalled on later tasks. The implementation is the MemRL provider in the
+separate AgentMemory repository (`hermes/plugins/memrl`), which ARIES runs as a
+generic `harness.memory` manager. For each finished task it stores the question
+as the intent. On success it stores a model-written script plus the
+trajectory; on failure it stores a `[PATTERN TO AVOID]` reflection. It learns a
+utility Q per memory from each session's reward and recalls by similarity and
+Q.
+
+The reward is the agent's own. It reports one with the `memrl_feedback` tool,
+or, if it does not, a heuristic over tool failures is used. ARIES keeps
+memory systems opaque and never hands them the benchmark's verdict.
+
+Runs recorded before 2026-09-29 used an earlier pipeline:
+- ARIES fed the verdict back to the provider (`MEMRL_REWARD_SOURCE=external`).
+- Training ran in mini-batches of 15 at concurrency 8, with a finalize
+  container between batches.
+
+Those runs are not directly comparable to runs under the current contract.
 
 The study compares two arms: no memory, and MemRL. As in MemRL's own
 evaluation, it separates learning from testing. MemRL learns over a train
-split in mini-batches, as MemRL's runners do, then answers a held-out test
-split with memory frozen. The test measures what stored episodes buy on
+split, then answers a held-out test split with memory frozen. The test measures what stored episodes buy on
 questions never seen in training, without test tasks feeding each other.
 
 The broad hypothesis, "storing past episodes lets the agent learn, and changes
@@ -554,8 +566,8 @@ its accuracy and efficiency", is refined into falsifiable parts:
   the test tasks. The competing prediction is that memory buys accuracy at a
   higher token cost.
 - **H3, learning during training.** MemRL's gain over control on train tasks
-  grows over batches and epochs. It is near zero in the first batch, which
-  recalls from an empty store.
+  grows over the training order and epochs. It is near zero on the first
+  tasks, which recall from an almost empty store.
 
 **Split.** The 124 tasks are split per repository with a fixed seed
 (20260927), then cut to 30 train and 30 test tasks in proportion to each
@@ -564,63 +576,50 @@ repository's size, keeping every one of the 11 repositories in both splits
 therefore draw on train episodes from the same codebase, which is where recall concentrates: embedding pilot30's questions,
 85% of the matches above the MemRL threshold came from the same repository.
 
-**Mini-batch training.** MemRL trains with `harness.memrl.batch_size: 15` at
-`execution.concurrency: 8`, over two epochs. The second epoch is the 30 train
-tasks reshuffled with a fixed seed, so 60 occurrences form 4 batches, and a
-batch never spans two epochs. This follows MemRL's BigCodeBench runner, which
-buffers 25 tasks per flush and runs several epochs.
-
-1. **Batch:** every task in a batch recalls from the same store. It parks its
-   session in `pending.json`, which ARIES queues under `<run>/memrl/pending`.
-2. **Barrier:** once the whole batch is scored and its verdicts recorded, ARIES
-   runs one short finalize container from the same image
-   (`FinalizeMemRLBatch`, `python -m plugins.memory.memrl.finalize`). It
-   applies every reward in execution order: the EMA utility update for each
-   recalled memory, then a new experience or reflection, whose script or
-   reflection costs one call to the task model.
-3. **Next batch:** the updated store replaces the run's store, and the applied
-   sessions and the step's log move to `<run>/memrl/batches/NNN`.
-
-Tasks in one batch cannot learn from each other, and the first batch starts
-from an empty store. That is the price of running eight at once.
+**Sequential training.** MemRL trains over two epochs at
+`execution.concurrency: 1`. ARIES hands the provider's state directory from
+each task to the next, so every task recalls what all earlier tasks stored.
+The second epoch is the 30 train tasks reshuffled with a fixed seed, making 60
+occurrences. The summary still reports the training curve in windows of 15
+tasks, the old batch size.
 
 **Profiles.** All run Hermes on the local SGLang `Qwen/Qwen3.6-35B-A3B-FP8`
 endpoint (`configs/sglang/qwen3.6-35b-local.yaml`), with a `deepseek-flash`
-judge, `execution.concurrency: 8`, and the same `aries/hermes-memrl` image
-(`configs/versions-memrl.json`). The provider is off in control. Names follow
+judge, `execution.concurrency: 8` (1 for MemRL training), and the same
+AgentMemory image (`configs/versions-memrl.json`). The provider is off in
+control. Names follow
 `hermes-sweatlasqa-memrl-<split>-<arm>-sglang.json`:
 
 | split | control (no memory) | memrl |
 |---|---|---|
-| `train` | one pass | batches of 15 for 2 epochs |
-| `test` | one pass | frozen trained store |
-| `replay` (train tasks) | | frozen trained store (H0) |
+| `train` | one pass | sequential, 2 epochs |
+| `test` | one pass | frozen trained state |
+| `replay` (train tasks) | | frozen trained state (H0) |
 
-`harness.memrl.frozen_store` names the trained store, copied from the
-training run's `<run>/memrl/memrl.db` to `runs/memrl-study/stores/memrl-memrl`.
-Every task recalls from that store greedily (no exploration), and nothing is
-learned: the provider parks no session, and ARIES records no verdict. The
-store never changes, so frozen tasks run concurrently. The last batch update
-leaves the trained store complete. The runner refuses a training run whose
-queue still holds sessions.
+`harness.memory.frozen_state` names the trained state. It is copied from the
+training run's `<run>/memory` to `runs/memrl-study/stores/memrl-memrl`. The
+profiles also set `MEMRL_FROZEN=1` and `MEMRL_EPSILON=0` in `harness.memory.env`,
+so every task recalls from that store greedily (no exploration) and the
+provider learns nothing. ARIES never writes the frozen state back, so frozen
+tasks run concurrently.
 
 `hermes-sweatlasqa-memrl-smoke-*` is the same design on 4 train and 2 test
-tasks from simple-login and paperless-ngx: 2 epochs in batches of 2 at
-concurrency 2.
+tasks from simple-login and paperless-ngx: 2 sequential training epochs, and
+concurrency 2 elsewhere.
 
 `TestSWEAtlasQAMemRLStudyArmsDifferOnlyInMemRL` (`pkg/config/config_test.go`)
 enforces:
-- the same image, model, judge, runtime, concurrency, and harness apart from
-  `memrl` in every profile;
-- epochs that are each a permutation of train, with batches that never span
-  epochs;
+- the same image, model, judge, runtime, and harness apart from `memory` in
+  every profile;
+- the same concurrency, except for the sequential MemRL training run;
+- epochs that are each a permutation of train;
 - disjoint train and test splits, with the same test list in both arms;
 - a replay task list equal to train;
 - test and replay profiles that read the trained store.
 
 **Running.** `scripts/run-memrl-study.sh smoke`, then `full`, each train then
-test (`train` or `test` runs one phase). Each run is already 8-way concurrent,
-so by default runs go one after another. `PARALLEL=1` runs a phase's runs side
+test (`train` or `test` runs one phase). Most runs are already 8-way
+concurrent, so by default runs go one after another. `PARALLEL=1` runs a phase's runs side
 by side.
 
 Qwen tasks take about 11 to 16 minutes each when run one at a time. The full
@@ -642,7 +641,7 @@ and `--csv` also writes one row per occurrence.
   - wall-clock time;
   - how often a task hits Hermes's 90-iteration cap.
 - Memory cost and use, from the MemRL store:
-  - script and reflection tokens (`llm_calls`), written by the batch updates;
+  - script and reflection tokens (`llm_calls`);
   - memories recalled per task;
   - how many of them came from the same task or repository
     (`memories.task_id`).
@@ -653,7 +652,7 @@ and `--csv` also writes one row per occurrence.
   and a sign-flip permutation p. These are the confirmatory tests.
 - H0 pairs replay with the train control on the 30 train tasks.
 - H3 pairs each MemRL epoch with the train control, task by task, and shows
-  the score by batch.
+  the score by 15-task window.
 - A single control run carries the model's sampling noise. Rerunning
   `test-control` measures that noise floor if an effect looks marginal.
 
@@ -664,10 +663,11 @@ task-level standard deviation, not small ones.
 - A stored trajectory includes the agent's earlier answer. Across different
   questions that is the transfer under test. In replay it is the same question,
   which is why H0 is only a manipulation check.
-- The reward that trains Q is the verdict of the same judge that scores the
-  arms, but only in training. No test task's verdict reaches memory.
+- The reward that trains Q is the agent's self-assessment, not the judge's
+  verdict. Q therefore tracks what the agent believed worked, and a
+  miscalibrated agent teaches the store its own errors.
 - One training order and one training run: the trained store is a single
   sample. A second training order would measure its variance.
-- Batch composition matters: the first batch learns nothing, and within a
-  batch no task sees another's episode.
+- Training order matters: early tasks recall little, and later tasks recall
+  episodes shaped by every earlier reward.
 - One model, one harness and one judge limit generality.

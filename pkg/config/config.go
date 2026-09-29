@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -198,34 +199,28 @@ type HarnessConfig struct {
 	AMEM         HarnessAMEMConfig         `json:"amem,omitempty"`
 	LosslessClaw HarnessLosslessClawConfig `json:"lossless_claw,omitempty"`
 	Mem0         HarnessMem0Config         `json:"mem0,omitempty"`
-	MemRL        HarnessMemRLConfig        `json:"memrl,omitempty"`
+	Memory       HarnessMemoryConfig       `json:"memory,omitempty"`
 }
 
-// HarnessMemRLConfig enables the MemRL memory provider baked into the
-// docker/hermes-memrl image, so it requires Hermes and a versions file that
-// pins that image. The provider's SQLite store is run-scoped: it is copied
-// into each task's Hermes container at start and copied back after the
-// one-shot exits, so learning carries across the run's tasks. That hand-off
-// is sequential by construction, hence execution.concurrency must be 1 unless
-// FrozenStore or BatchSize (below) replaces it.
+// HarnessMemoryConfig selects a Hermes memory manager: a memory provider
+// plugin baked into the Hermes image the versions file pins, such as one
+// built from the separate AgentMemory repository. ARIES renders
+// memory.provider into config.yaml, passes Env to the container verbatim
+// (provider tuning, never secrets), and carries one opaque state directory
+// from task to task under <run>/memory, so changing the memory system needs
+// only a new image, not a new ARIES binary. That hand-off is sequential by
+// construction, hence execution.concurrency must be 1 unless FrozenState is
+// set.
 //
-// FrozenStore is a held-out evaluation: a directory holding a trained
-// memrl.db, such as a copy of a training run's <run>/memrl/memrl.db. Every task then recalls from that store, with no exploration,
-// and no task's session or verdict is learned from. Like output_dir, a
-// relative path is resolved from the working directory. It is read when the
-// first task starts, so a profile can name a store that training has yet to
-// produce. Frozen tasks never write the store, so they may run concurrently.
-//
-// BatchSize trains in mini-batches, as MemRL's own runners do: the task list
-// runs in consecutive batches of that many occurrences, up to
-// execution.concurrency at a time, all recalling from the same store. Each
-// task parks its session; once the batch is scored, one finalize step applies
-// every reward (utility updates and new memories) to the run's store, which
-// the next batch starts from. Epochs are the task list repeated.
-type HarnessMemRLConfig struct {
-	Enabled     bool   `json:"enabled,omitempty"`
-	FrozenStore string `json:"frozen_store,omitempty"`
-	BatchSize   int    `json:"batch_size,omitempty"`
+// FrozenState is a directory every task starts from, such as a copy of a
+// previous run's <run>/memory; no task writes it back, so frozen tasks may
+// run concurrently. Like output_dir, a relative path is resolved from the
+// working directory. It is read when each task starts, so a profile can name
+// a state that another run has yet to produce.
+type HarnessMemoryConfig struct {
+	Provider    string            `json:"provider,omitempty"`
+	Env         map[string]string `json:"env,omitempty"`
+	FrozenState string            `json:"frozen_state,omitempty"`
 }
 
 // HarnessAMEMConfig enables the amem memory plugin (https://amem.owo.lc, npm
@@ -745,19 +740,12 @@ func (c *Config) validate() error {
 	if c.Harness.Mode == "" {
 		c.Harness.Mode = "agent"
 	}
-	if memrl := c.Harness.MemRL; memrl.Enabled {
-		switch {
-		case memrl.FrozenStore != "":
-			// Every task reads the same store and none writes it back.
-		case memrl.BatchSize > 0:
-			if c.Execution.Concurrency > memrl.BatchSize {
-				return errors.New("harness.memrl.batch_size must be at least execution.concurrency: a batch runs from one store")
-			}
-			if c.Execution.Loop > 0 {
-				return errors.New("harness.memrl.batch_size requires a fixed task list, not execution.loop")
-			}
-		case c.Execution.Concurrency != 1:
-			return errors.New("harness.memrl requires execution.concurrency 1 unless batch_size or frozen_store is set: its run-scoped store is handed from task to task")
+	if memory := c.Harness.Memory; memory.Provider != "" && memory.FrozenState == "" && c.Execution.Concurrency != 1 {
+		return errors.New("harness.memory requires execution.concurrency 1 unless frozen_state is set: its run-scoped state is handed from task to task")
+	}
+	for key := range c.Harness.Memory.Env {
+		if key == c.Model.APIKeyEnv || c.Benchmark.Judge != nil && key == c.Benchmark.Judge.APIKeyEnv {
+			return fmt.Errorf("harness.memory.env must not set the credential variable %q", key)
 		}
 	}
 	if err := c.Harness.validate(); err != nil {
@@ -1069,14 +1057,8 @@ func (h *HarnessConfig) validate() error {
 	if h.Mem0.Enabled && h.Type != "openclaw" {
 		return errors.New("harness.mem0 requires OpenClaw")
 	}
-	if h.MemRL.Enabled && h.Type != "hermes" {
-		return errors.New("harness.memrl requires Hermes")
-	}
-	if (h.MemRL.FrozenStore != "" || h.MemRL.BatchSize != 0) && !h.MemRL.Enabled {
-		return errors.New("harness.memrl.frozen_store and batch_size require harness.memrl.enabled")
-	}
-	if h.MemRL.BatchSize < 0 || h.MemRL.BatchSize > 0 && h.MemRL.FrozenStore != "" {
-		return errors.New("harness.memrl.batch_size must be positive and cannot train a frozen store")
+	if err := h.Memory.validate(h.Type); err != nil {
+		return err
 	}
 	if h.AMEM.Enabled && h.Mem0.Enabled {
 		return errors.New("harness.amem and harness.mem0 are mutually exclusive")
@@ -1352,6 +1334,35 @@ func isHex(value string, characters int) bool {
 	_, err := hex.DecodeString(value)
 	return err == nil
 }
+
+func (m HarnessMemoryConfig) validate(harnessType string) error {
+	if m.Provider == "" {
+		if len(m.Env) != 0 || m.FrozenState != "" {
+			return errors.New("harness.memory.env and frozen_state require harness.memory.provider")
+		}
+		return nil
+	}
+	if harnessType != "hermes" {
+		return errors.New("harness.memory requires Hermes")
+	}
+	if !memoryProviderPattern.MatchString(m.Provider) || len(m.Provider) > 64 {
+		return errors.New("harness.memory.provider must be a lowercase plugin name of letters, digits, '-' and '_'")
+	}
+	for key := range m.Env {
+		if !memoryEnvKeyPattern.MatchString(key) {
+			return fmt.Errorf("harness.memory.env name %q must be uppercase letters, digits and '_'", key)
+		}
+		if strings.HasPrefix(key, "ARIES_") || strings.HasPrefix(key, "HERMES_") || strings.HasPrefix(key, "TERMINAL_") {
+			return fmt.Errorf("harness.memory.env name %q is reserved for ARIES and Hermes", key)
+		}
+	}
+	return nil
+}
+
+var (
+	memoryProviderPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+	memoryEnvKeyPattern   = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
+)
 
 func validEnvName(value string) bool {
 	for i, r := range value {

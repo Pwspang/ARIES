@@ -17,17 +17,17 @@ plugin discovery.
 | Model service | **DeepSeek** — supported external OpenAI-compatible endpoint | Validates model access; does not own the service | `runtime.backend: "deepseek"`, `runtime.mode: "external"`; `profiles/openclaw-tb2-fix-git-deepseek.json` |
 | Model service | **SGLang** — supported external or ARIES-managed runtime | Validates both modes; in managed mode owns one host process for the profile run | `runtime.backend: "sglang"`; `profiles/openclaw-tb2-fix-git-sglang.json`; `configs/sglang/qwen3-8b-local.yaml` |
 
-`harness.memrl.enabled` runs Hermes with the MemRL memory provider from the
-`docker/hermes-memrl/` image, carrying its store from task to task within a
-run. It requires a versions file that pins that image, for example
-`profiles/hermes-tb2-fix-git-memrl-deepseek.json`, and `execution.concurrency`
-1 unless it sets one of these:
-- `harness.memrl.frozen_store`, which evaluates a trained store without
-  learning;
-- `harness.memrl.batch_size`, which trains in concurrent mini-batches.
+`harness.memory.provider` runs Hermes with a memory manager baked into the
+image that the versions file pins. `harness.memory.env` passes its tuning, and
+ARIES carries its opaque state directory from task to task within a run. The
+separate AgentMemory repository builds these images, so a new or changed memory
+system needs no ARIES rebuild.
 
-See
-`docker/hermes-memrl/README.md`.
+- Example: `profiles/hermes-tb2-fix-git-memrl-deepseek.json`, which uses the
+  MemRL provider.
+- `execution.concurrency` must be 1 unless `harness.memory.frozen_state` is set.
+  That setting starts every task from a fixed state and never writes it back.
+- See the "Hermes" section of `docs/design/harness.md` for the contract.
 
 ## Configuration boundaries
 

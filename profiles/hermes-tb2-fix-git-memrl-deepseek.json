@@ -15,8 +15,8 @@
   },
   "harness": {
     "type": "hermes",
-    "memrl": {
-      "enabled": true
+    "memory": {
+      "provider": "memrl"
     }
   },
   "sandbox": {

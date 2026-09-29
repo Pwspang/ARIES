@@ -9,9 +9,11 @@ episodic-memory study". Reads only files ARIES already writes:
   <run>/task-*-NNN/evaluation/reward.txt             fallback: judge never finished -> 0
   <run>/task-*-NNN/harness/telemetry/sessions.jsonl  tokens, API/tool calls, session id
   <run>/task-*-NNN/harness/session-outcome.json      wall-clock duration
-  <run>/task-*-NNN/harness/memrl/memrl.db            what this task recalled
-  <run>/memrl/memrl.db                               memory upkeep calls (llm_calls), written by
-                                                     the batch updates in training
+  <run>/task-*-NNN/harness/memory/memrl.db           what this task recalled
+  <run>/memory/memrl.db                              memory upkeep calls (llm_calls)
+
+Runs from before the generic harness.memory contract kept the store at
+harness/memrl/memrl.db and <run>/memrl/memrl.db; both layouts are read.
   .cache/swe-atlas-qa/data/qa/<task>/task.toml       repository
 
 Usage:
@@ -35,7 +37,9 @@ TASK_DIR_RE = re.compile(r"^(task-[0-9a-f]+)-(\d+)$")
 NAME_RE = re.compile(r"^hermes-sweatlasqa-(?P<study>memrl(?:-smoke)?)-(?P<split>train|test|replay)-"
                      r"(?P<arm>control|memrl)-sglang$")
 ITERATION_CAP = 90  # Hermes max_iterations, recorded in sessions.jsonl model_config
-BATCH_SIZES = {"memrl": 15, "memrl-smoke": 2}  # harness.memrl.batch_size of train-memrl
+# Tasks per reporting window of the training curve: the mini-batch size of
+# the runs from before sequential training.
+BATCH_SIZES = {"memrl": 15, "memrl-smoke": 2}
 METRICS = ("agg_score", "passed", "prompt_tokens", "output_tokens", "api_calls", "tool_calls", "duration_s")
 
 
@@ -77,6 +81,12 @@ def score(task_dir):
     return None, None
 
 
+def memrl_store(directory):
+    """The MemRL store in a state directory's current or pre-contract layout."""
+    current = directory / "memory" / "memrl.db"
+    return current if current.is_file() else directory / "memrl" / "memrl.db"
+
+
 def task_rows(run_dir, name, repos):
     """One row per occurrence. Train memory arms repeat the split once per
     epoch; epoch and batch number come from the execution order."""
@@ -85,7 +95,7 @@ def task_rows(run_dir, name, repos):
     # ID: a frozen run finishes training's last memory under training's ID.
     upkeep = defaultdict(lambda: [0, 0, 0])
     for session, prompt, completion, ms in query(
-            run_dir / "memrl" / "memrl.db",
+            memrl_store(run_dir),
             "SELECT session_id, prompt_tokens, completion_tokens, duration_ms FROM llm_calls"):
         upkeep[session][0] += prompt
         upkeep[session][1] += completion
@@ -103,7 +113,7 @@ def task_rows(run_dir, name, repos):
         if telemetry.is_file():
             session = json.loads(telemetry.read_text().splitlines()[0])
         outcome = load_json(task_dir / "harness" / "session-outcome.json") or {}
-        store = task_dir / "harness" / "memrl" / "memrl.db"
+        store = memrl_store(task_dir / "harness")
         recalled = query(store, "SELECT active_ids FROM sessions WHERE session_id = ?", (session.get("id", ""),))
         recalled_ids = json.loads(recalled[0][0]) if recalled else []
         sources = [r[0] for r in query(

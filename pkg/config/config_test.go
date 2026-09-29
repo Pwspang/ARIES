@@ -462,44 +462,36 @@ func TestLosslessClawHarnessConfigValidation(t *testing.T) {
 	}
 }
 
-func TestMemRLHarnessConfigValidation(t *testing.T) {
+func TestMemoryHarnessConfigValidation(t *testing.T) {
 	hermes := func(harness, execution string) string {
 		profile := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":`+harness+execution, 1)
 		return strings.Replace(profile, `"bridge":{"type":"openclaw-ssh"}`, `"bridge":{"type":"hermes-ssh"}`, 1)
 	}
-	cfg, err := Decode(strings.NewReader(hermes(`{"type":"hermes","memrl":{"enabled":true}}`, "")))
+	cfg, err := Decode(strings.NewReader(hermes(`{"type":"hermes","memory":{"provider":"my-notes_2","env":{"NOTES_TOP_K":"3"}}}`, "")))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.Harness.MemRL.Enabled {
-		t.Fatalf("harness.memrl = %#v", cfg.Harness.MemRL)
-	}
-	openClaw := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","memrl":{"enabled":true}}`, 1)
-	if _, err := Decode(strings.NewReader(openClaw)); err == nil || !strings.Contains(err.Error(), "requires Hermes") {
-		t.Fatalf("OpenClaw with harness.memrl: %v", err)
-	}
-	concurrent := hermes(`{"type":"hermes","memrl":{"enabled":true}}`, `,"execution":{"concurrency":2}`)
-	if _, err := Decode(strings.NewReader(concurrent)); err == nil || !strings.Contains(err.Error(), "concurrency 1") {
-		t.Fatalf("concurrent harness.memrl: %v", err)
+	if want := (HarnessMemoryConfig{Provider: "my-notes_2", Env: map[string]string{"NOTES_TOP_K": "3"}}); !reflect.DeepEqual(cfg.Harness.Memory, want) {
+		t.Fatalf("harness.memory = %#v", cfg.Harness.Memory)
 	}
 	if _, err := Decode(strings.NewReader(hermes(`{"type":"hermes"}`, `,"execution":{"concurrency":2}`))); err != nil {
-		t.Fatalf("concurrent Hermes without memrl: %v", err)
+		t.Fatalf("concurrent Hermes without memory: %v", err)
 	}
-	if _, err := Decode(strings.NewReader(hermes(`{"type":"hermes","memrl":{"frozen_store":"runs/stores/memrl"}}`, ""))); err == nil || !strings.Contains(err.Error(), "require harness.memrl.enabled") {
-		t.Fatalf("harness.memrl.frozen_store without enabled: %v", err)
+	if _, err := Decode(strings.NewReader(hermes(`{"type":"hermes","memory":{"provider":"memrl","frozen_state":"runs/stores/memrl"}}`, `,"execution":{"concurrency":8}`))); err != nil {
+		t.Fatalf("concurrent harness.memory.frozen_state: %v", err)
 	}
-	if _, err := Decode(strings.NewReader(hermes(`{"type":"hermes","memrl":{"enabled":true,"frozen_store":"runs/stores/memrl"}}`, `,"execution":{"concurrency":8}`))); err != nil {
-		t.Fatalf("concurrent harness.memrl.frozen_store: %v", err)
-	}
-	if _, err := Decode(strings.NewReader(hermes(`{"type":"hermes","memrl":{"enabled":true,"batch_size":16}}`, `,"execution":{"concurrency":8}`))); err != nil {
-		t.Fatalf("harness.memrl.batch_size: %v", err)
-	}
+	openClaw := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","memory":{"provider":"memrl"}}`, 1)
 	for name, profile := range map[string]string{
-		"concurrency above batch": hermes(`{"type":"hermes","memrl":{"enabled":true,"batch_size":4}}`, `,"execution":{"concurrency":8}`),
-		"negative batch":          hermes(`{"type":"hermes","memrl":{"enabled":true,"batch_size":-1}}`, ""),
-		"batch of a frozen store": hermes(`{"type":"hermes","memrl":{"enabled":true,"batch_size":4,"frozen_store":"runs/stores/memrl"}}`, ""),
-		"batch without memrl":     hermes(`{"type":"hermes","memrl":{"batch_size":4}}`, ""),
-		"batch with a loop":       hermes(`{"type":"hermes","memrl":{"enabled":true,"batch_size":4}}`, `,"execution":{"concurrency":1,"loop_duration":"1h"}`),
+		"OpenClaw":                openClaw,
+		"concurrent learning":     hermes(`{"type":"hermes","memory":{"provider":"memrl"}}`, `,"execution":{"concurrency":2}`),
+		"frozen without provider": hermes(`{"type":"hermes","memory":{"frozen_state":"runs/stores/memrl"}}`, ""),
+		"env without provider":    hermes(`{"type":"hermes","memory":{"env":{"K":"1"}}}`, ""),
+		"uppercase provider":      hermes(`{"type":"hermes","memory":{"provider":"MemRL"}}`, ""),
+		"provider with a quote":   hermes(`{"type":"hermes","memory":{"provider":"a\"b"}}`, ""),
+		"lowercase env name":      hermes(`{"type":"hermes","memory":{"provider":"memrl","env":{"k":"1"}}}`, ""),
+		"ARIES env name":          hermes(`{"type":"hermes","memory":{"provider":"memrl","env":{"ARIES_MEMORY_DIR":"/tmp"}}}`, ""),
+		"HERMES env name":         hermes(`{"type":"hermes","memory":{"provider":"memrl","env":{"HERMES_HOME":"/tmp"}}}`, ""),
+		"model key env name":      hermes(`{"type":"hermes","memory":{"provider":"memrl","env":{"DEEPSEEK_API_KEY":"x"}}}`, ""),
 	} {
 		if _, err := Decode(strings.NewReader(profile)); err == nil {
 			t.Fatalf("%s was accepted", name)
@@ -1578,13 +1570,13 @@ func TestSWEAtlasQACtxLimitShuffleArmsDifferOnlyInAMEM(t *testing.T) {
 
 // TestSWEAtlasQAMemRLStudyArmsDifferOnlyInMemRL covers the Hermes episodic
 // memory study (docs/benchmarks/swe-atlas-qa.md). Every arm must share the
-// Hermes image, model, judge, runtime, concurrency, and harness settings apart
-// from memrl, so a paired per-task delta isolates memory. MemRL trains in
-// mini-batches over epochs of the train split, each epoch a permutation of it
-// and each batch inside one epoch. Test and replay recall from the trained
-// store, frozen; test is disjoint from train and replay reruns it.
+// Hermes image, model, judge, runtime, and harness settings apart from
+// memory, so a paired per-task delta isolates memory. MemRL trains
+// sequentially over epochs of the train split, each epoch a permutation of
+// it. Test and replay recall from the trained state, frozen; test is disjoint
+// from train and replay reruns it.
 func TestSWEAtlasQAMemRLStudyArmsDifferOnlyInMemRL(t *testing.T) {
-	for study, batch := range map[string]int{"memrl": 15, "memrl-smoke": 2} {
+	for _, study := range []string{"memrl", "memrl-smoke"} {
 		t.Run(study, func(t *testing.T) {
 			arms := map[string]Config{}
 			for _, name := range []string{"train-control", "train-memrl", "test-control", "test-memrl", "replay-memrl"} {
@@ -1595,20 +1587,21 @@ func TestSWEAtlasQAMemRLStudyArmsDifferOnlyInMemRL(t *testing.T) {
 				arms[name] = cfg
 			}
 			stores := "runs/memrl-study/stores/" + study + "-"
-			want := map[string]HarnessMemRLConfig{
+			frozen := map[string]string{"MEMRL_FROZEN": "1", "MEMRL_EPSILON": "0"}
+			want := map[string]HarnessMemoryConfig{
 				"train-control": {},
-				"train-memrl":   {Enabled: true, BatchSize: batch},
+				"train-memrl":   {Provider: "memrl"},
 				"test-control":  {},
-				"test-memrl":    {Enabled: true, FrozenStore: stores + "memrl"},
-				"replay-memrl":  {Enabled: true, FrozenStore: stores + "memrl"},
+				"test-memrl":    {Provider: "memrl", Env: frozen, FrozenState: stores + "memrl"},
+				"replay-memrl":  {Provider: "memrl", Env: frozen, FrozenState: stores + "memrl"},
 			}
 			control := arms["train-control"]
-			if !strings.HasPrefix(control.Versions.Hermes.Image, "aries/hermes-memrl:") || control.Runtime.Backend != "sglang" {
-				t.Fatalf("study must run the MemRL image (provider off in control) on SGLang, got %q on %q", control.Versions.Hermes.Image, control.Runtime.Backend)
+			if !strings.HasPrefix(control.Versions.Hermes.Image, "agentmemory/hermes:") || control.Runtime.Backend != "sglang" {
+				t.Fatalf("study must run the AgentMemory image (provider off in control) on SGLang, got %q on %q", control.Versions.Hermes.Image, control.Runtime.Backend)
 			}
 			for name, arm := range arms {
-				if arm.Harness.MemRL != want[name] {
-					t.Fatalf("%s has memrl %#v, want %#v", name, arm.Harness.MemRL, want[name])
+				if !reflect.DeepEqual(arm.Harness.Memory, want[name]) {
+					t.Fatalf("%s has memory %#v, want %#v", name, arm.Harness.Memory, want[name])
 				}
 				if arm.Versions.Hermes.Image != control.Versions.Hermes.Image {
 					t.Fatalf("%s Hermes image differs: %q", name, arm.Versions.Hermes.Image)
@@ -1616,19 +1609,28 @@ func TestSWEAtlasQAMemRLStudyArmsDifferOnlyInMemRL(t *testing.T) {
 				if !reflect.DeepEqual(control.Model, arm.Model) || !reflect.DeepEqual(control.Benchmark.Judge, arm.Benchmark.Judge) {
 					t.Fatalf("%s model or judge differs", name)
 				}
-				if !reflect.DeepEqual(control.Runtime, arm.Runtime) || arm.Execution.Concurrency != control.Execution.Concurrency {
-					t.Fatalf("%s runtime or concurrency differs", name)
+				// Learning hands the state from task to task, so only
+				// train-memrl runs sequentially.
+				wantConcurrency := control.Execution.Concurrency
+				if name == "train-memrl" {
+					wantConcurrency = 1
 				}
-				withoutMemRL := arm.Harness
-				withoutMemRL.MemRL = HarnessMemRLConfig{}
-				if !reflect.DeepEqual(control.Harness, withoutMemRL) {
-					t.Fatalf("%s harness differs beyond memrl: %#v", name, arm.Harness)
+				if arm.Execution.Concurrency != wantConcurrency {
+					t.Fatalf("%s concurrency is %d, want %d", name, arm.Execution.Concurrency, wantConcurrency)
+				}
+				if !reflect.DeepEqual(control.Runtime, arm.Runtime) {
+					t.Fatalf("%s runtime differs", name)
+				}
+				withoutMemory := arm.Harness
+				withoutMemory.Memory = HarnessMemoryConfig{}
+				if !reflect.DeepEqual(control.Harness, withoutMemory) {
+					t.Fatalf("%s harness differs beyond memory: %#v", name, arm.Harness)
 				}
 			}
 			train, test := arms["train-control"].Benchmark.Tasks, arms["test-control"].Benchmark.Tasks
 			trained := arms["train-memrl"].Benchmark.Tasks
-			if len(train)%batch != 0 || len(trained) == 0 || len(trained)%len(train) != 0 {
-				t.Fatalf("%d trained occurrences over %d train tasks in batches of %d: batches must not span epochs", len(trained), len(train), batch)
+			if len(trained) == 0 || len(trained)%len(train) != 0 {
+				t.Fatalf("%d trained occurrences over %d train tasks: epochs must be whole", len(trained), len(train))
 			}
 			sortedTrain := slices.Sorted(slices.Values(train))
 			for start := 0; start < len(trained); start += len(train) {

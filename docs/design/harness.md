@@ -87,50 +87,43 @@ regardless of ownership.
 Second, Hermes requires `/bin/bash` in the task image, because every tool call
 it issues is `bash -c` on the remote.
 
-`harness.memrl.enabled` switches on the MemRL memory provider. The provider is
-baked into the `docker/hermes-memrl` image, which a versions file such as
-`configs/versions-memrl.json` pins. ARIES adds `memory.provider: memrl` to the
-rendered config and keeps one run-scoped SQLite store at
-`<run>/memrl/memrl.db`. The Hermes container still takes no mounts, so the store
-is handed from task to task by copying:
+`harness.memory` switches on a Hermes memory manager. ARIES treats it as a
+black box. The memory system is a memory-provider plugin baked into the Hermes
+image that the versions file pins. The separate AgentMemory repository builds
+such images, so changing the memory system needs a new image, not a new ARIES
+binary. The contract has four parts:
 
-- At start, the current store is staged into `HERMES_HOME` with the rest of the
-  private runtime archive.
-- After the one-shot process exits, the store is copied out, checked to be an
-  SQLite file, retained as `harness/memrl/memrl.db`, and atomically replaces the
-  run copy.
+- `memory.provider: "<provider>"` is added to the rendered `config.yaml`. The
+  plugin must be at `/opt/hermes/plugins/memory/<provider>` in the image.
+- `ARIES_MEMORY_DIR=/run/aries/hermes/memory` names an opaque state directory,
+  and `ARIES_MEMORY_TASK_ID` names the task execution. Both are informational to
+  the provider, and ARIES never interprets the directory's contents.
+- `harness.memory.env` is passed to the container verbatim, for provider
+  tuning. Names reserved for ARIES, Hermes, the terminal, and credentials are
+  rejected, as is any value containing a staged key.
+- ARIES keeps one run-scoped copy of the state directory at `<run>/memory`.
+
+The Hermes container still takes no mounts, so the state is handed from task
+to task by copying:
+
+- At start, the current state is staged under `ARIES_MEMORY_DIR` with the rest
+  of the private runtime archive. The first task starts with an empty
+  directory.
+- After the one-shot process exits, the directory is copied out and accepted
+  only as directories and bounded regular files: no links, no path escapes, and
+  256 MiB and 4096 entries at most. It is retained as `harness/memory/`, then
+  swapped in atomically as the run copy. A missing directory changes nothing.
 - A canceled or timed-out run is not copied back, because the process may still
   be writing.
 
 Because the hand-off is sequential, the profile must set
-`execution.concurrency` to 1, unless it sets `batch_size` or `frozen_store`
-(below).
+`execution.concurrency` to 1 unless it sets `frozen_state`. The harness never
+sees an evaluation result, so evaluation stays independent of it.
 
-MemRL learns from the benchmark's verdict, which only exists after evaluation,
-when the task's container is gone. So the harness starts the provider with
-`MEMRL_REWARD_SOURCE=external` and the task execution ID, and the provider parks
-the finished session. After each occurrence, the command wiring's
-`RecordTaskOutcome` hook writes the verdict to `<run>/memrl/rewards.json`: +1
-for full reward, −1 otherwise, and null when evaluation reached no verdict. The
-next task's provider applies those rewards before its first recall. The harness
-never sees an evaluation result during its own task, so evaluation stays
-independent of it.
-
-`harness.memrl.frozen_store` evaluates a trained store without learning. Every
-task starts from that directory's `memrl.db`, the provider runs with
-`MEMRL_FROZEN=1`, and `RecordTaskOutcome` records no verdicts. Nothing is
-written back, so concurrency is allowed.
-
-`harness.memrl.batch_size` trains in mini-batches. The run loop admits the
-task list in batches of that size (up to `execution.concurrency` at once) and
-calls the command wiring's `FinishTaskBatch` hook between batches. Each task
-starts from the run's store and parks its session instead of handing the store
-on. The harness queues the parked session under `<run>/memrl/pending`. The hook
-runs `FinalizeMemRLBatch`, a short-lived container of the same image that
-receives the model key as a staged file, like a task container. It applies the
-batch's rewards and replaces the run's store, and the applied sessions move to
-`<run>/memrl/batches/NNN`. A failed batch update stops the run's admissions
-and leaves the queue in place.
+`harness.memory.frozen_state` starts every task from that directory instead of
+the run copy, and never writes it back, so concurrency is allowed. Each task's
+own copy is still retained as `harness/memory/`. Whether the provider also
+stops learning inside a task is its own setting, passed through `env`.
 
 ## Customization & Contribution Guide
 

@@ -1,6 +1,0 @@
-name: memrl
-version: 0.1.0
-description: "MemRL — local SQLite Intent-Experience-Utility memory with two-phase (similarity then Q-value) retrieval and EMA utility updates."
-hooks:
-  - on_session_end
-  - on_pre_compress

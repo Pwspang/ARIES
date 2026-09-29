@@ -3,7 +3,7 @@
   "versions_file": "../configs/versions-memrl.json",
   "overrides_file": "",
   "execution": {
-    "concurrency": 2
+    "concurrency": 1
   },
   "benchmark": {
     "type": "sweatlasqa",
@@ -27,9 +27,8 @@
   },
   "harness": {
     "type": "hermes",
-    "memrl": {
-      "enabled": true,
-      "batch_size": 2
+    "memory": {
+      "provider": "memrl"
     }
   },
   "sandbox": {

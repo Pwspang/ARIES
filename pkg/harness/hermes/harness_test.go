@@ -53,15 +53,10 @@ type fakeDocker struct {
 	removeCalls    int
 	closeCalls     int
 	closeErr       error
-	// memrlExport is what the container's MemRL store holds when the harness
-	// copies it out; nil means the provider never created it.
-	memrlExport []byte
-	// copyFiles overrides memrlExport per copied file name (for example
-	// pending.json), so a test can hold a store and a parked session.
-	copyFiles     map[string][]byte
+	// memoryArchive is the Docker copy archive of the container's memory
+	// state directory; nil means the provider never created it.
+	memoryArchive []byte
 	copyFrom      []string
-	finalizeExit  int
-	finalizeCalls int
 }
 
 func newFakeDocker() *fakeDocker {
@@ -115,19 +110,10 @@ func (fake *fakeDocker) CopyFromContainer(_ context.Context, id string, options 
 		return client.CopyFromContainerResult{}, errdefs.ErrNotFound
 	}
 	fake.copyFrom = append(fake.copyFrom, options.SourcePath)
-	content, ok := fake.copyFiles[filepath.Base(options.SourcePath)]
-	if !ok {
-		content = fake.memrlExport
-	}
-	if content == nil {
+	if options.SourcePath != memoryContainerDir || fake.memoryArchive == nil {
 		return client.CopyFromContainerResult{}, errdefs.ErrNotFound
 	}
-	var archive bytes.Buffer
-	writer := tar.NewWriter(&archive)
-	_ = writer.WriteHeader(&tar.Header{Name: filepath.Base(options.SourcePath), Typeflag: tar.TypeReg, Mode: 0o600, Size: int64(len(content))})
-	_, _ = writer.Write(content)
-	_ = writer.Close()
-	return client.CopyFromContainerResult{Content: io.NopCloser(&archive)}, nil
+	return client.CopyFromContainerResult{Content: io.NopCloser(bytes.NewReader(fake.memoryArchive))}, nil
 }
 
 func (fake *fakeDocker) ContainerStart(_ context.Context, id string, _ client.ContainerStartOptions) (client.ContainerStartResult, error) {
@@ -202,12 +188,6 @@ func (fake *fakeDocker) ExecAttach(_ context.Context, execID string, _ client.Ex
 			case "hermes":
 				_ = writeMux(engineSide, stdcopy.Stdout, []byte(fake.sessionsStdout))
 				exitCode = fake.sessionsExit
-			case memrlFinalizePath:
-				_ = writeMux(engineSide, stdcopy.Stdout, []byte(`{"applied": 2}`+"\n"))
-				fake.mu.Lock()
-				fake.finalizeCalls++
-				exitCode = fake.finalizeExit
-				fake.mu.Unlock()
 			}
 		}
 		if len(options.Cmd) > 4 {

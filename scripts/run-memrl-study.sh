@@ -4,13 +4,13 @@
 # study").
 #
 #   train: control (no memory) runs the train split once; MemRL trains on it
-#          in mini-batches (harness.memrl.batch_size) over several epochs.
-#   test:  MemRL's trained store is copied to runs/memrl-study/stores/
+#          sequentially over several epochs.
+#   test:  MemRL's trained state is copied to runs/memrl-study/stores/
 #          <study>-memrl. Control and frozen MemRL then run the held-out test
 #          split, and the replay run reruns the train split with frozen MemRL.
 #
-#   scripts/run-memrl-study.sh smoke [train|test]   # 4 train tasks x 2 epochs, batch 2; 2 test tasks
-#   scripts/run-memrl-study.sh full [train|test]    # 30 train tasks x 2 epochs, batch 15; 30 test tasks
+#   scripts/run-memrl-study.sh smoke [train|test]   # 4 train tasks x 2 epochs; 2 test tasks
+#   scripts/run-memrl-study.sh full [train|test]    # 30 train tasks x 2 epochs; 30 test tasks
 #
 # Every run is already concurrent (execution.concurrency), so by default runs
 # go one after another rather than multiplying the load on the one SGLang
@@ -18,9 +18,10 @@
 #
 # Without a phase both run, train then test. Requires SGLANG_API_KEY and
 # DEEPSEEK_API_KEY (the judge), for example from .env, a reachable SGLang
-# server per the profiles' model.base_url, and the aries/hermes-memrl image
-# pinned in configs/versions-memrl.json, built by:
-#   docker build -f docker/hermes-memrl/Dockerfile -t <that tag> .
+# server per the profiles' model.base_url, and the AgentMemory image pinned
+# in configs/versions-memrl.json, built and pinned from the AgentMemory
+# repository by:
+#   make image VERSIONS=<this repo>/configs/versions-memrl.json
 # Summarize with: scripts/summarize_memrl_study.py runs/memrl-study/*
 set -eu
 cd "$(dirname "$0")/.."
@@ -57,25 +58,21 @@ run_each() {
 	return "$status"
 }
 
-# freeze copies the latest training run's store for an arm to where its test
-# profile reads it, replacing any store from an earlier training.
-# A store with sessions still queued missed a batch update and is refused.
+# freeze copies the latest training run's memory state for an arm to where
+# its test profile reads it (harness.memory.frozen_state), replacing any state
+# from an earlier training.
 freeze() {
 	run=$(ls -d runs/memrl-study/*-"hermes-sweatlasqa-$study-train-$1-sglang" 2>/dev/null | tail -n 1)
-	if [ -z "$run" ] || [ ! -f "$run/memrl/memrl.db" ]; then
-		echo "no trained $1 store for $study; run the train phase first" >&2
-		return 1
-	fi
-	if [ -n "$(ls -A "$run/memrl/pending" 2>/dev/null)" ]; then
-		echo "$run/memrl/pending still holds sessions: a batch update did not finish" >&2
+	if [ -z "$run" ] || [ ! -f "$run/memory/memrl.db" ]; then
+		echo "no trained $1 state for $study; run the train phase first" >&2
 		return 1
 	fi
 	store="runs/memrl-study/stores/$study-$1"
 	rm -rf "$store"
 	mkdir -p "$store"
 	chmod 700 "$store"
-	cp -p "$run/memrl/memrl.db" "$store/memrl.db"
-	echo "froze $run/memrl/memrl.db as $store"
+	cp -Rp "$run/memory/." "$store/"
+	echo "froze $run/memory as $store"
 }
 
 go build -o bin/aries ./cmd/aries

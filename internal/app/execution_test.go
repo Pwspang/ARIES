@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -75,7 +74,7 @@ func TestRunProfileConcurrentDuplicatesPreserveDispatchOrder(t *testing.T) {
 	}
 	done := make(chan core.RunResult, 1)
 	go func() {
-		result, err := runProfile(context.Background(), "name", "run", []string{"fix-git", "fix-git", "fix-git", "fix-git", "fix-git"}, 5, 0, 0, nil, run)
+		result, err := runProfile(context.Background(), "name", "run", []string{"fix-git", "fix-git", "fix-git", "fix-git", "fix-git"}, 5, 0, run)
 		if err != nil {
 			t.Errorf("runProfile: %v", err)
 		}
@@ -99,7 +98,7 @@ func TestRunProfileConcurrentDuplicatesPreserveDispatchOrder(t *testing.T) {
 
 func TestRunProfileGlobalIDsErrorsAndLimit(t *testing.T) {
 	var active, peak atomic.Int32
-	result, err := runProfile(context.Background(), "name", "run", []string{"a", "b", "a", "b"}, 2, 0, 0, nil,
+	result, err := runProfile(context.Background(), "name", "run", []string{"a", "b", "a", "b"}, 2, 0,
 		func(_ context.Context, occurrence taskOccurrence) (core.RunResult, error) {
 			current := active.Add(1)
 			defer active.Add(-1)
@@ -130,7 +129,7 @@ func TestRunProfileLoopStopsAdmissionsAndDrains(t *testing.T) {
 	started := make(chan struct{}, 2)
 	done := make(chan core.RunResult, 1)
 	go func() {
-		result, _ := runProfile(context.Background(), "name", "run", []string{"a"}, 2, 25*time.Millisecond, 0, nil,
+		result, _ := runProfile(context.Background(), "name", "run", []string{"a"}, 2, 25*time.Millisecond,
 			func(_ context.Context, occurrence taskOccurrence) (core.RunResult, error) {
 				started <- struct{}{}
 				<-release
@@ -154,7 +153,7 @@ func TestRunProfileCancellationStopsAdmissionsAndWaitsForActive(t *testing.T) {
 	release := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
-		_, err := runProfile(ctx, "name", "run", []string{"a", "b", "c"}, 1, 0, 0, nil,
+		_, err := runProfile(ctx, "name", "run", []string{"a", "b", "c"}, 1, 0,
 			func(context.Context, taskOccurrence) (core.RunResult, error) {
 				close(started)
 				<-release
@@ -178,7 +177,7 @@ func TestRunProfileCancellationStopsAdmissionsAndWaitsForActive(t *testing.T) {
 func TestRunProfileRepeatedOccurrencesCloseEachObservedExperimentOnce(t *testing.T) {
 	var mu sync.Mutex
 	closes := make(map[string]int)
-	result, err := runProfile(context.Background(), "name", "run", []string{"a", "a", "a"}, 3, 0, 0, nil,
+	result, err := runProfile(context.Background(), "name", "run", []string{"a", "a", "a"}, 3, 0,
 		func(ctx context.Context, occurrence taskOccurrence) (core.RunResult, error) {
 			closeExperiment := func() error { mu.Lock(); closes[occurrence.executionID]++; mu.Unlock(); return nil }
 			observed, runErr := runObserved(ctx,
@@ -347,50 +346,4 @@ func runResultForObserver(taskID string) core.RunResult {
 		TaskID:   taskID,
 		Observer: core.ObserverResult{Status: core.StatusNotEnabled},
 	}}}
-}
-
-func TestRunProfileBatchesWaitForTheBatchStep(t *testing.T) {
-	var mu sync.Mutex
-	var events []string
-	record := func(event string) {
-		mu.Lock()
-		events = append(events, event)
-		mu.Unlock()
-	}
-	run := func(_ context.Context, occurrence taskOccurrence) (core.RunResult, error) {
-		record(occurrence.executionID)
-		return core.RunResult{Tasks: []core.TaskResult{{TaskID: occurrence.executionID}}}, nil
-	}
-	batches := 0
-	after := func(context.Context) error {
-		batches++
-		record(fmt.Sprintf("batch %d", batches))
-		return nil
-	}
-	result, err := runProfile(context.Background(), "name", "run", []string{"a", "b", "c", "d", "e"}, 2, 0, 2, after, run)
-	if err != nil || len(result.Tasks) != 5 {
-		t.Fatalf("result=%#v err=%v", result, err)
-	}
-	// Order within a batch is concurrent; batch boundaries are not.
-	boundaries := []int{}
-	for i, event := range events {
-		if strings.HasPrefix(event, "batch ") {
-			boundaries = append(boundaries, i)
-		}
-	}
-	if !slices.Equal(boundaries, []int{2, 5, 7}) {
-		t.Fatalf("events = %v", events)
-	}
-	if !slices.Contains(events[:2], "a-001") || !slices.Contains(events[3:5], "c-003") || events[6] != "e-005" {
-		t.Fatalf("occurrences crossed a batch boundary: %v", events)
-	}
-
-	failing := func(context.Context) error { return errors.New("finalize failed") }
-	result, err = runProfile(context.Background(), "name", "run", []string{"a", "b", "c"}, 1, 0, 1, failing, run)
-	if err == nil || !strings.Contains(err.Error(), "after task batch 1: finalize failed") || len(result.Tasks) != 1 {
-		t.Fatalf("a failed batch step must stop admissions: result=%#v err=%v", result, err)
-	}
-	if _, err := runProfile(context.Background(), "name", "run", []string{"a"}, 1, time.Second, 1, after, run); err == nil {
-		t.Fatal("batches with a loop duration were accepted")
-	}
 }

@@ -403,35 +403,3 @@ func TestSWEAtlasQAWiringPropagatesAMEMBootstrap(t *testing.T) {
 		}
 	}
 }
-
-func TestRecordTaskOutcomeWritesOnlyForHermesMemRL(t *testing.T) {
-	task := core.TaskResult{TaskID: "fix-git-001", Evaluation: core.Evaluation{Status: core.StatusSucceeded, Reward: 1}}
-	rewards := func(dir string) string { return filepath.Join(dir, "memrl", "rewards.json") }
-
-	plain := t.TempDir()
-	if err := recordTaskOutcome(config.Config{Harness: config.HarnessConfig{Type: "hermes"}}, plain, task); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(rewards(plain)); !os.IsNotExist(err) {
-		t.Fatalf("Hermes without MemRL recorded a reward: %v", err)
-	}
-
-	enabled := t.TempDir()
-	cfg := config.Config{Harness: config.HarnessConfig{Type: "hermes", MemRL: config.HarnessMemRLConfig{Enabled: true}}}
-	if err := recordTaskOutcome(cfg, enabled, task); err != nil {
-		t.Fatal(err)
-	}
-	content, err := os.ReadFile(rewards(enabled))
-	if err != nil || !strings.Contains(string(content), `"fix-git-001": 1`) {
-		t.Fatalf("rewards = %q, %v", content, err)
-	}
-
-	frozen := t.TempDir()
-	cfg.Harness.MemRL.FrozenStore = "runs/stores/memrl"
-	if err := recordTaskOutcome(cfg, frozen, task); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(rewards(frozen)); !os.IsNotExist(err) {
-		t.Fatalf("a frozen MemRL run recorded a reward: %v", err)
-	}
-}

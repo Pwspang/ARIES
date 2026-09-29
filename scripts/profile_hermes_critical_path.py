@@ -92,7 +92,10 @@ def profile(run, task_dir, model, tok, gap):
     msgs = [m for s in sessions for m in s.get("messages") or []]
     question = next((m["content"] for m in msgs if m["role"] == "user"), "") or ""
     system = sessions[0].get("system_prompt") or ""
-    block, mems = injected(h + "/memrl/memrl.db", [s["id"] for s in sessions])
+    store = h + "/memory/memrl.db"
+    if not os.path.isfile(store):  # runs from before the harness.memory contract
+        store = h + "/memrl/memrl.db"
+    block, mems = injected(store, [s["id"] for s in sessions])
     k = tok.count(block)
     first = tok.count(system) + tok.count(question) + k
     mean = n_in / calls

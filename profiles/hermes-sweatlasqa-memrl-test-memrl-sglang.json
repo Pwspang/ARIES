@@ -49,9 +49,13 @@
   },
   "harness": {
     "type": "hermes",
-    "memrl": {
-      "enabled": true,
-      "frozen_store": "runs/memrl-study/stores/memrl-memrl"
+    "memory": {
+      "provider": "memrl",
+      "env": {
+        "MEMRL_FROZEN": "1",
+        "MEMRL_EPSILON": "0"
+      },
+      "frozen_state": "runs/memrl-study/stores/memrl-memrl"
     }
   },
   "sandbox": {
