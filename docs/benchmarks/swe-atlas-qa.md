@@ -648,7 +648,8 @@ files that ARIES already writes. `--study memrl-smoke` selects the smoke runs,
 and `--csv` also writes one row per occurrence.
 `uv run --with matplotlib --with numpy scripts/plot_memrl_study.py runs/memrl-study/*`
 draws the same rows as accuracy, efficiency, paired-delta and training charts
-(with test-only `accuracy_test.png` and `efficiency_test.png`)
+(with test-only `accuracy_test.png`, `efficiency_test.png` and the turn-count
+and token CDFs in `efficiency_test_cdf.png`)
 in `scripts/out_memrl/`; `scripts/plot_memrl_cases.py` adds per-task case
 charts (`cases_*.png`): each test task's outcome, the kinds of memory recalled,
 and effort against score change.

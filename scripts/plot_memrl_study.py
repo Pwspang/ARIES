@@ -17,6 +17,9 @@ Writes to scripts/out_memrl/:
                      the held-out test split only (control vs frozen MemRL):
                      agg_score, and the efficiency metrics, each panel with
                      its paired delta and p
+  efficiency_test_cdf.png
+                     held-out test CDFs of turn count (API calls), input and
+                     output tokens, control vs frozen MemRL
   paired_deltas.png  per-task paired MemRL - control deltas with 95% CI
   training.png       agg_score and recall by window of 15 training tasks
 """
@@ -153,6 +156,50 @@ def plot_conditions(groups, conditions, metrics, title, ncols, path, note, rng, 
     plt.close(fig)
 
 
+# (key, title, scale, unit): the per-task distributions drawn as CDFs.
+CDF_METRICS = [
+    ("api_calls", "turn count per task", 1, ""),
+    ("prompt_tokens", "input tokens per task", 1e-6, "M"),
+    ("output_tokens", "output tokens per task", 1e-3, "K"),
+]
+
+
+def plot_cdfs(groups, conditions, path, note, rng):
+    """Empirical CDF per condition, one panel per metric, with the paired delta under each title."""
+    fig, axes = plt.subplots(1, len(CDF_METRICS), figsize=(4.4 * len(CDF_METRICS), 4.0))
+    (_, *a), (_, *b) = conditions[1], conditions[0]
+    second, first = ({r["task"]: r for r in groups[tuple(k)]} for k in (a, b))
+    common = sorted(set(first) & set(second))
+    for ax, (key, label, scale, unit) in zip(axes, CDF_METRICS):
+        for (name, split, arm, epoch), color in zip(conditions, (CONTROL, MEMRL)):
+            values = sorted(r[key] * scale for r in groups[(split, arm, epoch)])
+            n = len(values)
+            median = statistics.median(values)
+            ax.step([values[0]] + values, [0] + [(i + 1) / n for i in range(n)], where="post", color=color,
+                    linewidth=2, label=f"{name.replace(chr(10), ' ')}  (median {median:,.{2 if unit == 'M' else 0}f}{unit})")
+        d, (lo, hi), p = sms.paired([second[t][key] - first[t][key] for t in common], rng)
+        places = 2 if unit == "M" else 1
+        ax.set_title(label, pad=16)
+        ax.annotate(f"paired delta {d * scale:+.{places}f}{unit}  [{lo * scale:+.{places}f}, {hi * scale:+.{places}f}]"
+                    f"  p={p:.3f}", (0, 1), xycoords="axes fraction", xytext=(0, 4), textcoords="offset points",
+                    va="bottom", fontsize=7.5, color=INK_2)
+        ax.set_ylim(0, 1.02)
+        ax.yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(1))
+        ax.set_xlabel(f"{label.split(' per')[0]}" + (f" ({unit})" if unit else ""), fontsize=8)
+        ax.legend(frameon=False, fontsize=7.5, loc="lower right")
+        if key == "api_calls":
+            ax.axvline(sms.ITERATION_CAP, color=AXIS, linewidth=1, zorder=1)
+            ax.annotate(f"{sms.ITERATION_CAP}-turn cap", (sms.ITERATION_CAP, 0.5), xytext=(-4, 0),
+                        textcoords="offset points", ha="right", fontsize=7.5, color=MUTED, rotation=90, va="center")
+    axes[0].set_ylabel("share of tasks at or below", fontsize=8)
+    fig.suptitle("Held-out test efficiency: per-task distributions, control vs frozen MemRL", x=0.01, ha="left",
+                 fontsize=12, fontweight="bold")
+    footnote(fig, note)
+    fig.tight_layout(rect=(0, 0.03 * note.count("\n") + 0.03, 1, 0.95))
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+
+
 def plot_deltas(cells, path, note, rng):
     metrics = ACCURACY[:1] + [m for m in EFFICIENCY if m[0] in ("tool_calls", "api_calls", "prompt_tokens",
                                                                  "duration_s")]
@@ -265,6 +312,10 @@ def main():
     plot_conditions(groups, TEST_CONDITIONS, EFFICIENCY,
                     "Held-out test efficiency: control vs frozen MemRL (lower is better)", 3,
                     args.out / "efficiency_test.png", test_note, random.Random(args.seed), random.Random(args.seed))
+    plot_cdfs(groups, TEST_CONDITIONS, args.out / "efficiency_test_cdf.png",
+              test_note.replace("Bars: mean, 95% bootstrap CI over tasks.",
+                                "A turn is one model API call; runs stopped by the 3 h deadline count up to that point."),
+              random.Random(args.seed))
     plot_deltas(cells, args.out / "paired_deltas.png", note, random.Random(args.seed))
     plot_training(rows, cells, args.out / "training.png", note, random.Random(args.seed))
     print(f"wrote {', '.join(p.name for p in sorted(args.out.glob('*.png')))} to {args.out}")
