@@ -519,3 +519,21 @@ func TestAgentWrapperScriptExportsMCPHostVariables(t *testing.T) {
 		}
 	}
 }
+
+// Without a memory provider the agent gets no memory toolset at all.
+func TestRenderConfigEnablesMemoryToolsetOnlyForProviders(t *testing.T) {
+	without, err := renderConfig(validModel(), renderSettings{maxTurns: 90, subagentsEnabled: true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(without), "- memory") {
+		t.Fatalf("config enables the memory toolset without a provider:\n%s", without)
+	}
+	with, err := renderConfig(validModel(), renderSettings{maxTurns: 90, subagentsEnabled: true, memoryToolsEnabled: true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(with), "    - code_execution\n    - memory\n") {
+		t.Fatalf("config lacks the memory toolset:\n%s", with)
+	}
+}

@@ -1040,7 +1040,7 @@ func TestCheckedInProfilesLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 103 {
+	if len(paths) != 118 {
 		t.Fatalf("profiles=%v", paths)
 	}
 	for _, path := range paths {
@@ -1254,7 +1254,7 @@ func TestCheckedInVersionCatalogsLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 6 {
+	if len(paths) != 8 {
 		t.Fatalf("catalogs=%v", paths)
 	}
 	for _, path := range paths {

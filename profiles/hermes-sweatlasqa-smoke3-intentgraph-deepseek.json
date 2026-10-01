@@ -1,0 +1,48 @@
+{
+  "name": "hermes-sweatlasqa-smoke3-intentgraph-deepseek",
+  "versions_file": "../configs/versions-intentgraph.json",
+  "overrides_file": "",
+  "execution": {
+    "concurrency": 1
+  },
+  "benchmark": {
+    "type": "sweatlasqa",
+    "root": ".cache/swe-atlas-qa",
+    "tasks": [
+      "task-6905333b74f22949d97ba9a4",
+      "task-6905333b74f22949d97ba9a5",
+      "task-6905333b74f22949d97ba9a8"
+    ],
+    "judge": {
+      "provider": "deepseek",
+      "base_url": "https://api.deepseek.com",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "model": "deepseek-flash"
+    }
+  },
+  "harness": {
+    "type": "hermes",
+    "memory": {
+      "provider": "intentgraph",
+      "env": {
+        "INTENTGRAPH_INTENT_TAG": "question"
+      }
+    }
+  },
+  "sandbox": {
+    "type": "docker"
+  },
+  "bridge": {
+    "type": "hermes-ssh"
+  },
+  "runtime": {
+    "backend": "deepseek",
+    "mode": "external"
+  },
+  "model": {
+    "base_url": "https://api.deepseek.com",
+    "api_key_env": "DEEPSEEK_API_KEY",
+    "id": "deepseek-flash"
+  },
+  "output_dir": "runs"
+}

@@ -1,0 +1,54 @@
+{
+  "name": "hermes-sweatlasqa-intentgraph-s0-smoke-none",
+  "versions_file": "../configs/versions-intentgraph.json",
+  "overrides_file": "",
+  "execution": {
+    "concurrency": 4
+  },
+  "benchmark": {
+    "type": "sweatlasqa",
+    "root": ".cache/swe-atlas-qa",
+    "tasks": [
+      "task-6905333b74f22949d97ba9b1",
+      "task-6905333b74f22949d97ba9b7",
+      "task-6905333b74f22949d97ba9b8"
+    ],
+    "judge": {
+      "provider": "deepseek",
+      "base_url": "https://api.deepseek.com",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "model": "deepseek-flash"
+    }
+  },
+  "harness": {
+    "type": "hermes",
+    "memory": {
+      "provider": "intentgraph",
+      "env": {
+        "INTENTGRAPH_INTENT_TAG": "question",
+        "INTENTGRAPH_FROZEN": "1",
+        "INTENTGRAPH_SIM_THRESHOLD": "2"
+      },
+      "frozen_state": "runs/intentgraph-study/stores/empty"
+    }
+  },
+  "sandbox": {
+    "type": "docker"
+  },
+  "bridge": {
+    "type": "hermes-ssh"
+  },
+  "runtime": {
+    "backend": "sglang",
+    "mode": "external",
+    "config": {
+      "file": "../configs/sglang/qwen3.8-27b-local.yaml"
+    }
+  },
+  "model": {
+    "base_url": "http://192.168.111.200:8100/v1",
+    "api_key_env": "SGLANG_API_KEY",
+    "id": "Qwen/Qwen3.8-27B"
+  },
+  "output_dir": "runs/intentgraph-study/"
+}

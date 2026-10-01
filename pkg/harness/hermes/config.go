@@ -82,6 +82,9 @@ type renderSettings struct {
 	compaction             *CompactionSettings
 	extraBody              []byte
 	mcpServers             []core.MCPServerConfig
+	// memoryToolsEnabled adds the "memory" toolset, which Hermes requires
+	// before it exposes a memory provider's tools.
+	memoryToolsEnabled bool
 }
 
 // renderConfig produces the Hermes `config.yaml`. The credential is written as
@@ -239,6 +242,14 @@ func renderConfig(model core.ModelConfig, settings renderSettings, voiceSTT *Voi
 	output.WriteString("    - terminal\n")
 	output.WriteString("    - file\n")
 	output.WriteString("    - code_execution\n")
+	if settings.memoryToolsEnabled {
+		// Hermes only adds a memory provider's tools (memrl_feedback,
+		// memory_retrieval, ...) to the tool surface when "memory" is an
+		// enabled toolset (agent/agent_init.py). The same toolset also exposes
+		// Hermes's built-in `memory` tool; memoryConfigBlock turns its store
+		// off, so that tool only ever answers "Memory is not available".
+		output.WriteString("    - memory\n")
+	}
 	if settings.webSearchEnabled {
 		output.WriteString("    - web\n")
 		// search_backend (not backend) is deliberate: the DRB task sandbox's

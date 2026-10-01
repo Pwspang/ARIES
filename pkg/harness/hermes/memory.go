@@ -85,8 +85,11 @@ func validateMemoryEnvKey(key string, secretEnvs ...string) error {
 	return nil
 }
 
+// memoryConfigBlock selects the provider and turns off Hermes's built-in
+// MEMORY.md/USER.md store, whose tool the "memory" toolset also exposes, so the
+// provider is the only memory the agent has.
 func memoryConfigBlock(provider string) []byte {
-	return []byte("\nmemory:\n  provider: \"" + provider + "\"\n")
+	return []byte("\nmemory:\n  provider: \"" + provider + "\"\n  memory_enabled: false\n  user_profile_enabled: false\n")
 }
 
 // memoryEnvironment tells the provider where its state lives and which task

@@ -151,8 +151,12 @@ func TestMemoryProviderEnvironmentAndFirstTaskState(t *testing.T) {
 	}
 	defer manager.Stop(context.Background())
 	config, _ := stagedFileContent(t, fake.archive, strings.TrimPrefix(configContainerPath, "/"))
-	if !strings.Contains(string(config), "\nmemory:\n  provider: \"my-notes\"\n") {
+	if !strings.Contains(string(config), "\nmemory:\n  provider: \"my-notes\"\n  memory_enabled: false\n  user_profile_enabled: false\n") {
 		t.Fatalf("config lacks the memory provider:\n%s", config)
+	}
+	// Hermes only exposes a provider's tools when "memory" is an enabled toolset.
+	if !strings.Contains(string(config), "    - code_execution\n    - memory\n") {
+		t.Fatalf("config does not enable the memory toolset:\n%s", config)
 	}
 	environment := fake.created.Config.Env
 	want := []string{"ARIES_MEMORY_DIR=" + memoryContainerDir, "ARIES_MEMORY_TASK_ID=" + request.TaskID, "NOTES_A=x y", "NOTES_TOP_K=3"}
