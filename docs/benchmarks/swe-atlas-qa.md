@@ -646,6 +646,9 @@ study is 210 task runs:
 **Metrics.** `scripts/summarize_memrl_study.py runs/memrl-study/*` reads only
 files that ARIES already writes. `--study memrl-smoke` selects the smoke runs,
 and `--csv` also writes one row per occurrence.
+`uv run --with matplotlib --with numpy scripts/plot_memrl_study.py runs/memrl-study/*`
+draws the same rows as accuracy, efficiency, paired-delta and training charts
+in `scripts/out_memrl/`.
 
 - Accuracy: `agg_score` (primary) and pass rate (`reward == 1`). As in pilot30,
   a missing judge verdict with a `reward.txt` counts as 0.
