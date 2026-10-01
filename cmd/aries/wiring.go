@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/hyscale-lab/aries/internal/app"
 	runtimesglang "github.com/hyscale-lab/aries/internal/modelruntime/sglang"
 	"github.com/hyscale-lab/aries/pkg/benchmark/deepresearchbench"
 	"github.com/hyscale-lab/aries/pkg/benchmark/sweatlas"
+	"github.com/hyscale-lab/aries/pkg/benchmark/swebenchpro"
 	"github.com/hyscale-lab/aries/pkg/benchmark/terminalbench"
 	"github.com/hyscale-lab/aries/pkg/bridge/hermesssh"
 	"github.com/hyscale-lab/aries/pkg/bridge/openclawssh"
@@ -69,7 +71,10 @@ func cleanupHarness(ctx context.Context, cfg config.Config, outputRoot string) e
 
 func validateComponents(cfg config.Config) error {
 	switch cfg.Benchmark.Type {
-	case "terminalbench2", "deepresearchbench", "sweatlasqa":
+	case "terminalbench2":
+	case "deepresearchbench":
+	case "sweatlasqa":
+	case "swebenchpro":
 	default:
 		return fmt.Errorf("unsupported benchmark type %q", cfg.Benchmark.Type)
 	}
@@ -98,37 +103,43 @@ func validateComponents(cfg config.Config) error {
 	return nil
 }
 
+// prepareBackend turns the profile's runtime block into the model the harness
+// receives and, for managed SGLang only, the host process ARIES owns.
+// runtime.mode is the ownership distinction: every external endpoint is
+// prepared the same way, whatever serves it. runtime.backend names the kind of
+// service behind the endpoint, which selects the preflight and the harness's
+// provider mapping downstream. Only managed SGLang loads a native launch file.
 func prepareBackend(cfg config.Config, outputDir string) (app.PreparedBackend, error) {
 	model := cfg.CoreModel()
-	switch cfg.Runtime.Backend {
-	case "deepseek":
-		if cfg.Runtime.Mode != "external" {
-			return app.PreparedBackend{}, errors.New("DeepSeek runtime must be external")
+	switch cfg.Runtime.Mode {
+	case "external":
+		switch cfg.Runtime.Backend {
+		case "deepseek":
+		case "openai":
+		case "sglang":
+		default:
+			return app.PreparedBackend{}, fmt.Errorf("unsupported model runtime backend %q", cfg.Runtime.Backend)
 		}
 		return app.PreparedBackend{Model: model}, nil
-	case "sglang":
+	case "managed":
+		if cfg.Runtime.Backend != "sglang" {
+			return app.PreparedBackend{}, fmt.Errorf("runtime.backend %q must be external", cfg.Runtime.Backend)
+		}
 		native, err := runtimesglang.LoadNativeConfig(cfg.Runtime.Config.ResolvedFile, cfg.Model.ID, cfg.Model.BaseURL)
 		if err != nil {
 			return app.PreparedBackend{}, err
 		}
-		switch cfg.Runtime.Mode {
-		case "external":
-			return app.PreparedBackend{Model: model}, nil
-		case "managed":
-			gpuIndices, err := native.ResolveGPUIndices(cfg.Runtime.Config.GPUIndices)
-			if err != nil {
-				return app.PreparedBackend{}, fmt.Errorf("resolve managed SGLang GPUs: %w", err)
-			}
-			runtime, err := runtimesglang.New(runtimesglang.Options{Executable: cfg.Runtime.Config.Executable, ConfigPath: cfg.Runtime.Config.ResolvedFile, OutputDir: outputDir, BaseURL: cfg.Model.BaseURL, CredentialEnv: cfg.Model.APIKeyEnv, GPUIndices: append([]int(nil), gpuIndices...)})
-			if err != nil {
-				return app.PreparedBackend{}, err
-			}
-			return app.PreparedBackend{Model: model, Runtime: runtime, EffectiveGPUIndices: append([]int(nil), gpuIndices...)}, nil
-		default:
-			return app.PreparedBackend{}, fmt.Errorf("unsupported SGLang runtime mode %q", cfg.Runtime.Mode)
+		gpuIndices, err := native.ResolveGPUIndices(cfg.Runtime.Config.GPUIndices)
+		if err != nil {
+			return app.PreparedBackend{}, fmt.Errorf("resolve managed SGLang GPUs: %w", err)
 		}
+		runtime, err := runtimesglang.New(runtimesglang.Options{Executable: cfg.Runtime.Config.Executable, ConfigPath: cfg.Runtime.Config.ResolvedFile, OutputDir: outputDir, BaseURL: cfg.Model.BaseURL, CredentialEnv: cfg.Model.APIKeyEnv, GPUIndices: append([]int(nil), gpuIndices...)})
+		if err != nil {
+			return app.PreparedBackend{}, err
+		}
+		return app.PreparedBackend{Model: model, Runtime: runtime, EffectiveGPUIndices: append([]int(nil), gpuIndices...)}, nil
 	default:
-		return app.PreparedBackend{}, fmt.Errorf("unsupported model runtime backend %q", cfg.Runtime.Backend)
+		return app.PreparedBackend{}, fmt.Errorf("unsupported model runtime mode %q", cfg.Runtime.Mode)
 	}
 }
 
@@ -142,9 +153,22 @@ func newBenchmark(cfg config.Config, outputRoot, logicalID, occurrenceID string,
 		if occurrenceID != logicalID {
 			executionIDs = []string{occurrenceID}
 		}
-		benchmark, err := terminalbench.New(terminalbench.Options{Root: cfg.Benchmark.Root, TaskIDs: []string{logicalID}, ExecutionTaskIDs: executionIDs, OutputDir: outputRoot, Revision: cfg.Versions.TerminalBench2.Revision})
+		benchmark, err := terminalbench.New(terminalbench.Options{Root: cfg.Benchmark.Root, TaskIDs: []string{logicalID}, ExecutionTaskIDs: executionIDs, OutputDir: outputRoot, Revision: cfg.Versions.TerminalBench2.Revision, VerifierTimeoutFloor: verifierTimeoutFloor(cfg)})
 		if err != nil {
 			return nil, fmt.Errorf("construct terminalbench2 benchmark: %w", err)
+		}
+		return benchmark, nil
+	case "swebenchpro":
+		var executionIDs []string
+		if occurrenceID != logicalID {
+			executionIDs = []string{occurrenceID}
+		}
+		benchmark, err := swebenchpro.New(swebenchpro.Options{
+			Root: cfg.Benchmark.Root, TaskIDs: []string{logicalID}, ExecutionTaskIDs: executionIDs, OutputDir: outputRoot,
+			DatasetRevision: cfg.Versions.SWEbenchPro.DatasetRevision, EvaluatorRevision: cfg.Versions.SWEbenchPro.EvaluatorRevision,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("construct swebenchpro benchmark: %w", err)
 		}
 		return benchmark, nil
 	case "deepresearchbench":
@@ -179,13 +203,13 @@ func newBenchmark(cfg config.Config, outputRoot, logicalID, occurrenceID string,
 		if occurrenceID != logicalID {
 			executionIDs = []string{occurrenceID}
 		}
-		// validateBenchmarkType already guarantees cfg.Benchmark.Judge is
-		// non-nil for this type by the time wiring runs.
+		judgeModel, judgeDisabled := sweatlasModels(cfg)
 		benchmark, err := sweatlas.New(sweatlas.Options{
 			Root: cfg.Benchmark.Root, TaskIDs: []string{logicalID}, ExecutionTaskIDs: executionIDs, OutputDir: outputRoot,
-			Revision:     cfg.Versions.SWEAtlas.Revision,
-			Judge:        cfg.Benchmark.Judge.CoreModel(),
-			APIKeyLookup: lookup,
+			Revision:      cfg.Versions.SWEAtlas.Revision,
+			Judge:         judgeModel,
+			JudgeDisabled: judgeDisabled,
+			APIKeyLookup:  lookup,
 			// Kept in sync with the OpenClaw harness's amem plugin here, the
 			// same way the deepresearchbench arm above does it: the benchmark
 			// package has no view of harness config.
@@ -245,6 +269,14 @@ func structuredSubtasksOptions(cfg config.Config) *deepresearchbench.StructuredS
 	}
 }
 
+func sweatlasModels(cfg config.Config) (judge core.ModelConfig, judgeDisabled bool) {
+	judgeCfg := cfg.Benchmark.Judge
+	if judgeCfg.Enabled != nil && !*judgeCfg.Enabled {
+		return core.ModelConfig{}, true
+	}
+	return judgeCfg.CoreModel(), false
+}
+
 // environmentFromConfig converts a profile's benchmark.environment block into
 // the runner-neutral core.Environment. cfg is nil only when Config.validate
 // hasn't run (e.g. ad-hoc construction); callers of newBenchmark and
@@ -264,31 +296,16 @@ func environmentFromConfig(cfg *config.BenchmarkEnvironment) core.Environment {
 }
 
 func newHarness(cfg config.Config, outputRoot string, lookup func(string) ([]byte, bool), logger *logrus.Logger) (app.HarnessInstance, error) {
+	for _, server := range cfg.Harness.MCPServers {
+		if err := core.ValidateMCPServer(server); err != nil {
+			return app.HarnessInstance{}, fmt.Errorf("invalid mcp server config: %w", err)
+		}
+	}
 	switch cfg.Harness.Type {
 	case "openclaw":
-		realtime := openclawharness.RealtimeOptions{
-			AgentQuestionTemplate: cfg.Harness.Realtime.AgentQuestionTemplate,
-			TTS: openclawharness.RealtimeTTSOptions{
-				Provider: cfg.Harness.Realtime.TTS.Provider, BaseURL: cfg.Harness.Realtime.TTS.BaseURL,
-				APIKeyEnv: cfg.Harness.Realtime.TTS.APIKeyEnv, Model: cfg.Harness.Realtime.TTS.Model,
-				Voice: cfg.Harness.Realtime.TTS.Voice, Instructions: cfg.Harness.Realtime.TTS.Instructions,
-				Speed: cfg.Harness.Realtime.TTS.Speed, Timeout: cfg.Harness.Realtime.TTS.Timeout,
-			},
-			ChunkDuration:         cfg.Harness.Realtime.ChunkDuration,
-			ListenDuration:        cfg.Harness.Realtime.ListenDuration,
-			QuietDuration:         cfg.Harness.Realtime.QuietDuration,
-			AgentWaitDuration:     cfg.Harness.Realtime.AgentWaitDuration,
-			ToolCallTimeout:       cfg.Harness.Realtime.ToolCallTimeout,
-			TrailingSilenceMillis: cfg.Harness.Realtime.TrailingSilenceMillis,
-			Provider:              cfg.Harness.Realtime.Provider,
-			Model:                 cfg.Harness.Realtime.Model,
-			Voice:                 cfg.Harness.Realtime.Voice,
-			ReasoningEffort:       cfg.Harness.Realtime.ReasoningEffort,
-			IncludeEvents:         cfg.Harness.Realtime.IncludeEvents,
-		}
-		manager, err := openclawharness.New(openclawharness.Options{
+		options := openclawharness.Options{
 			Image: cfg.Versions.OpenClaw.Image, OutputDir: outputRoot, APIKeyLookup: lookup, Logger: logger,
-			Mode: cfg.Harness.Mode, Realtime: realtime, WebSearchEnabled: cfg.Harness.WebSearch.Enabled,
+			Mode: cfg.Harness.Mode, WebSearchEnabled: cfg.Harness.WebSearch.Enabled,
 			ExtractAPIKeyEnv:             cfg.Harness.WebSearch.ExtractAPIKeyEnv,
 			SearchProvider:               cfg.Harness.WebSearch.Provider,
 			FirecrawlAPIKeyEnv:           cfg.Harness.WebSearch.FirecrawlAPIKeyEnv,
@@ -318,13 +335,35 @@ func newHarness(cfg config.Config, outputRoot string, lookup func(string) ([]byt
 			Mem0LLMAPIKeyEnv:             cfg.Harness.Mem0.LLMAPIKeyEnv,
 			Mem0APIKeyEnv:                cfg.Harness.Mem0.APIKeyEnv,
 			Mem0BaseURL:                  cfg.Harness.Mem0.BaseURL,
-		})
+			MCPServers:                   cfg.Harness.MCPServers,
+		}
+		if cfg.Harness.Mode == openclawharness.ModeRealtime || cfg.Harness.Mode == openclawharness.ModeVoiceTranscribe {
+			options.Realtime = openClawVoiceOptions(cfg.Harness)
+		}
+		manager, err := openclawharness.New(options)
 		if err != nil {
 			return app.HarnessInstance{}, fmt.Errorf("construct OpenClaw harness: %w", err)
 		}
 		return app.HarnessInstance{Harness: manager, Close: manager.Close}, nil
 	case "hermes":
-		manager, err := newHermesManager(cfg, outputRoot, lookup, logger)
+		options := hermesharness.Options{
+			Image: cfg.Versions.Hermes.Image, OutputDir: outputRoot, APIKeyLookup: lookup, Logger: logger,
+			Mode: cfg.Harness.Mode, WebSearchEnabled: cfg.Harness.WebSearch.Enabled,
+			ExtractAPIKeyEnv:       cfg.Harness.WebSearch.ExtractAPIKeyEnv,
+			SubagentsEnabled:       cfg.Harness.Subagents.Enabled != nil && *cfg.Harness.Subagents.Enabled,
+			MaxConcurrentSubagents: cfg.Harness.Subagents.MaxConcurrent,
+			Compaction:             hermesCompaction(cfg.Harness.Compaction),
+			ExtraBody:              hermesExtraBody(cfg.Harness.Hermes),
+			MCPServers:             cfg.Harness.MCPServers,
+			Memory: hermesharness.MemoryOptions{
+				Provider: cfg.Harness.Memory.Provider, Env: cfg.Harness.Memory.Env, FrozenState: cfg.Harness.Memory.FrozenState,
+			},
+		}
+
+		if cfg.Harness.Mode == hermesharness.ModeVoiceTranscribe {
+			options.VoiceTranscribe = hermesVoiceOptions(cfg.Harness.VoiceTranscribe)
+		}
+		manager, err := hermesharness.New(options)
 		if err != nil {
 			return app.HarnessInstance{}, fmt.Errorf("construct Hermes harness: %w", err)
 		}
@@ -334,16 +373,46 @@ func newHarness(cfg config.Config, outputRoot string, lookup func(string) ([]byt
 	}
 }
 
-func newHermesManager(cfg config.Config, outputRoot string, lookup func(string) ([]byte, bool), logger *logrus.Logger) (*hermesharness.Manager, error) {
-	return hermesharness.New(hermesharness.Options{
-		Image: cfg.Versions.Hermes.Image, OutputDir: outputRoot, APIKeyLookup: lookup, Logger: logger,
-		WebSearchEnabled: cfg.Harness.WebSearch.Enabled, ExtractAPIKeyEnv: cfg.Harness.WebSearch.ExtractAPIKeyEnv,
-		SubagentsEnabled:       cfg.Harness.Subagents.Enabled != nil && *cfg.Harness.Subagents.Enabled,
-		MaxConcurrentSubagents: cfg.Harness.Subagents.MaxConcurrent,
-		Memory: hermesharness.MemoryOptions{
-			Provider: cfg.Harness.Memory.Provider, Env: cfg.Harness.Memory.Env, FrozenState: cfg.Harness.Memory.FrozenState,
+func openClawVoiceOptions(harness config.HarnessConfig) openclawharness.RealtimeOptions {
+	realtime := harness.Realtime
+	if harness.Mode == openclawharness.ModeVoiceTranscribe {
+		realtime = harness.VoiceTranscribe.HarnessRealtimeConfig
+	}
+	return openclawharness.RealtimeOptions{
+		AgentQuestionTemplate: realtime.AgentQuestionTemplate,
+		TTS: openclawharness.RealtimeTTSOptions{
+			Provider: realtime.TTS.Provider, BaseURL: realtime.TTS.BaseURL,
+			APIKeyEnv: realtime.TTS.APIKeyEnv, Model: realtime.TTS.Model,
+			Voice: realtime.TTS.Voice, Instructions: realtime.TTS.Instructions,
+			Speed: realtime.TTS.Speed, Timeout: realtime.TTS.Timeout,
 		},
-	})
+		ChunkDuration:         realtime.ChunkDuration,
+		ListenDuration:        realtime.ListenDuration,
+		QuietDuration:         realtime.QuietDuration,
+		AgentWaitDuration:     realtime.AgentWaitDuration,
+		ToolCallTimeout:       realtime.ToolCallTimeout,
+		TrailingSilenceMillis: realtime.TrailingSilenceMillis,
+		Provider:              realtime.Provider,
+		Model:                 realtime.Model,
+		Voice:                 realtime.Voice,
+		ReasoningEffort:       realtime.ReasoningEffort,
+		IncludeEvents:         realtime.IncludeEvents,
+	}
+}
+
+func hermesVoiceOptions(voice config.HarnessVoiceTranscribeConfig) hermesharness.VoiceTranscribeOptions {
+	return hermesharness.VoiceTranscribeOptions{
+		TTS: hermesharness.VoiceTTSOptions{
+			Provider: voice.TTS.Provider, BaseURL: voice.TTS.BaseURL,
+			APIKeyEnv: voice.TTS.APIKeyEnv, Model: voice.TTS.Model,
+			Voice: voice.TTS.Voice, Instructions: voice.TTS.Instructions,
+			Speed: voice.TTS.Speed, Timeout: voice.TTS.Timeout,
+		},
+		STT: hermesharness.VoiceSTTOptions{
+			Provider: voice.STT.Provider, Model: voice.STT.Model,
+			Language: voice.STT.Language, Timeout: voice.STT.Timeout,
+		},
+	}
 }
 
 func newSandbox(cfg config.Config, outputRoot, runID, occurrenceID string, gpuIndices []int, logger *logrus.Logger) (app.SandboxInstance, error) {
@@ -419,12 +488,14 @@ func newBridge(cfg config.Config, outputRoot string, logger *logrus.Logger) (run
 
 func setupBenchmark(ctx context.Context, cfg config.Config) error {
 	switch cfg.Benchmark.Type {
+	case "terminalbench2":
+		return terminalbench.Setup(ctx, cfg.Benchmark.Root, cfg.Versions.TerminalBench2.RepositoryURL, cfg.Versions.TerminalBench2.Revision)
 	case "deepresearchbench":
 		return deepresearchbench.Setup(ctx, cfg.Benchmark.Root, cfg.Versions.DeepResearchBench.RepositoryURL, cfg.Versions.DeepResearchBench.Revision)
 	case "sweatlasqa":
 		return sweatlas.Setup(ctx, cfg.Benchmark.Root, cfg.Versions.SWEAtlas.RepositoryURL, cfg.Versions.SWEAtlas.Revision)
-	case "terminalbench2":
-		return terminalbench.Setup(ctx, cfg.Benchmark.Root, cfg.Versions.TerminalBench2.RepositoryURL, cfg.Versions.TerminalBench2.Revision)
+	case "swebenchpro":
+		return swebenchpro.Setup(ctx, cfg.Benchmark.Root, cfg.Versions.SWEbenchPro.DatasetRepositoryURL, cfg.Versions.SWEbenchPro.DatasetRevision, cfg.Versions.SWEbenchPro.EvaluatorRepositoryURL, cfg.Versions.SWEbenchPro.EvaluatorRevision)
 	default:
 		return fmt.Errorf("unsupported benchmark type %q", cfg.Benchmark.Type)
 	}
@@ -435,6 +506,19 @@ func loadPreparationTasks(ctx context.Context, cfg config.Config, taskIDs []stri
 		lookup = environmentAPIKeyLookup
 	}
 	switch cfg.Benchmark.Type {
+	case "swebenchpro":
+		benchmark, err := swebenchpro.New(swebenchpro.Options{
+			Root: cfg.Benchmark.Root, TaskIDs: taskIDs, OutputDir: cfg.OutputDir,
+			DatasetRevision: cfg.Versions.SWEbenchPro.DatasetRevision, EvaluatorRevision: cfg.Versions.SWEbenchPro.EvaluatorRevision,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("validate swebenchpro profile: %w", err)
+		}
+		tasks, err := benchmark.Tasks(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("load swebenchpro tasks: %w", err)
+		}
+		return tasks, nil
 	case "deepresearchbench":
 		judgeModel, factModel, jinaAPIKeyEnv, judgeDisabled := deepresearchbenchModels(cfg)
 		benchmark, err := deepresearchbench.New(deepresearchbench.Options{
@@ -463,13 +547,13 @@ func loadPreparationTasks(ctx context.Context, cfg config.Config, taskIDs []stri
 		}
 		return tasks, nil
 	case "sweatlasqa":
-		// validateBenchmarkType already guarantees cfg.Benchmark.Judge is
-		// non-nil for this type by the time wiring runs.
+		judgeModel, judgeDisabled := sweatlasModels(cfg)
 		benchmark, err := sweatlas.New(sweatlas.Options{
 			Root: cfg.Benchmark.Root, TaskIDs: taskIDs, OutputDir: cfg.OutputDir,
-			Revision:     cfg.Versions.SWEAtlas.Revision,
-			Judge:        cfg.Benchmark.Judge.CoreModel(),
-			APIKeyLookup: lookup,
+			Revision:      cfg.Versions.SWEAtlas.Revision,
+			Judge:         judgeModel,
+			JudgeDisabled: judgeDisabled,
+			APIKeyLookup:  lookup,
 			// Kept in sync with the OpenClaw harness's amem plugin here, the
 			// same way the deepresearchbench arm above does it: the benchmark
 			// package has no view of harness config.
@@ -485,7 +569,7 @@ func loadPreparationTasks(ctx context.Context, cfg config.Config, taskIDs []stri
 		}
 		return tasks, nil
 	case "terminalbench2":
-		benchmark, err := terminalbench.New(terminalbench.Options{Root: cfg.Benchmark.Root, TaskIDs: taskIDs, OutputDir: cfg.OutputDir, Revision: cfg.Versions.TerminalBench2.Revision})
+		benchmark, err := terminalbench.New(terminalbench.Options{Root: cfg.Benchmark.Root, TaskIDs: taskIDs, OutputDir: cfg.OutputDir, Revision: cfg.Versions.TerminalBench2.Revision, VerifierTimeoutFloor: verifierTimeoutFloor(cfg)})
 		if err != nil {
 			return nil, fmt.Errorf("validate terminalbench2 profile: %w", err)
 		}
@@ -497,4 +581,31 @@ func loadPreparationTasks(ctx context.Context, cfg config.Config, taskIDs []stri
 	default:
 		return nil, fmt.Errorf("unsupported benchmark type %q", cfg.Benchmark.Type)
 	}
+}
+
+// hermesExtraBody returns the profile's harness.hermes.extra_body bytes, or nil
+// when the block is absent.
+func hermesExtraBody(block *config.HarnessHermesConfig) []byte {
+	if block == nil {
+		return nil
+	}
+	return []byte(block.ExtraBody)
+}
+
+// hermesCompaction copies the profile's compaction block into the harness's
+// own settings type. The harness package does not import pkg/config, so the
+// copy is explicit, field by field.
+func hermesCompaction(block *config.HarnessCompactionConfig) *hermesharness.CompactionSettings {
+	if block == nil {
+		return nil
+	}
+	return &hermesharness.CompactionSettings{Enabled: block.Enabled, ThresholdTokens: block.ThresholdTokens}
+}
+
+// verifierTimeoutFloor is the overrides file's verifier floor, or zero.
+func verifierTimeoutFloor(cfg config.Config) time.Duration {
+	if cfg.Overrides.VerifierTimeoutFloor == nil {
+		return 0
+	}
+	return *cfg.Overrides.VerifierTimeoutFloor
 }

@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/hyscale-lab/aries/pkg/core"
@@ -116,6 +117,8 @@ const (
 	// host environment variable a profile's firecrawl_api_key_env names.
 	firecrawlKeyPath   = "/run/aries/firecrawl.key"
 	firecrawlAPIKeyEnv = "FIRECRAWL_API_KEY"
+
+	consultRoutingForceAgent = "force-agent-consult"
 )
 
 type openClawConfig struct {
@@ -123,7 +126,34 @@ type openClawConfig struct {
 	Models  modelsConfig   `json:"models"`
 	Agents  agentsConfig   `json:"agents"`
 	Tools   toolPolicy     `json:"tools"`
+	Talk    *talkConfig    `json:"talk,omitempty"`
 	Plugins *pluginsConfig `json:"plugins,omitempty"`
+	MCP     *openClawMCP   `json:"mcp,omitempty"`
+}
+
+type openClawMCP struct {
+	Servers map[string]openClawMCPServer `json:"servers"`
+}
+
+type openClawMCPServer struct {
+	Command   string            `json:"command,omitempty"`
+	Args      []string          `json:"args,omitempty"`
+	URL       string            `json:"url,omitempty"`
+	Transport string            `json:"transport,omitempty"`
+	Env       map[string]string `json:"env,omitempty"`
+}
+
+// MCPOptions configures MCP servers and sandbox-allowlisted tools for OpenClaw.
+type MCPOptions struct {
+	Servers []core.MCPServerConfig
+}
+
+type talkConfig struct {
+	Realtime realtimeTalkConfig `json:"realtime"`
+}
+
+type realtimeTalkConfig struct {
+	ConsultRouting string `json:"consultRouting"`
 }
 
 type toolPolicy struct {
@@ -460,19 +490,23 @@ var mem0ToolNames = []string{
 	"memory_update", "memory_delete", "memory_event_list", "memory_event_status",
 }
 
-func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchEnabled bool, searchProvider string, extractEnabled, subagentsEnabled, amemEnabled bool, maxConcurrentSubagents int, amemLLMBaseURL, amemLLMModel string, amemDisableTaskTraceFallback bool, losslessClawEnabled bool, losslessClawLLMBaseURL, losslessClawLLMModel string, mem0Enabled bool, mem0Mode, mem0LLMBaseURL, mem0LLMModel, mem0PlatformBaseURL string) ([]byte, error) {
+func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, mode string, webSearchEnabled bool, searchProvider string, extractEnabled, subagentsEnabled, amemEnabled bool, maxConcurrentSubagents int, amemLLMBaseURL, amemLLMModel string, amemDisableTaskTraceFallback bool, losslessClawEnabled bool, losslessClawLLMBaseURL, losslessClawLLMModel string, mem0Enabled bool, mem0Mode, mem0LLMBaseURL, mem0LLMModel, mem0PlatformBaseURL string, mcp ...MCPOptions) ([]byte, error) {
 	if err := validateModel(model); err != nil {
 		return nil, err
 	}
-	if model.Provider == "sglang" {
-		model.BaseURL, _ = normalizeSGLangBaseURL(model.BaseURL)
+	if openAICompatible(model.Provider) {
+		model.BaseURL, _ = normalizeV1BaseURL(model.BaseURL)
 	}
 	if err := validateEndpoint(endpoint); err != nil {
 		return nil, err
 	}
-	providerID := model.Provider
-	if providerID == "deepseek" {
-		providerID = "aries"
+	// providerID keys the models.providers entry OpenClaw merges into its
+	// catalog. DeepSeek and generic OpenAI-compatible servers use the neutral
+	// "aries" id so the entry never collides with a built-in provider of the
+	// same name; SGLang keeps its own id.
+	providerID := "aries"
+	if model.Provider == "sglang" {
+		providerID = "sglang"
 	}
 	configuration := openClawConfig{
 		Gateway: gatewayConfig{
@@ -503,6 +537,9 @@ func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchE
 			},
 		}},
 		Tools: toolPolicy{Deny: denyToolList(subagentsEnabled)},
+	}
+	if mode == ModeRealtime {
+		configuration.Talk = &talkConfig{Realtime: realtimeTalkConfig{ConsultRouting: consultRoutingForceAgent}}
 	}
 	if subagentsEnabled && maxConcurrentSubagents > 0 {
 		configuration.Agents.Defaults.Subagents = &subagentsConfig{MaxConcurrent: maxConcurrentSubagents}
@@ -755,6 +792,39 @@ func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, webSearchE
 	if len(pluginEntries) > 0 || len(pluginAllow) > 0 || len(pluginSlots) > 0 {
 		configuration.Plugins = &pluginsConfig{Entries: pluginEntries, Allow: pluginAllow, Slots: pluginSlots}
 	}
+	if len(mcp) > 0 {
+		opts := mcp[0]
+		if len(opts.Servers) > 0 {
+			servers := make(map[string]openClawMCPServer, len(opts.Servers))
+			for _, server := range opts.Servers {
+				entry := openClawMCPServer{
+					Command: server.Command,
+					Args:    server.Args,
+					URL:     server.URL,
+				}
+				if server.Command != "" {
+					entry.Transport = "stdio"
+					if len(server.Env) > 0 || len(server.SecretEnv) > 0 {
+						envMap := make(map[string]string, len(server.Env)+len(server.SecretEnv))
+						for targetKey, val := range server.Env {
+							envMap[targetKey] = val
+						}
+						for targetKey, hostVar := range server.SecretEnv {
+							envMap[targetKey] = "${" + hostVar + "}"
+						}
+						entry.Env = envMap
+					}
+				} else if server.URL != "" {
+					entry.Transport = "sse"
+				}
+				servers[server.Name] = entry
+			}
+			configuration.MCP = &openClawMCP{Servers: servers}
+			if !slices.Contains(alsoAllow, "bundle-mcp") {
+				alsoAllow = append(alsoAllow, "bundle-mcp")
+			}
+		}
+	}
 	if len(alsoAllow) > 0 {
 		configuration.Tools.Sandbox = &sandboxToolsGate{Tools: sandboxToolsAllowList{AlsoAllow: alsoAllow}}
 	}
@@ -790,12 +860,12 @@ func denyToolList(subagentsEnabled bool) []string {
 }
 
 func validateModel(model core.ModelConfig) error {
-	if model.Provider != "deepseek" && model.Provider != "sglang" {
-		return errors.New("OpenClaw model provider must be deepseek or sglang")
+	if model.Provider != "deepseek" && !openAICompatible(model.Provider) {
+		return errors.New("OpenClaw model provider must be deepseek, sglang, or openai")
 	}
-	if model.Provider == "sglang" {
-		if _, err := normalizeSGLangBaseURL(model.BaseURL); err != nil {
-			return fmt.Errorf("OpenClaw SGLang base URL: %w", err)
+	if openAICompatible(model.Provider) {
+		if _, err := normalizeV1BaseURL(model.BaseURL); err != nil {
+			return fmt.Errorf("OpenClaw %s base URL: %w", model.Provider, err)
 		}
 	} else {
 		parsed, err := url.Parse(model.BaseURL)
@@ -815,7 +885,13 @@ func validateModel(model core.ModelConfig) error {
 	return nil
 }
 
-func normalizeSGLangBaseURL(baseURL string) (string, error) {
+// openAICompatible reports whether the backend is a generic OpenAI-compatible
+// server whose base URL must be the versioned /v1 prefix.
+func openAICompatible(provider string) bool {
+	return provider == "sglang" || provider == "openai"
+}
+
+func normalizeV1BaseURL(baseURL string) (string, error) {
 	parsed, err := url.Parse(baseURL)
 	if err != nil || parsed.Scheme != "http" && parsed.Scheme != "https" || parsed.Host == "" || parsed.Opaque != "" || parsed.User != nil || parsed.RawPath != "" || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || strings.Contains(baseURL, "#") {
 		return "", errors.New("must be an absolute HTTP(S) URL without credentials, escaped path, query, or fragment")
@@ -861,7 +937,7 @@ func validEnvironmentName(value string) bool {
 	return value != ""
 }
 
-func launcherScript(apiKeyEnv, realtimeAPIKeyEnv string, extractEnabled, firecrawlEnabled, tavilySearchEnabled, amemEnabled, amemLLMOverride, losslessClawLLMOverride, mem0Enabled, mem0LLMOverride, mem0PlatformMode, mem0PlatformKeySet bool) []byte {
+func launcherScript(apiKeyEnv, realtimeAPIKeyEnv string, extractEnabled, firecrawlEnabled, tavilySearchEnabled, amemEnabled, amemLLMOverride, losslessClawLLMOverride, mem0Enabled, mem0LLMOverride, mem0PlatformMode, mem0PlatformKeySet bool, mcpHostVars ...string) []byte {
 	script := "#!/bin/sh\nset -eu\nmodel_key=$(cat " + modelKeyPath + ")\ngateway_key=$(cat " + gatewayKeyPath + ")\nexport " + apiKeyEnv + "=\"$model_key\"\nexport " + gatewayTokenEnv + "=\"$gateway_key\"\n"
 	if realtimeAPIKeyEnv != "" {
 		script += "realtime_key=$(cat " + realtimeKeyPath + ")\nexport " + realtimeAPIKeyEnv + "=\"$realtime_key\"\nunset realtime_key\n"
@@ -911,6 +987,9 @@ func launcherScript(apiKeyEnv, realtimeAPIKeyEnv string, extractEnabled, firecra
 		// mem0PlatformKeyPath, exported under the fixed name the plugin's own
 		// config schema expects (mem0PlatformAPIKeyEnv).
 		script += "mem0_platform_key=$(cat " + mem0PlatformKeyPath + ")\nexport " + mem0PlatformAPIKeyEnv + "=\"$mem0_platform_key\"\nunset mem0_platform_key\n"
+	}
+	for _, hostVar := range mcpHostVars {
+		script += hostVar + "=\"$(cat /run/aries/mcp_" + hostVar + ".key)\"\nexport " + hostVar + "\n"
 	}
 	script += "unset model_key gateway_key\nexec \"$@\"\n"
 	return []byte(script)

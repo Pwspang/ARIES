@@ -69,15 +69,36 @@ func stripNumericPrefix(title string) string {
 
 // renderUserPrompt substitutes user_prompt_template.txt's three Python
 // str.format() placeholders literally (the template has no other format
-// directives to support), then unescapes the template's "{{"/"}}" literal
-// braces exactly as str.format() would.
+// directives to support). Only the template's own literal text unescapes
+// "{{"/"}}" the way str.format() would; the substituted values are inserted
+// verbatim so braces inside an answer/title are never altered.
 func renderUserPrompt(template, problemStatement, modelAnswer, title string) string {
-	rendered := strings.ReplaceAll(template, "{problem_statement}", problemStatement)
-	rendered = strings.ReplaceAll(rendered, "{model_answer}", modelAnswer)
-	rendered = strings.ReplaceAll(rendered, "{title}", title)
-	rendered = strings.ReplaceAll(rendered, "{{", "{")
-	rendered = strings.ReplaceAll(rendered, "}}", "}")
-	return rendered
+	placeholders := []string{"{problem_statement}", "{model_answer}", "{title}"}
+	values := []string{problemStatement, modelAnswer, title}
+
+	var rendered strings.Builder
+	remaining := template
+	for remaining != "" {
+		cutIndex := len(remaining)
+		matchedPlaceholder, matchedValue := "", ""
+		for index, placeholder := range placeholders {
+			if at := strings.Index(remaining, placeholder); at != -1 && at < cutIndex {
+				cutIndex = at
+				matchedPlaceholder = placeholder
+				matchedValue = values[index]
+			}
+		}
+		literal := remaining[:cutIndex]
+		literal = strings.ReplaceAll(literal, "{{", "{")
+		literal = strings.ReplaceAll(literal, "}}", "}")
+		rendered.WriteString(literal)
+		if matchedPlaceholder == "" {
+			break
+		}
+		rendered.WriteString(matchedValue)
+		remaining = remaining[cutIndex+len(matchedPlaceholder):]
+	}
+	return rendered.String()
 }
 
 // rawRating is one ratings[] entry as decoded straight off the judge's JSON
@@ -332,6 +353,9 @@ func evaluateSingleRubric(ctx context.Context, chat chatter, systemPrompt, userP
 		content, err := chat.chat(ctx, systemPrompt, userPrompt)
 		if err != nil {
 			lastErr = err
+			if attempt == maxRubricRetries-1 {
+				break
+			}
 			wait := rubricRetryBaseDelay * time.Duration(1<<uint(attempt+1))
 			if wait > rubricRetryCap {
 				wait = rubricRetryCap

@@ -37,17 +37,18 @@ import (
 )
 
 const (
-	defaultDockerSocket   = "/var/run/docker.sock"
-	defaultCleanupTimeout = 30 * time.Second
-	defaultStartTimeout   = 45 * time.Second
-	defaultAgentTimeout   = 20 * time.Minute
-	maxDockerOutput       = 16 << 20
-	maxAPIKeyBytes        = 16 << 10
-	gracefulStopSeconds   = 5
-	execTrailerKeep       = 256
-	gatewayListenPort     = "18789"
-	gatewayLauncherPath   = "/run/aries/gateway-launcher"
-	upstreamGatewayPort   = "18790"
+	defaultDockerSocket    = "/var/run/docker.sock"
+	defaultCleanupTimeout  = 30 * time.Second
+	defaultStartTimeout    = 45 * time.Second
+	defaultAgentTimeout    = 20 * time.Minute
+	defaultVoiceSTTTimeout = 5 * time.Minute
+	maxDockerOutput        = 16 << 20
+	maxAPIKeyBytes         = 16 << 10
+	gracefulStopSeconds    = 5
+	execTrailerKeep        = 256
+	gatewayListenPort      = "18789"
+	gatewayLauncherPath    = "/run/aries/gateway-launcher"
+	upstreamGatewayPort    = "18790"
 )
 
 const execShell = `token=$1
@@ -60,9 +61,14 @@ exit "$status"`
 var gatewayPort = network.MustParsePort(gatewayListenPort + "/tcp")
 
 const (
-	ModeAgent    = "agent"
-	ModeRealtime = "realtime"
+	ModeAgent           = "agent"
+	ModeRealtime        = "realtime"
+	ModeVoiceTranscribe = "voice-transcribe"
 )
+
+func isRealtimeMode(mode string) bool {
+	return mode == ModeRealtime || mode == ModeVoiceTranscribe
+}
 
 // Options are the host-local inputs to one upstream OpenClaw container.
 type Options struct {
@@ -167,6 +173,7 @@ type Options struct {
 	// Mem0BaseURL optionally overrides the plugin's default platform API
 	// base URL (https://api.mem0.ai), valid only with Mem0Mode "platform".
 	Mem0BaseURL    string
+	MCPServers     []core.MCPServerConfig
 	CleanupTimeout time.Duration
 	StartTimeout   time.Duration
 	AgentTimeout   time.Duration
@@ -272,8 +279,10 @@ type Manager struct {
 	mem0Mode                 string
 	mem0APIKeyEnv            string
 	mem0BaseURL              string
+	mcpServers               []core.MCPServerConfig
 	newID                    func() (string, error)
 	newGateway               func(string, []byte) (gatewayConnection, error)
+	newAgentGateway          func(string, []byte) (gatewayConnection, error)
 	newRealtime              func(realtimeclient.Gateway, realtimeclient.Options) (realtimeRunner, error)
 	newSpeech                func(audioinput.SpeechClientOptions) (speechSynthesizer, error)
 
@@ -350,6 +359,8 @@ type session struct {
 	mem0LLMAPIKey         []byte
 	mem0PlatformAPIKey    []byte
 	gatewayToken          []byte
+	mcpSecrets            [][]byte
+	mcpSecretFiles        map[string][]byte
 	gatewayURL            string
 	agentIdempotency      string
 	runAttempted          bool
@@ -412,7 +423,7 @@ func New(options Options) (*Manager, error) {
 		if options.Realtime != (RealtimeOptions{}) {
 			return nil, errors.New("OpenClaw realtime options require realtime mode")
 		}
-	case ModeRealtime:
+	case ModeRealtime, ModeVoiceTranscribe:
 		if options.Realtime.TrailingSilenceMillis < 0 {
 			return nil, errors.New("OpenClaw realtime options are invalid")
 		}
@@ -426,7 +437,12 @@ func New(options Options) (*Manager, error) {
 			options.Realtime.TTS.APIKeyEnv = "OPENAI_API_KEY"
 		}
 	default:
-		return nil, errors.New("OpenClaw mode must be agent or realtime")
+		return nil, errors.New("OpenClaw mode must be agent, realtime, or voice-transcribe")
+	}
+	for _, server := range options.MCPServers {
+		if err := core.ValidateMCPServer(server); err != nil {
+			return nil, err
+		}
 	}
 	return &Manager{
 		client: api, image: options.Image, outputDir: outputDir,
@@ -449,9 +465,12 @@ func New(options Options) (*Manager, error) {
 		mem0Enabled: options.Mem0Enabled, mem0LLMBaseURL: options.Mem0LLMBaseURL,
 		mem0LLMModel: options.Mem0LLMModel, mem0LLMAPIKeyEnv: options.Mem0LLMAPIKeyEnv,
 		mem0Mode: options.Mem0Mode, mem0APIKeyEnv: options.Mem0APIKeyEnv, mem0BaseURL: options.Mem0BaseURL,
-		newID: randomID,
+		mcpServers: options.MCPServers, newID: randomID,
 		newGateway: func(rawURL string, token []byte) (gatewayConnection, error) {
 			return newGatewayClientWithDisposition(rawURL, token, gatewayScopes(options.Mode), gatewayEventDisposition(options.Mode))
+		},
+		newAgentGateway: func(rawURL string, token []byte) (gatewayConnection, error) {
+			return newGatewayClientWithDisposition(rawURL, token, gatewayScopes(ModeAgent), gatewayclient.EventDispositionResponseOnly)
 		},
 		newRealtime: newRealtimeRunner, newSpeech: newSpeechClient,
 	}, nil
@@ -682,7 +701,9 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		}
 		mem0PlatformAPIKey = candidate
 	}
-	configuration, err := renderConfig(request.Model, request.Endpoint, manager.webSearchEnabled, manager.searchProvider, extractEnabled, manager.subagentsEnabled, manager.amemEnabled, manager.maxConcurrentSubagents, manager.amemLLMBaseURL, manager.amemLLMModel, manager.amemDisableTaskTraceFallback, manager.losslessClawEnabled, manager.losslessClawLLMBaseURL, manager.losslessClawLLMModel, manager.mem0Enabled, manager.mem0Mode, manager.mem0LLMBaseURL, manager.mem0LLMModel, manager.mem0BaseURL)
+	configuration, err := renderConfig(request.Model, request.Endpoint, manager.mode, manager.webSearchEnabled, manager.searchProvider, extractEnabled, manager.subagentsEnabled, manager.amemEnabled, manager.maxConcurrentSubagents, manager.amemLLMBaseURL, manager.amemLLMModel, manager.amemDisableTaskTraceFallback, manager.losslessClawEnabled, manager.losslessClawLLMBaseURL, manager.losslessClawLLMModel, manager.mem0Enabled, manager.mem0Mode, manager.mem0LLMBaseURL, manager.mem0LLMModel, manager.mem0BaseURL, MCPOptions{
+		Servers: manager.mcpServers,
+	})
 	if err != nil {
 		clear(extractAPIKey)
 		clear(firecrawlAPIKey)
@@ -719,7 +740,7 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		return err
 	}
 	var realtimeAPIKey []byte
-	if manager.mode == ModeRealtime {
+	if isRealtimeMode(manager.mode) {
 		realtimeKeySource, ok := manager.apiKeyLookup(manager.realtime.TTS.APIKeyEnv)
 		if !ok {
 			clear(apiKey)
@@ -856,6 +877,73 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(mem0PlatformAPIKey)
 		return errors.New("rendered OpenClaw config contains the mem0 platform API-key value")
 	}
+	mcpSecretFiles := make(map[string][]byte)
+	var mcpSecrets [][]byte
+	for _, srv := range manager.mcpServers {
+		keys := make([]string, 0, len(srv.SecretEnv))
+		for k := range srv.SecretEnv {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			hostVar := srv.SecretEnv[k]
+			if _, exists := mcpSecretFiles[hostVar]; exists {
+				continue
+			}
+			secretSource, ok := manager.apiKeyLookup(hostVar)
+			if !ok {
+				clear(apiKey)
+				clear(realtimeAPIKey)
+				clear(extractAPIKey)
+				clear(firecrawlAPIKey)
+				clear(tavilySearchAPIKey)
+				clear(amemLLMAPIKey)
+				clear(losslessClawLLMAPIKey)
+				clear(mem0LLMAPIKey)
+				clear(mem0PlatformAPIKey)
+				for _, s := range mcpSecrets {
+					clear(s)
+				}
+				return fmt.Errorf("OpenClaw MCP server %q secret environment variable %q (%q) is not set", srv.Name, hostVar, k)
+			}
+			secret := bytes.Clone(secretSource)
+			clear(secretSource)
+			if err := validateAPIKey(secret); err != nil {
+				clear(apiKey)
+				clear(realtimeAPIKey)
+				clear(extractAPIKey)
+				clear(firecrawlAPIKey)
+				clear(tavilySearchAPIKey)
+				clear(amemLLMAPIKey)
+				clear(losslessClawLLMAPIKey)
+				clear(mem0LLMAPIKey)
+				clear(mem0PlatformAPIKey)
+				clear(secret)
+				for _, s := range mcpSecrets {
+					clear(s)
+				}
+				return fmt.Errorf("OpenClaw MCP server %q secret environment variable %q (%q): %w", srv.Name, hostVar, k, err)
+			}
+			if bytes.Contains(configuration, secret) {
+				clear(apiKey)
+				clear(realtimeAPIKey)
+				clear(extractAPIKey)
+				clear(firecrawlAPIKey)
+				clear(tavilySearchAPIKey)
+				clear(amemLLMAPIKey)
+				clear(losslessClawLLMAPIKey)
+				clear(mem0LLMAPIKey)
+				clear(mem0PlatformAPIKey)
+				clear(secret)
+				for _, s := range mcpSecrets {
+					clear(s)
+				}
+				return fmt.Errorf("rendered OpenClaw config contains secret for MCP server %q (%q)", srv.Name, k)
+			}
+			mcpSecretFiles[hostVar] = secret
+			mcpSecrets = append(mcpSecrets, secret)
+		}
+	}
 	containerConfig := &container.Config{
 		Image: manager.image,
 		// dns-result-order=ipv4first works around a real OpenClaw bug: its
@@ -901,6 +989,9 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(losslessClawLLMAPIKey)
 		clear(mem0LLMAPIKey)
 		clear(mem0PlatformAPIKey)
+		for _, s := range mcpSecrets {
+			clear(s)
+		}
 		return fmt.Errorf("generate OpenClaw harness ID: %w", err)
 	}
 	gatewayToken, err := randomSecret(32)
@@ -914,6 +1005,9 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(losslessClawLLMAPIKey)
 		clear(mem0LLMAPIKey)
 		clear(mem0PlatformAPIKey)
+		for _, s := range mcpSecrets {
+			clear(s)
+		}
 		return fmt.Errorf("generate OpenClaw gateway token: %w", err)
 	}
 	agentIdempotency, err := randomID()
@@ -928,13 +1022,16 @@ func (manager *Manager) Start(ctx context.Context, request core.HarnessRequest) 
 		clear(mem0LLMAPIKey)
 		clear(mem0PlatformAPIKey)
 		clear(gatewayToken)
+		for _, s := range mcpSecrets {
+			clear(s)
+		}
 		return fmt.Errorf("generate OpenClaw agent idempotency key: %w", err)
 	}
 	manager.turnCount++
 	active := &session{
 		runID: request.RunID, taskID: request.TaskID, safeTaskID: safeTaskID(request.TaskID), attemptID: id,
 		containerName: "aries-openclaw-" + id, artifactDir: filepath.Join(manager.outputDir, request.TaskID, fmt.Sprintf("harness-turn-%02d", manager.turnCount)),
-		endpoint: request.Endpoint, model: request.Model, agentTimeout: agentTimeout, apiKey: apiKey, realtimeAPIKey: realtimeAPIKey, extractAPIKey: extractAPIKey, firecrawlAPIKey: firecrawlAPIKey, tavilySearchAPIKey: tavilySearchAPIKey, amemLLMAPIKey: amemLLMAPIKey, losslessClawLLMAPIKey: losslessClawLLMAPIKey, mem0LLMAPIKey: mem0LLMAPIKey, mem0PlatformAPIKey: mem0PlatformAPIKey, gatewayToken: gatewayToken, agentIdempotency: agentIdempotency,
+		endpoint: request.Endpoint, model: request.Model, agentTimeout: agentTimeout, apiKey: apiKey, realtimeAPIKey: realtimeAPIKey, extractAPIKey: extractAPIKey, firecrawlAPIKey: firecrawlAPIKey, tavilySearchAPIKey: tavilySearchAPIKey, amemLLMAPIKey: amemLLMAPIKey, losslessClawLLMAPIKey: losslessClawLLMAPIKey, mem0LLMAPIKey: mem0LLMAPIKey, mem0PlatformAPIKey: mem0PlatformAPIKey, gatewayToken: gatewayToken, mcpSecrets: mcpSecrets, mcpSecretFiles: mcpSecretFiles, agentIdempotency: agentIdempotency,
 	}
 	containerConfig.Labels["aries.attempt"] = active.attemptID
 	fail := func(primary error) error {
@@ -1042,7 +1139,7 @@ func (manager *Manager) Run(ctx context.Context, instruction string) (core.Harne
 	active.runAttempted = true
 	manager.mu.Unlock()
 
-	if manager.mode == ModeRealtime {
+	if isRealtimeMode(manager.mode) {
 		return manager.runRealtime(ctx, active, instruction, started)
 	}
 	runCtx, cancel := context.WithTimeout(ctx, active.agentTimeout)
@@ -1091,7 +1188,7 @@ func (manager *Manager) Run(ctx context.Context, instruction string) (core.Harne
 }
 
 func (manager *Manager) runRealtime(ctx context.Context, active *session, instruction string, started time.Time) (core.HarnessResult, error) {
-	audioPath, speechPaths, synthErr := manager.synthesizeRealtimeAudio(ctx, active, instruction)
+	audioPath, speechPaths, synthErr := manager.synthesizeVoiceInstruction(ctx, active, instruction)
 	if len(speechPaths) != 0 {
 		active.logPaths = appendUnique(active.logPaths, speechPaths...)
 	}
@@ -1104,8 +1201,10 @@ func (manager *Manager) runRealtime(ctx context.Context, active *session, instru
 		err = redactSessionError(err, active)
 		return failedHarnessResult(active, started, err), err
 	}
+	closeGatewayInRunner := manager.mode == ModeRealtime
 	runner, err := manager.newRealtime(client, realtimeclient.Options{
 		OriginalPrompt:        instruction,
+		SessionMode:           manager.mode,
 		SessionKey:            "agent:main:aries-" + active.safeTaskID,
 		Provider:              manager.realtime.Provider,
 		Model:                 manager.realtime.Model,
@@ -1119,16 +1218,41 @@ func (manager *Manager) runRealtime(ctx context.Context, active *session, instru
 		ToolCallTimeout:       manager.realtime.ToolCallTimeout,
 		AgentQuestionTemplate: manager.realtime.AgentQuestionTemplate,
 		IncludeEvents:         manager.realtime.IncludeEvents,
-		CloseGateway:          true,
+		CloseGateway:          closeGatewayInRunner,
 	})
 	if err != nil {
 		_ = client.Close()
 		err = redactSessionError(err, active)
 		return failedHarnessResult(active, started, err), err
 	}
-	runCtx, cancel := context.WithTimeout(ctx, active.agentTimeout)
-	realtimeResult, err := runner.Run(runCtx)
-	cancel()
+	var realtimeResult realtimeclient.Result
+	if manager.mode == ModeVoiceTranscribe {
+		transcribeCtx, transcribeCancel := context.WithTimeout(ctx, defaultVoiceSTTTimeout)
+		realtimeResult, err = runner.Run(transcribeCtx)
+		transcribeCancel()
+		closeErr := client.Close()
+		if err == nil {
+			if len(realtimeResult.Errors) != 0 {
+				err = errors.New(strings.Join(realtimeResult.Errors, "; "))
+			}
+		}
+		if err == nil {
+			agentClient, agentErr := manager.newAgentGateway(active.gatewayURL, active.gatewayToken)
+			if agentErr != nil {
+				err = agentErr
+			} else {
+				agentCtx, agentCancel := context.WithTimeout(ctx, active.agentTimeout)
+				err = manager.runAgentWithTranscript(agentCtx, active, agentClient, &realtimeResult)
+				agentCancel()
+				err = errors.Join(err, agentClient.Close())
+			}
+		}
+		err = errors.Join(err, closeErr)
+	} else {
+		runCtx, cancel := context.WithTimeout(ctx, active.agentTimeout)
+		realtimeResult, err = runner.Run(runCtx)
+		cancel()
+	}
 	realtimeResult = redactRealtimeResult(realtimeResult, active)
 	err = redactSessionError(err, active)
 	resultPath, writeErr := manager.writeRealtimeResult(active, realtimeResult)
@@ -1136,7 +1260,7 @@ func (manager *Manager) runRealtime(ctx context.Context, active *session, instru
 		active.logPaths = appendUnique(active.logPaths, resultPath)
 	}
 	err = errors.Join(err, writeErr)
-	if len(realtimeResult.Errors) != 0 {
+	if len(realtimeResult.Errors) != 0 && manager.mode != ModeVoiceTranscribe {
 		err = errors.Join(err, errors.New(strings.Join(realtimeResult.Errors, "; ")))
 	}
 	artifactCtx, artifactCancel := context.WithTimeout(context.WithoutCancel(ctx), manager.cleanupTimeout)
@@ -1150,6 +1274,53 @@ func (manager *Manager) runRealtime(ctx context.Context, active *session, instru
 		Status: core.StatusSucceeded, FinalResponse: realtimeResult.FinalText(), Duration: time.Since(started),
 		LogPaths: append([]string(nil), active.logPaths...),
 	}, nil
+}
+
+func (manager *Manager) runAgentWithTranscript(ctx context.Context, active *session, client gatewayConnection, result *realtimeclient.Result) error {
+	transcript := strings.TrimSpace(result.Transcript)
+	if len(result.TranscriptDoneParts) != 0 {
+		parts := make([]string, 0, len(result.TranscriptDoneParts))
+		for _, part := range result.TranscriptDoneParts {
+			if text := strings.TrimSpace(part); text != "" {
+				parts = append(parts, text)
+			}
+		}
+		if len(parts) != 0 {
+			transcript = strings.Join(parts, "\n")
+		}
+	}
+	if transcript == "" {
+		err := errors.New("missing_transcript: OpenClaw voice-transcribe mode returned no text")
+		result.AppendError(err.Error())
+		return err
+	}
+	thinking := ""
+	if disablesThinking(active.model) {
+		thinking = "off"
+	}
+	connectSummary, err := client.Connect(ctx, gatewayclient.ConnectOptions{})
+	if err == nil && !connectSummary.HasScope("operator.write") {
+		err = errors.New("OpenClaw agent gateway requires operator.write scope")
+	}
+	if err != nil {
+		result.AppendError(err.Error())
+		return err
+	}
+	agentResult, err := client.Agent(ctx, gatewayclient.AgentRequest{
+		Message: transcript, SessionKey: "agent:main:aries-" + active.safeTaskID,
+		IdempotencyKey: active.agentIdempotency, Thinking: thinking,
+	})
+	if agentResult.RunID != "" {
+		result.AgentRunIDs = append(result.AgentRunIDs, agentResult.RunID)
+	}
+	result.AgentQuestionUsed = transcript
+	result.OutputText = agentResult.Text
+	if err != nil {
+		result.AppendError(err.Error())
+		return err
+	}
+	result.AgentConsultOK = true
+	return nil
 }
 
 func newGatewayClientWithDisposition(rawURL string, token []byte, scopes []string, disposition gatewayclient.EventDisposition) (gatewayConnection, error) {
@@ -1168,7 +1339,7 @@ func gatewayEventDisposition(mode string) gatewayclient.EventDisposition {
 }
 
 func gatewayScopes(mode string) []string {
-	if mode == ModeRealtime {
+	if isRealtimeMode(mode) {
 		return []string{"operator.read", "operator.write"}
 	}
 	return []string{"operator.write"}
@@ -1209,8 +1380,8 @@ func (manager *Manager) gatewayURL(ctx context.Context, active *session) (string
 	return "ws://" + net.JoinHostPort("127.0.0.1", binding.HostPort), nil
 }
 
-func (manager *Manager) synthesizeRealtimeAudio(ctx context.Context, active *session, instruction string) (string, []string, error) {
-	instructionPath := filepath.Join(active.artifactDir, "voice-instruction.txt")
+func (manager *Manager) synthesizeVoiceInstruction(ctx context.Context, active *session, instruction string) (string, []string, error) {
+	instructionPath := filepath.Join(active.artifactDir, audioinput.VoiceInstructionTextFile)
 	if err := writeArtifact(instructionPath, []byte(instruction)); err != nil {
 		return "", nil, fmt.Errorf("write realtime voice instruction: %w", err)
 	}
@@ -1225,45 +1396,33 @@ func (manager *Manager) synthesizeRealtimeAudio(ctx context.Context, active *ses
 		clear(apiKey)
 		return "", []string{instructionPath}, fmt.Errorf("OpenClaw realtime TTS API key: %w", err)
 	}
-	synthesizer, err := manager.newSpeech(audioinput.SpeechClientOptions{BaseURL: manager.realtime.TTS.BaseURL, APIKey: apiKey, Timeout: manager.realtime.TTS.Timeout})
-	clear(apiKey)
-	if err != nil {
-		return "", []string{instructionPath}, fmt.Errorf("construct realtime TTS client: %w", err)
-	}
-	defer synthesizer.Close()
-	result, err := synthesizer.Synthesize(ctx, audioinput.SpeechRequest{
-		Text: instruction, Model: manager.realtime.TTS.Model, Voice: manager.realtime.TTS.Voice,
-		Format: "wav", Instructions: manager.realtime.TTS.Instructions, Speed: manager.realtime.TTS.Speed,
+	apiKeyCleared := false
+	defer func() {
+		if !apiKeyCleared {
+			clear(apiKey)
+		}
+	}()
+	return audioinput.SynthesizeVoiceInstruction(ctx, instruction, audioinput.VoiceInstructionOptions{
+		ArtifactDir:     active.artifactDir,
+		InstructionPath: instructionPath,
+		ErrorLabel:      "realtime",
+		TTSErrorLabel:   "realtime",
+		Provider:        manager.realtime.TTS.Provider,
+		BaseURL:         manager.realtime.TTS.BaseURL,
+		APIKey:          apiKey,
+		Model:           manager.realtime.TTS.Model,
+		Voice:           manager.realtime.TTS.Voice,
+		Instructions:    manager.realtime.TTS.Instructions,
+		Speed:           manager.realtime.TTS.Speed,
+		Timeout:         manager.realtime.TTS.Timeout,
+		NewSpeech: func(options audioinput.SpeechClientOptions) (audioinput.SpeechSynthesizer, error) {
+			synthesizer, err := manager.newSpeech(options)
+			clear(apiKey)
+			apiKeyCleared = true
+			return synthesizer, err
+		},
+		WriteArtifact: writeArtifact,
 	})
-	if err != nil {
-		return "", []string{instructionPath}, fmt.Errorf("synthesize realtime voice instruction: %w", err)
-	}
-	audioPath := filepath.Join(active.artifactDir, "voice-instruction.wav")
-	if err := writeArtifact(audioPath, result.Audio); err != nil {
-		clear(result.Audio)
-		return "", []string{instructionPath}, fmt.Errorf("write realtime voice audio: %w", err)
-	}
-	clear(result.Audio)
-	metaPath := filepath.Join(active.artifactDir, "voice-instruction.wav.meta.json")
-	metadata := map[string]any{
-		"provider":    manager.realtime.TTS.Provider,
-		"model":       result.Model,
-		"voice":       result.Voice,
-		"format":      result.Format,
-		"text_sha256": result.TextSHA256,
-		"text_chars":  len(instruction),
-		"cached":      false,
-		"output_path": audioPath,
-	}
-	content, err := json.MarshalIndent(metadata, "", "  ")
-	if err != nil {
-		return "", []string{instructionPath, audioPath}, fmt.Errorf("encode realtime TTS metadata: %w", err)
-	}
-	content = append(content, '\n')
-	if err := writeArtifact(metaPath, content); err != nil {
-		return "", []string{instructionPath, audioPath}, fmt.Errorf("write realtime TTS metadata: %w", err)
-	}
-	return audioPath, []string{instructionPath, audioPath, metaPath}, nil
 }
 
 func (manager *Manager) realtimeAudioProvider(audioPath string) realtimeclient.AudioProvider {
@@ -1650,13 +1809,14 @@ func (manager *Manager) validateContainer(ctx context.Context, active *session) 
 		configuration.Labels["aries.run"] != active.runID || configuration.Labels["aries.task"] != active.taskID || configuration.Labels["aries.attempt"] != active.attemptID {
 		return errors.New("OpenClaw container labels do not match the task")
 	}
+	secrets := append([][]byte{active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.firecrawlAPIKey, active.tavilySearchAPIKey, active.amemLLMAPIKey, active.losslessClawLLMAPIKey, active.mem0LLMAPIKey, active.mem0PlatformAPIKey, active.gatewayToken}, active.mcpSecrets...)
 	for _, value := range append(append([]string(nil), configuration.Env...), configuration.Cmd...) {
-		if containsSecret(value, active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.firecrawlAPIKey, active.tavilySearchAPIKey, active.amemLLMAPIKey, active.losslessClawLLMAPIKey, active.mem0LLMAPIKey, active.mem0PlatformAPIKey, active.gatewayToken) {
+		if containsSecret(value, secrets...) {
 			return errors.New("OpenClaw secret entered Docker configuration")
 		}
 	}
 	for _, value := range configuration.Labels {
-		if containsSecret(value, active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.firecrawlAPIKey, active.tavilySearchAPIKey, active.amemLLMAPIKey, active.losslessClawLLMAPIKey, active.mem0LLMAPIKey, active.mem0PlatformAPIKey, active.gatewayToken) {
+		if containsSecret(value, secrets...) {
 			return errors.New("OpenClaw secret entered Docker labels")
 		}
 	}
@@ -1682,11 +1842,16 @@ func (manager *Manager) runtimeArchive(active *session, configuration []byte) ([
 		return nil, fmt.Errorf("read OpenClaw known-hosts: %w", err)
 	}
 	defer clear(knownHosts)
+	mcpHostVars := make([]string, 0, len(active.mcpSecretFiles))
+	for hostVar := range active.mcpSecretFiles {
+		mcpHostVars = append(mcpHostVars, hostVar)
+	}
+	sort.Strings(mcpHostVars)
 	files := map[string]stagedFile{
 		"run/aries/openclaw.json":    {content: configuration, mode: 0o600},
 		"run/aries/model.key":        {content: active.apiKey, mode: 0o600},
 		"run/aries/gateway.key":      {content: active.gatewayToken, mode: 0o600},
-		"run/aries/launch":           {content: launcherScript(active.model.APIKeyEnv, manager.realtimeAPIKeyEnv(active), len(active.extractAPIKey) != 0, len(active.firecrawlAPIKey) != 0, len(active.tavilySearchAPIKey) != 0, manager.amemEnabled, len(active.amemLLMAPIKey) != 0, len(active.losslessClawLLMAPIKey) != 0, manager.mem0Enabled, len(active.mem0LLMAPIKey) != 0, manager.mem0Mode == "platform", len(active.mem0PlatformAPIKey) != 0), mode: 0o555},
+		"run/aries/launch":           {content: launcherScript(active.model.APIKeyEnv, manager.realtimeAPIKeyEnv(active), len(active.extractAPIKey) != 0, len(active.firecrawlAPIKey) != 0, len(active.tavilySearchAPIKey) != 0, manager.amemEnabled, len(active.amemLLMAPIKey) != 0, len(active.losslessClawLLMAPIKey) != 0, manager.mem0Enabled, len(active.mem0LLMAPIKey) != 0, manager.mem0Mode == "platform", len(active.mem0PlatformAPIKey) != 0, mcpHostVars...), mode: 0o555},
 		"run/aries/gateway-proxy.js": {content: gatewayProxyScript(), mode: 0o555},
 		"run/aries/gateway-launcher": {content: gatewayLauncherScript(manager.amemEnabled), mode: 0o555},
 		"run/aries/ssh/id_ed25519":   {content: identity, mode: 0o600},
@@ -1721,6 +1886,9 @@ func (manager *Manager) runtimeArchive(active *session, configuration []byte) ([
 	if len(active.mem0PlatformAPIKey) != 0 {
 		files["run/aries/mem0-platform.key"] = stagedFile{content: active.mem0PlatformAPIKey, mode: 0o600}
 	}
+	for _, hostVar := range mcpHostVars {
+		files["run/aries/mcp_"+hostVar+".key"] = stagedFile{content: active.mcpSecretFiles[hostVar], mode: 0o600}
+	}
 	return stageArchive(files)
 }
 
@@ -1734,7 +1902,7 @@ func containsSecret(value string, secrets ...[]byte) bool {
 }
 
 func (manager *Manager) realtimeAPIKeyEnv(active *session) string {
-	if manager.mode != ModeRealtime || len(active.realtimeAPIKey) == 0 {
+	if !isRealtimeMode(manager.mode) || len(active.realtimeAPIKey) == 0 {
 		return ""
 	}
 	return manager.realtime.TTS.APIKeyEnv
@@ -2271,11 +2439,20 @@ func clearSessionSecrets(active *session) {
 	active.mem0PlatformAPIKey = nil
 	clear(active.gatewayToken)
 	active.gatewayToken = nil
+	for i := range active.mcpSecrets {
+		clear(active.mcpSecrets[i])
+	}
+	active.mcpSecrets = nil
+	for k := range active.mcpSecretFiles {
+		clear(active.mcpSecretFiles[k])
+	}
+	active.mcpSecretFiles = nil
 	active.agentIdempotency = ""
 }
 
 func redactSession(content []byte, active *session) []byte {
-	return redactSecrets(content, active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.firecrawlAPIKey, active.tavilySearchAPIKey, active.amemLLMAPIKey, active.losslessClawLLMAPIKey, active.mem0LLMAPIKey, active.mem0PlatformAPIKey, active.gatewayToken)
+	secrets := append([][]byte{active.apiKey, active.realtimeAPIKey, active.extractAPIKey, active.firecrawlAPIKey, active.tavilySearchAPIKey, active.amemLLMAPIKey, active.losslessClawLLMAPIKey, active.mem0LLMAPIKey, active.mem0PlatformAPIKey, active.gatewayToken}, active.mcpSecrets...)
+	return redactSecrets(content, secrets...)
 }
 
 type sessionRedactedError struct {

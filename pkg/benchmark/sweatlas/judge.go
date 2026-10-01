@@ -18,6 +18,7 @@ import (
 const (
 	defaultJudgeTimeout = 300 * time.Second
 	maxJudgeBytes       = 8 << 20
+	maxTokens           = 2048
 )
 
 // judgeClient is a generic OpenAI-compatible chat-completions client, ported
@@ -69,6 +70,7 @@ func (client *judgeClient) chat(ctx context.Context, systemPrompt, userPrompt st
 			{"role": "system", "content": systemPrompt},
 			{"role": "user", "content": userPrompt},
 		},
+		"max_tokens": maxTokens,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

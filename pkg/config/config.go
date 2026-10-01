@@ -6,11 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,8 +46,24 @@ type ExecutionConfig struct {
 	Concurrency  int           `json:"concurrency"`
 	LoopDuration string        `json:"loop_duration,omitempty"`
 	Loop         time.Duration `json:"-"`
+	// ArrivalsFile and ArrivalRatePerMin turn the run into an open loop: each
+	// task starts at the offset the trace gives it, scaled from the trace's
+	// base rate to ArrivalRatePerMin, instead of as soon as a worker is free.
+	// Concurrency still caps the tasks in flight; set it at or above the task
+	// count so the schedule, not the pool, decides when a task starts.
+	ArrivalsFile      string  `json:"arrivals_file,omitempty"`
+	ArrivalRatePerMin float64 `json:"arrival_rate_per_min,omitempty"`
 }
 
+// RuntimeConfig selects the model service. Mode is the ownership distinction:
+// "external" is an endpoint ARIES validates but never starts, configures, or
+// stops; "managed" is a host process ARIES owns for the run. Backend names the
+// kind of service behind the endpoint, not a runtime ARIES prepares: it
+// selects the preflight and the provider each harness renders. "deepseek" is
+// the official DeepSeek endpoint with its own preflight; "openai" is any other
+// OpenAI-compatible server (vLLM, llama.cpp, a gateway) with generic /v1/models
+// discovery; both are external only. "sglang" shares that discovery, may be
+// external or managed; only managed mode requires a native YAML launch file.
 type RuntimeConfig struct {
 	Backend string              `json:"backend"`
 	Mode    string              `json:"mode"`
@@ -68,6 +87,10 @@ type RuntimeOverrides struct {
 	AgentSandboxResources ResourceOverrides `json:"agent_sandbox_resources,omitempty"`
 	AgentTimeoutSeconds   *float64          `json:"agent_timeout_seconds,omitempty"`
 	AgentTimeout          *time.Duration    `json:"-"`
+	// VerifierTimeoutFloorSeconds raises a Terminal-Bench task's verifier
+	// budget to at least this value. It never lowers a declared budget.
+	VerifierTimeoutFloorSeconds *float64       `json:"verifier_timeout_floor_seconds,omitempty"`
+	VerifierTimeoutFloor        *time.Duration `json:"-"`
 }
 
 // ResourceOverrides changes only the named container resource dimensions.
@@ -93,6 +116,40 @@ type ProfileModel struct {
 	// core.ModelConfig.CompactionTimeoutMs. Zero (the default) leaves the
 	// harness's own default (180000ms) in place.
 	CompactionTimeoutMs int `json:"compaction_timeout_ms,omitempty"`
+	// ContextLength, MaxTokens, and Temperature are optional. They reach the
+	// harness through core.ModelConfig. Only Hermes renders them, so a
+	// profile that sets one under another harness is rejected.
+	ContextLength int      `json:"context_length,omitempty"`
+	MaxTokens     int      `json:"max_tokens,omitempty"`
+	Temperature   *float64 `json:"temperature,omitempty"`
+}
+
+// validateGeneration checks the optional generation settings against the
+// selected harness. Unset fields are always valid.
+func (m ProfileModel) validateGeneration(harnessType string) error {
+	set := m.ContextLength != 0 || m.MaxTokens != 0 || m.Temperature != nil
+	if !set {
+		return nil
+	}
+	if harnessType != "hermes" {
+		return errors.New("model.context_length, model.max_tokens, and model.temperature require Hermes")
+	}
+	if m.ContextLength < 0 {
+		return errors.New("model.context_length must be positive")
+	}
+	if m.MaxTokens < 0 {
+		return errors.New("model.max_tokens must be positive")
+	}
+	if m.ContextLength > 0 && m.MaxTokens > 0 && m.MaxTokens >= m.ContextLength {
+		return errors.New("model.max_tokens must be smaller than model.context_length")
+	}
+	if m.Temperature != nil {
+		t := *m.Temperature
+		if math.IsNaN(t) || math.IsInf(t, 0) || t < 0 || t > 2 {
+			return errors.New("model.temperature must be between 0 and 2")
+		}
+	}
+	return nil
 }
 
 type BenchmarkConfig struct {
@@ -134,7 +191,8 @@ type StructuredSubtasksConfig struct {
 
 // BenchmarkEnvironment describes the task sandbox for benchmarks (currently
 // only Deep Research Bench) that have no per-task environment source of
-// their own, unlike Terminal-Bench 2's task.toml. AllowNetwork is
+// their own, unlike Terminal-Bench 2's task.toml and SWE-bench Pro's dataset
+// rows. AllowNetwork is
 // deliberately not configurable here: Deep Research Bench forces it on
 // unconditionally because its tasks are open-ended web research.
 type BenchmarkEnvironment struct {
@@ -147,19 +205,21 @@ type BenchmarkEnvironment struct {
 }
 
 // JudgeConfig identifies the LLM used to grade Deep Research Bench reports
-// (see BenchmarkConfig.Judge). It is intentionally a distinct type from
-// ProfileModel so judge-specific fields can be added later without colliding
-// with the harness model's shape.
+// or SWE-Atlas QA answers (see BenchmarkConfig.Judge). It is intentionally a
+// distinct type from ProfileModel so judge-specific fields can be added
+// later without colliding with the harness model's shape.
 //
-// Enabled is a master switch for all LLM-based grading, not just RACE:
-// setting it to false also disables FACT (see BenchmarkConfig.Fact), even
-// if a fact block is separately configured — a still-present fact block is
-// silently skipped rather than rejected in that case (see
-// deepresearchbench.New's FactSkipReason). It is a pointer so "unset"
-// (defaults to enabled, matching today's always-on RACE behavior) is
-// distinguishable from an explicit "false", mirroring
-// HarnessSubagentsConfig.Enabled. The other fields must be left empty when
-// Enabled is false, since they would otherwise be meaningless.
+// Enabled is a master switch for all LLM-based grading. For
+// deepresearchbench, setting it to false also disables FACT (see
+// BenchmarkConfig.Fact), even if a fact block is separately configured — a
+// still-present fact block is silently skipped rather than rejected in that
+// case (see deepresearchbench.New's FactSkipReason). For sweatlasqa, setting
+// it to false skips rubric grading entirely (see sweatlas.New's
+// JudgeDisabled). It is a pointer so "unset" (defaults to enabled, matching
+// today's always-on grading behavior) is distinguishable from an explicit
+// "false", mirroring HarnessSubagentsConfig.Enabled. The other fields must
+// be left empty when Enabled is false, since they would otherwise be
+// meaningless.
 type JudgeConfig struct {
 	Enabled   *bool  `json:"enabled,omitempty"`
 	Provider  string `json:"provider"`
@@ -191,11 +251,25 @@ func (f FactConfig) CoreModel() core.ModelConfig {
 }
 
 type HarnessConfig struct {
-	Type         string                    `json:"type"`
-	Mode         string                    `json:"mode,omitempty"`
-	Realtime     HarnessRealtimeConfig     `json:"realtime,omitempty"`
-	WebSearch    HarnessWebSearchConfig    `json:"web_search,omitempty"`
-	Subagents    HarnessSubagentsConfig    `json:"subagents,omitempty"`
+	Type            string                       `json:"type"`
+	Mode            string                       `json:"mode,omitempty"`
+	Realtime        HarnessRealtimeConfig        `json:"realtime,omitempty"`
+	VoiceTranscribe HarnessVoiceTranscribeConfig `json:"voice_transcribe,omitempty"`
+	WebSearch       HarnessWebSearchConfig       `json:"web_search,omitempty"`
+	Subagents       HarnessSubagentsConfig       `json:"subagents,omitempty"`
+	// MCPServers configures external or in-harness Model Context Protocol (MCP) servers
+	// for Hermes and OpenClaw harnesses.
+	MCPServers []core.MCPServerConfig `json:"mcp_servers,omitempty"`
+	// Compaction is rendered only by Hermes today (see
+	// (*HarnessConfig).validateHermesBlocks) but names a general harness
+	// capability, so it lives on the shared struct and is gated by an
+	// explicit type check, same as WebSearch above. An absent block keeps
+	// Hermes's own defaults.
+	Compaction *HarnessCompactionConfig `json:"compaction,omitempty"`
+	// Hermes holds settings that exist only because of how Hermes is
+	// configured and mean nothing to another harness. Such escape hatches go
+	// under this type-specific block rather than onto the shared fields.
+	Hermes       *HarnessHermesConfig      `json:"hermes,omitempty"`
 	AMEM         HarnessAMEMConfig         `json:"amem,omitempty"`
 	LosslessClaw HarnessLosslessClawConfig `json:"lossless_claw,omitempty"`
 	Mem0         HarnessMem0Config         `json:"mem0,omitempty"`
@@ -381,6 +455,76 @@ type HarnessMem0Config struct {
 	BaseURL      string `json:"base_url,omitempty"`
 }
 
+// HarnessHermesConfig is the harness.hermes block. It is valid only with
+// harness.type "hermes" and must set at least one field.
+type HarnessHermesConfig struct {
+	// ExtraBody is an opaque JSON object that Hermes merges into every chat
+	// request (custom_providers[].extra_body in config.yaml). It is kept as
+	// raw bytes: ARIES validates its shape, its ${NAME} references, and the
+	// absence of credential-bearing fields, but never interprets its keys.
+	ExtraBody json.RawMessage `json:"extra_body,omitempty"`
+}
+
+// HarnessCompactionConfig controls Hermes's context compaction. Hermes
+// compacts when the prompt reaches max(context_length * threshold, 64K),
+// raised to 75% of windows under 512K. ThresholdTokens is an absolute cap
+// that Hermes applies after those floors (compression.threshold_tokens in
+// config.yaml), so it is the one knob that sets an exact trigger on a
+// large-window model. Enabled false turns compaction off.
+type HarnessCompactionConfig struct {
+	Enabled         *bool `json:"enabled,omitempty"`
+	ThresholdTokens int   `json:"threshold_tokens,omitempty"`
+}
+
+// extraBodyPlaceholders are the only ${NAME} references
+// harness.hermes.extra_body may carry. Hermes expands every ${NAME} in its
+// configuration from the process environment, and the Hermes harness exports
+// exactly these two names into the container, so any other reference would
+// either stay literal or pull a value, such as the credential, into request
+// bodies.
+var extraBodyPlaceholders = map[string]bool{"ARIES_RUN_ID": true, "ARIES_TASK_ID": true}
+
+var placeholderPattern = regexp.MustCompile(`\$\{([^}]*)\}`)
+
+// credentialFieldNames are field names that carry a credential in common
+// request and gateway schemas, compared after lowercasing and dropping "_",
+// "-", and ".". A profile is rejected when harness.hermes.extra_body contains
+// one at any depth: the object is written into the retained config.yaml and
+// sent with every request, and model keys stay out of JSON profiles. Exact
+// names rather than substrings, so max_tokens and threshold_tokens pass.
+var credentialFieldNames = map[string]bool{
+	"accesstoken": true, "apikey": true, "apitoken": true, "auth": true, "authorization": true,
+	"authtoken": true, "bearer": true, "bearertoken": true, "clientsecret": true, "credential": true,
+	"credentials": true, "key": true, "passwd": true, "password": true, "privatekey": true,
+	"refreshtoken": true, "secret": true, "sessiontoken": true, "token": true, "xapikey": true,
+}
+
+// findCredentialField walks a decoded JSON value and returns the dotted path
+// of the first credential-bearing field name, or "" when there is none. Keys
+// are visited in sorted order so the reported path is stable.
+func findCredentialField(value any, path string) string {
+	switch typed := value.(type) {
+	case map[string]any:
+		for _, key := range slices.Sorted(maps.Keys(typed)) {
+			child := path + "." + key
+			normalized := strings.NewReplacer("_", "", "-", "", ".", "").Replace(strings.ToLower(key))
+			if credentialFieldNames[normalized] {
+				return child
+			}
+			if found := findCredentialField(typed[key], child); found != "" {
+				return found
+			}
+		}
+	case []any:
+		for index, element := range typed {
+			if found := findCredentialField(element, path+"["+strconv.Itoa(index)+"]"); found != "" {
+				return found
+			}
+		}
+	}
+	return ""
+}
+
 // HarnessWebSearchConfig is an OpenClaw/Hermes-only concept (see
 // (*HarnessConfig).validate), same as Realtime above: it lives on the shared
 // struct rather than a type-specific sub-block, gated by an explicit type
@@ -479,6 +623,19 @@ type RealtimeTTSConfig struct {
 	Timeout      time.Duration `json:"-"`
 }
 
+type HarnessVoiceTranscribeConfig struct {
+	HarnessRealtimeConfig
+	STT VoiceSTTConfig `json:"stt,omitempty"`
+}
+
+type VoiceSTTConfig struct {
+	Provider    string        `json:"provider,omitempty"`
+	Model       string        `json:"model,omitempty"`
+	Language    string        `json:"language,omitempty"`
+	TimeoutText string        `json:"timeout,omitempty"`
+	Timeout     time.Duration `json:"-"`
+}
+
 type SandboxConfig struct {
 	Type string `json:"type"`
 }
@@ -500,9 +657,9 @@ func (c BridgeConfig) RetainBridgeRawLog() bool {
 
 func (c Config) CoreModel() core.ModelConfig {
 	return core.ModelConfig{
-		Provider: c.Runtime.Backend, BaseURL: c.Model.BaseURL, Model: c.Model.ID,
-		APIKeyEnv: c.Model.APIKeyEnv, MaxOutputTokens: c.Model.MaxOutputTokens,
-		ContextWindowTokens: c.Model.ContextWindowTokens,
+		Provider: c.Runtime.Backend, BaseURL: c.Model.BaseURL, Model: c.Model.ID, APIKeyEnv: c.Model.APIKeyEnv,
+		ContextLength: c.Model.ContextLength, MaxTokens: c.Model.MaxTokens, Temperature: c.Model.Temperature,
+		MaxOutputTokens: c.Model.MaxOutputTokens, ContextWindowTokens: c.Model.ContextWindowTokens,
 		CompactionTimeoutMs: c.Model.CompactionTimeoutMs,
 	}
 }
@@ -512,6 +669,7 @@ type Versions struct {
 	TerminalBench2    TerminalBench2Versions    `json:"terminalbench2"`
 	DeepResearchBench DeepResearchBenchVersions `json:"deepresearchbench"`
 	SWEAtlas          SWEAtlasVersions          `json:"sweatlasqa"`
+	SWEbenchPro       SWEbenchProVersions       `json:"swebenchpro"`
 	OpenClaw          OpenClawVersions          `json:"openclaw"`
 	Hermes            HermesVersions            `json:"hermes"`
 	AMEMQdrant        AMEMQdrantVersions        `json:"amem_qdrant"`
@@ -530,6 +688,13 @@ type DeepResearchBenchVersions struct {
 type SWEAtlasVersions struct {
 	RepositoryURL string `json:"repository_url"`
 	Revision      string `json:"revision"`
+}
+
+type SWEbenchProVersions struct {
+	DatasetRepositoryURL   string `json:"dataset_repository_url"`
+	DatasetRevision        string `json:"dataset_revision"`
+	EvaluatorRepositoryURL string `json:"evaluator_repository_url"`
+	EvaluatorRevision      string `json:"evaluator_revision"`
 }
 
 type OpenClawVersions struct {
@@ -618,15 +783,30 @@ func (o *RuntimeOverrides) validate() error {
 	if err := validateResources("agent_sandbox_resources", o.AgentSandboxResources); err != nil {
 		return err
 	}
-	if o.AgentTimeoutSeconds != nil {
-		scaled := *o.AgentTimeoutSeconds * float64(time.Second)
-		if *o.AgentTimeoutSeconds <= 0 || math.IsNaN(*o.AgentTimeoutSeconds) || math.IsInf(*o.AgentTimeoutSeconds, 0) || scaled >= math.Exp2(63) {
-			return errors.New("agent_timeout_seconds must be finite, positive, and convert to nanoseconds below 2^63")
-		}
-		duration := time.Duration(scaled)
-		o.AgentTimeout = &duration
+	var err error
+	if o.AgentTimeout, err = secondsDuration("agent_timeout_seconds", o.AgentTimeoutSeconds); err != nil {
+		return err
+	}
+	if o.VerifierTimeoutFloor, err = secondsDuration("verifier_timeout_floor_seconds", o.VerifierTimeoutFloorSeconds); err != nil {
+		return err
 	}
 	return nil
+}
+
+// secondsDuration converts an optional positive seconds value into a duration.
+func secondsDuration(name string, seconds *float64) (*time.Duration, error) {
+	if seconds == nil {
+		return nil, nil
+	}
+	scaled := *seconds * float64(time.Second)
+	if *seconds <= 0 || math.IsNaN(*seconds) || math.IsInf(*seconds, 0) || scaled >= math.Exp2(63) {
+		return nil, fmt.Errorf("%s must be finite, positive, and convert to nanoseconds below 2^63", name)
+	}
+	duration := time.Duration(scaled)
+	if duration <= 0 {
+		return nil, fmt.Errorf("%s must be finite, positive, and convert to a positive duration below 2^63 nanoseconds", name)
+	}
+	return &duration, nil
 }
 
 func validateResources(name string, resources ResourceOverrides) error {
@@ -711,6 +891,17 @@ func (c *Config) validate() error {
 		}
 		c.Execution.Loop = loop
 	}
+	if (c.Execution.ArrivalsFile != "") != (c.Execution.ArrivalRatePerMin != 0) {
+		return errors.New("execution.arrivals_file and execution.arrival_rate_per_min must be set together")
+	}
+	if c.Execution.ArrivalsFile != "" {
+		if !(c.Execution.ArrivalRatePerMin > 0) || math.IsInf(c.Execution.ArrivalRatePerMin, 0) {
+			return errors.New("execution.arrival_rate_per_min must be finite and positive")
+		}
+		if c.Execution.LoopDuration != "" {
+			return errors.New("execution.arrivals_file cannot be combined with execution.loop_duration")
+		}
+	}
 	checks := []struct {
 		name  string
 		value string
@@ -734,8 +925,8 @@ func (c *Config) validate() error {
 			return fmt.Errorf("%s is required", check.name)
 		}
 	}
-	if c.Runtime.Backend != "deepseek" && c.Runtime.Backend != "sglang" {
-		return errors.New("runtime.backend must be deepseek or sglang")
+	if c.Runtime.Backend != "deepseek" && c.Runtime.Backend != "sglang" && c.Runtime.Backend != "openai" {
+		return errors.New("runtime.backend must be deepseek, sglang, or openai")
 	}
 	if c.Harness.Mode == "" {
 		c.Harness.Mode = "agent"
@@ -750,6 +941,32 @@ func (c *Config) validate() error {
 	}
 	if err := c.Harness.validate(); err != nil {
 		return err
+	}
+	if err := c.Model.validateGeneration(c.Harness.Type); err != nil {
+		return err
+	}
+	if c.Harness.Compaction != nil && c.Model.ContextLength > 0 && c.Harness.Compaction.ThresholdTokens >= c.Model.ContextLength {
+		return errors.New("harness.compaction.threshold_tokens must be smaller than model.context_length")
+	}
+	// Hermes merges a custom_providers extra_body only for its "custom"
+	// provider, which is how the OpenAI-compatible backends render; under
+	// DeepSeek the block would be silently ignored.
+	if c.Harness.Hermes != nil && c.Runtime.Backend != "sglang" && c.Runtime.Backend != "openai" {
+		return errors.New("harness.hermes.extra_body requires runtime.backend sglang or openai")
+	}
+	if c.Model.Temperature != nil {
+		if c.Runtime.Backend != "sglang" && c.Runtime.Backend != "openai" {
+			return errors.New("model.temperature requires runtime.backend sglang or openai for Hermes")
+		}
+		if c.Harness.Hermes != nil {
+			var object map[string]json.RawMessage
+			if err := json.Unmarshal(c.Harness.Hermes.ExtraBody, &object); err != nil {
+				return fmt.Errorf("harness.hermes.extra_body: %w", err)
+			}
+			if _, exists := object["temperature"]; exists {
+				return errors.New("model.temperature conflicts with harness.hermes.extra_body.temperature")
+			}
+		}
 	}
 	if err := c.Runtime.validate(); err != nil {
 		return err
@@ -766,10 +983,10 @@ func (c *Config) validate() error {
 		}
 	}
 
-	if c.Runtime.Backend == "sglang" {
-		normalized, err := normalizeSGLangBaseURL(c.Model.BaseURL)
+	if c.Runtime.Backend == "sglang" || c.Runtime.Backend == "openai" {
+		normalized, err := normalizeV1BaseURL(c.Model.BaseURL)
 		if err != nil {
-			return fmt.Errorf("model.base_url for sglang: %w", err)
+			return fmt.Errorf("model.base_url for %s: %w", c.Runtime.Backend, err)
 		}
 		c.Model.BaseURL = normalized
 	} else if err := validateHTTPBaseURL("model.base_url", c.Model.BaseURL); err != nil {
@@ -906,20 +1123,23 @@ func (c *Config) validateBenchmarkType() error {
 		if judge == nil {
 			return errors.New("benchmark.judge is required for sweatlasqa")
 		}
-		if judge.Enabled != nil {
-			return errors.New("judge.enabled must not be set for sweatlasqa; grading cannot be disabled")
-		}
-		if strings.TrimSpace(judge.Provider) == "" {
-			return errors.New("judge.provider is required for sweatlasqa")
-		}
-		if err := validateHTTPBaseURL("judge.base_url", judge.BaseURL); err != nil {
-			return err
-		}
-		if strings.TrimSpace(judge.ID) == "" {
-			return errors.New("judge.model is required for sweatlasqa")
-		}
-		if !validEnvName(judge.APIKeyEnv) {
-			return errors.New("judge.api_key_env must be an environment variable name")
+		if judge.Enabled != nil && !*judge.Enabled {
+			if judge.Provider != "" || judge.BaseURL != "" || judge.ID != "" || judge.APIKeyEnv != "" {
+				return errors.New("judge fields must not be set when judge.enabled is false for sweatlasqa")
+			}
+		} else {
+			if strings.TrimSpace(judge.Provider) == "" {
+				return errors.New("judge.provider is required for sweatlasqa")
+			}
+			if err := validateHTTPBaseURL("judge.base_url", judge.BaseURL); err != nil {
+				return err
+			}
+			if strings.TrimSpace(judge.ID) == "" {
+				return errors.New("judge.model is required for sweatlasqa")
+			}
+			if !validEnvName(judge.APIKeyEnv) {
+				return errors.New("judge.api_key_env must be an environment variable name")
+			}
 		}
 		if c.Benchmark.Environment != nil {
 			return errors.New("benchmark.environment must not be set for sweatlasqa")
@@ -928,14 +1148,72 @@ func (c *Config) validateBenchmarkType() error {
 			return errors.New("fact must not be set for sweatlasqa")
 		}
 		return nil
+	case "swebenchpro":
+		if c.Benchmark.Environment != nil {
+			return errors.New("benchmark.environment must not be set for swebenchpro")
+		}
+		if c.Benchmark.Judge != nil {
+			return errors.New("judge must not be set for swebenchpro")
+		}
+		if c.Benchmark.Fact != nil {
+			return errors.New("fact must not be set for swebenchpro")
+		}
+		if c.Benchmark.PlanOnly || c.Benchmark.PlansetDir != "" {
+			return errors.New("benchmark.plan_only and benchmark.planset_dir must not be set for swebenchpro")
+		}
+		if c.Benchmark.StructuredSubtasks != nil {
+			return errors.New("benchmark.structured_subtasks must not be set for swebenchpro")
+		}
+		return nil
 	default:
 		return nil
 	}
 }
 
+// validateHermesBlocks rejects the Hermes-only blocks under another harness
+// and checks their values. Empty blocks are rejected rather than ignored so a
+// profile never carries a block that changes nothing.
+func (h *HarnessConfig) validateHermesBlocks() error {
+	if h.Compaction != nil {
+		if h.Type != "hermes" {
+			return errors.New("harness.compaction requires Hermes")
+		}
+		if h.Compaction.Enabled == nil && h.Compaction.ThresholdTokens == 0 {
+			return errors.New("harness.compaction must set enabled or threshold_tokens")
+		}
+		if h.Compaction.ThresholdTokens < 0 {
+			return errors.New("harness.compaction.threshold_tokens must be positive")
+		}
+	}
+	if h.Hermes != nil {
+		if h.Type != "hermes" {
+			return errors.New("harness.hermes requires Hermes")
+		}
+		if len(h.Hermes.ExtraBody) == 0 {
+			return errors.New("harness.hermes must set extra_body")
+		}
+		var object map[string]any
+		if err := json.Unmarshal(h.Hermes.ExtraBody, &object); err != nil || len(object) == 0 {
+			return errors.New("harness.hermes.extra_body must be a non-empty JSON object")
+		}
+		if field := findCredentialField(object, "harness.hermes.extra_body"); field != "" {
+			return fmt.Errorf("%s is named like a credential; model keys stay out of JSON profiles", field)
+		}
+		for _, match := range placeholderPattern.FindAllSubmatch(h.Hermes.ExtraBody, -1) {
+			if !extraBodyPlaceholders[string(match[1])] {
+				return fmt.Errorf("harness.hermes.extra_body may reference only ${ARIES_RUN_ID} and ${ARIES_TASK_ID}, not ${%s}", match[1])
+			}
+		}
+	}
+	return nil
+}
+
 func (h *HarnessConfig) validate() error {
 	if h.Mode == "" {
 		h.Mode = "agent"
+	}
+	if err := h.validateHermesBlocks(); err != nil {
+		return err
 	}
 	if h.WebSearch.Enabled && h.Type != "openclaw" && h.Type != "hermes" {
 		return errors.New("harness.web_search requires OpenClaw or Hermes")
@@ -1101,65 +1379,126 @@ func (h *HarnessConfig) validate() error {
 			return errors.New("harness.mem0.llm_api_key_env must be an environment variable name")
 		}
 	}
+	if len(h.MCPServers) > 0 {
+		if h.Type != "openclaw" && h.Type != "hermes" {
+			return errors.New("harness.mcp_servers requires OpenClaw or Hermes")
+		}
+		seenMCPServers := make(map[string]bool, len(h.MCPServers))
+		for _, server := range h.MCPServers {
+			if seenMCPServers[server.Name] {
+				return fmt.Errorf("duplicate MCP server name %q", server.Name)
+			}
+			seenMCPServers[server.Name] = true
+			if err := core.ValidateMCPServer(server); err != nil {
+				return fmt.Errorf("harness.mcp_servers: %w", err)
+			}
+		}
+	}
 	switch h.Mode {
 	case "agent":
 		if h.Realtime != (HarnessRealtimeConfig{}) {
 			return errors.New("harness.realtime must be empty unless harness.mode is realtime")
+		}
+		if h.VoiceTranscribe != (HarnessVoiceTranscribeConfig{}) {
+			return errors.New("harness.voice_transcribe must be empty unless harness.mode is voice-transcribe")
 		}
 		return nil
 	case "realtime":
 		if h.Type != "openclaw" {
 			return errors.New("harness.mode realtime requires OpenClaw")
 		}
-		if err := h.Realtime.TTS.validate(); err != nil {
-			return err
+		if h.VoiceTranscribe != (HarnessVoiceTranscribeConfig{}) {
+			return errors.New("harness.voice_transcribe must be empty unless harness.mode is voice-transcribe")
 		}
-		if h.Realtime.TrailingSilenceMillis < 0 {
-			return errors.New("harness.realtime.trailing_silence_ms must not be negative")
+		return h.Realtime.validate()
+	case "voice-transcribe":
+		switch h.Type {
+		case "openclaw":
+			if h.Realtime != (HarnessRealtimeConfig{}) {
+				return errors.New("harness.realtime must be empty unless harness.mode is realtime")
+			}
+			return h.VoiceTranscribe.validateOpenClaw()
+		case "hermes":
+			if h.Realtime != (HarnessRealtimeConfig{}) {
+				return errors.New("harness.realtime must be empty unless harness.mode is realtime")
+			}
+			if err := h.VoiceTranscribe.TTS.validateNamed("harness.voice_transcribe.tts"); err != nil {
+				return err
+			}
+			if err := h.VoiceTranscribe.STT.validate(); err != nil {
+				return err
+			}
+			return nil
+		default:
+			return errors.New("harness.mode voice-transcribe requires OpenClaw or Hermes")
 		}
-		var err error
-		if h.Realtime.ChunkDuration, err = parseOptionalPositiveDuration("harness.realtime.chunk_duration", h.Realtime.ChunkDurationText); err != nil {
-			return err
-		}
-		if h.Realtime.ListenDuration, err = parseOptionalPositiveDuration("harness.realtime.listen_duration", h.Realtime.ListenDurationText); err != nil {
-			return err
-		}
-		if h.Realtime.QuietDuration, err = parseOptionalPositiveDuration("harness.realtime.quiet_duration", h.Realtime.QuietDurationText); err != nil {
-			return err
-		}
-		if h.Realtime.AgentWaitDuration, err = parseOptionalPositiveDuration("harness.realtime.agent_wait_duration", h.Realtime.AgentWaitDurationText); err != nil {
-			return err
-		}
-		if h.Realtime.ToolCallTimeout, err = parseOptionalPositiveDuration("harness.realtime.tool_call_timeout", h.Realtime.ToolCallTimeoutText); err != nil {
-			return err
-		}
-		return nil
 	default:
-		return errors.New("harness.mode must be agent or realtime")
+		return errors.New("harness.mode must be agent, realtime, or voice-transcribe")
 	}
 }
 
+func (realtime *HarnessRealtimeConfig) validate() error {
+	return realtime.validateNamed("harness.realtime")
+}
+
+func (realtime *HarnessRealtimeConfig) validateNamed(name string) error {
+	if err := realtime.TTS.validateNamed(name + ".tts"); err != nil {
+		return err
+	}
+	if realtime.TrailingSilenceMillis < 0 {
+		return fmt.Errorf("%s.trailing_silence_ms must not be negative", name)
+	}
+	var err error
+	if realtime.ChunkDuration, err = parseOptionalPositiveDuration(name+".chunk_duration", realtime.ChunkDurationText); err != nil {
+		return err
+	}
+	if realtime.ListenDuration, err = parseOptionalPositiveDuration(name+".listen_duration", realtime.ListenDurationText); err != nil {
+		return err
+	}
+	if realtime.QuietDuration, err = parseOptionalPositiveDuration(name+".quiet_duration", realtime.QuietDurationText); err != nil {
+		return err
+	}
+	if realtime.AgentWaitDuration, err = parseOptionalPositiveDuration(name+".agent_wait_duration", realtime.AgentWaitDurationText); err != nil {
+		return err
+	}
+	if realtime.ToolCallTimeout, err = parseOptionalPositiveDuration(name+".tool_call_timeout", realtime.ToolCallTimeoutText); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (tts *RealtimeTTSConfig) validate() error {
+	return tts.validateNamed("harness.realtime.tts")
+}
+
+func (voice *HarnessVoiceTranscribeConfig) validateOpenClaw() error {
+	if voice.STT != (VoiceSTTConfig{}) {
+		return errors.New("harness.voice_transcribe.stt must be empty for OpenClaw voice-transcribe")
+	}
+	return voice.HarnessRealtimeConfig.validateNamed("harness.voice_transcribe")
+}
+
+func (tts *RealtimeTTSConfig) validateNamed(name string) error {
 	if tts.Provider == "" {
 		tts.Provider = "openai"
 	}
 	if tts.Provider != "openai" {
-		return errors.New("harness.realtime.tts.provider must be openai")
+		return fmt.Errorf("%s.provider must be openai", name)
 	}
 	if tts.APIKeyEnv == "" {
 		tts.APIKeyEnv = "OPENAI_API_KEY"
 	}
 	if !validEnvName(tts.APIKeyEnv) {
-		return errors.New("harness.realtime.tts.api_key_env must be an environment variable name")
+		return fmt.Errorf("%s.api_key_env must be an environment variable name", name)
 	}
 	if strings.ContainsRune(tts.BaseURL, 0) || strings.ContainsRune(tts.Model, 0) || strings.ContainsRune(tts.Voice, 0) || strings.ContainsRune(tts.Instructions, 0) {
-		return errors.New("harness.realtime.tts contains an invalid NUL byte")
+		return fmt.Errorf("%s contains an invalid NUL byte", name)
 	}
 	if tts.Speed != nil && (*tts.Speed < 0.25 || *tts.Speed > 4 || math.IsNaN(*tts.Speed) || math.IsInf(*tts.Speed, 0)) {
-		return errors.New("harness.realtime.tts.speed must be between 0.25 and 4")
+		return fmt.Errorf("%s.speed must be between 0.25 and 4", name)
 	}
 	var err error
-	tts.Timeout, err = parseOptionalPositiveDuration("harness.realtime.tts.timeout", tts.TimeoutText)
+	tts.Timeout, err = parseOptionalPositiveDuration(name+".timeout", tts.TimeoutText)
 	return err
 }
 
@@ -1176,23 +1515,20 @@ func parseOptionalPositiveDuration(name, value string) (time.Duration, error) {
 
 func (c *RuntimeConfig) validate() error {
 	switch c.Backend {
-	case "deepseek":
+	case "deepseek", "openai":
 		if c.Mode != "external" {
-			return errors.New("runtime.backend deepseek requires external mode")
+			return fmt.Errorf("runtime.backend %s requires external mode", c.Backend)
 		}
 		if c.Config.File != "" || c.Config.Executable != "" || c.Config.StartupTimeoutText != "" || c.Config.StopTimeoutText != "" || len(c.Config.GPUIndices) != 0 {
-			return errors.New("external deepseek runtime.config must be empty")
+			return fmt.Errorf("external %s runtime.config must be empty", c.Backend)
 		}
 		return nil
 	case "sglang":
 	default:
-		return errors.New("runtime.backend must be deepseek or sglang")
+		return errors.New("runtime.backend must be deepseek, sglang, or openai")
 	}
 	switch c.Mode {
 	case "external":
-		if strings.TrimSpace(c.Config.File) == "" {
-			return errors.New("external SGLang runtime.config.file is required")
-		}
 		if c.Config.Executable != "" || c.Config.StartupTimeoutText != "" || c.Config.StopTimeoutText != "" || len(c.Config.GPUIndices) != 0 {
 			return errors.New("external SGLang runtime.config must not set executable, timeouts, or gpu_indices")
 		}
@@ -1229,7 +1565,9 @@ func (c *RuntimeConfig) validate() error {
 	}
 }
 
-func normalizeSGLangBaseURL(baseURL string) (string, error) {
+// normalizeV1BaseURL accepts the base URL of an OpenAI-compatible server: an
+// absolute HTTP(S) URL whose path is exactly the versioned /v1 prefix.
+func normalizeV1BaseURL(baseURL string) (string, error) {
 	parsed, err := url.Parse(baseURL)
 	if err != nil || parsed.Scheme != "http" && parsed.Scheme != "https" || parsed.Host == "" || parsed.Opaque != "" || parsed.User != nil || parsed.RawPath != "" || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || strings.Contains(baseURL, "#") {
 		return "", errors.New("must be an absolute HTTP(S) URL without credentials, escaped path, query, or fragment")
@@ -1255,6 +1593,27 @@ func validateExperimentName(name string) error {
 	return nil
 }
 
+func (stt *VoiceSTTConfig) validate() error {
+	if stt.Provider == "" {
+		stt.Provider = "openai"
+	}
+	if stt.Provider != "openai" && stt.Provider != "local" {
+		return errors.New("harness.voice_transcribe.stt.provider must be openai or local")
+	}
+	if stt.Provider == "openai" && stt.Model == "" {
+		stt.Model = "gpt-4o-mini-transcribe"
+	}
+	if stt.Provider == "local" && stt.Model == "" {
+		stt.Model = "base"
+	}
+	if strings.ContainsRune(stt.Provider, 0) || strings.ContainsRune(stt.Model, 0) || strings.ContainsRune(stt.Language, 0) {
+		return errors.New("harness.voice_transcribe.stt contains an invalid NUL byte")
+	}
+	var err error
+	stt.Timeout, err = parseOptionalPositiveDuration("harness.voice_transcribe.stt.timeout", stt.TimeoutText)
+	return err
+}
+
 func (c Versions) validate() error {
 	if strings.TrimSpace(c.OpenClaw.Image) == "" {
 		return errors.New("openclaw.image is required")
@@ -1266,6 +1625,12 @@ func (c Versions) validate() error {
 		return err
 	}
 	if err := validateRepositoryPin("sweatlasqa", c.SWEAtlas.RepositoryURL, c.SWEAtlas.Revision); err != nil {
+		return err
+	}
+	if err := validateRepositoryPin("swebenchpro.dataset", c.SWEbenchPro.DatasetRepositoryURL, c.SWEbenchPro.DatasetRevision); err != nil {
+		return err
+	}
+	if err := validateRepositoryPin("swebenchpro.evaluator", c.SWEbenchPro.EvaluatorRepositoryURL, c.SWEbenchPro.EvaluatorRevision); err != nil {
 		return err
 	}
 	if err := containerimage.ValidatePinnedTagOnly(c.OpenClaw.Image); err != nil {

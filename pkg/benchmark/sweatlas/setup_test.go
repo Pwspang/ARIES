@@ -61,6 +61,52 @@ exit 0
 	}
 }
 
+func TestSetupInstallsCleanDetachedCheckoutAtRevision(t *testing.T) {
+	parent := t.TempDir()
+	source := filepath.Join(parent, "source")
+	if err := os.Mkdir(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run := func(dir string, args ...string) string {
+		t.Helper()
+		output, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
+		return strings.TrimSpace(string(output))
+	}
+	run(source, "init", "--quiet")
+	if err := os.WriteFile(filepath.Join(source, "fixture"), []byte("ready\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run(source, "add", "fixture")
+	run(source, "-c", "user.name=ARIES Test", "-c", "user.email=aries@example.invalid", "commit", "--quiet", "-m", "fixture")
+	revision := run(source, "rev-parse", "HEAD")
+
+	root := filepath.Join(parent, "swe-atlas-qa")
+	if err := Setup(context.Background(), root, source, revision); err != nil {
+		t.Fatalf("Setup() error = %v", err)
+	}
+
+	if err := VerifyRevision(context.Background(), root, revision); err != nil {
+		t.Fatalf("installed checkout: %v", err)
+	}
+	if head := run(root, "rev-parse", "HEAD"); head != revision {
+		t.Fatalf("installed checkout HEAD = %q, want %q", head, revision)
+	}
+	if output, err := exec.Command("git", "-C", root, "symbolic-ref", "-q", "--short", "HEAD").CombinedOutput(); err == nil {
+		t.Fatalf("installed checkout is not detached, on branch %q", strings.TrimSpace(string(output)))
+	}
+	if status := run(root, "status", "--porcelain"); status != "" {
+		t.Fatalf("installed checkout is not clean: %q", status)
+	}
+
+	matches, err := filepath.Glob(filepath.Join(parent, ".swe-atlas-qa-setup-*"))
+	if err != nil || len(matches) != 0 {
+		t.Fatalf("temporary checkout survived successful setup: %v, %v", matches, err)
+	}
+}
+
 func TestSetupCleansTemporaryCheckoutAfterRenameFailure(t *testing.T) {
 	bin := t.TempDir()
 	gitPath := filepath.Join(bin, "git")

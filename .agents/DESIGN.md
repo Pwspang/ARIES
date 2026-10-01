@@ -12,7 +12,24 @@ live sandbox, starts the bridge and harness, positively stops the harness and
 revokes the bridge, evaluates the still-running sandbox, then stops the
 sandbox. Terminal-Bench verifier files remain benchmark-private and are
 uploaded only from the freshly reverified pinned checkout after both isolation
-gates succeed.
+gates succeed. The public SWE-bench Pro adapter follows the same gates: before
+bridge access it privately snapshots selected verifier files and the image's
+initial ignored build artifacts, restores the base tree, and removes local
+future history; only after both gates does it restore the clean image baseline,
+apply the captured candidate patch, and inject the verifier snapshot plus the
+pinned task script and parser. Task networking remains enabled, so local Git
+history sanitization is not a claim that publicly hosted data cannot be
+refetched.
+
+SWE-bench Pro task commands default to numeric UID/GID `65532:65532` with
+`no-new-privileges`; Docker startup positively confirms that security option
+from container inspection before returning the live sandbox. Benchmark-owned
+preparation and evaluation commands explicitly use root. Evaluation restores a
+private sanitized-Git baseline
+before bounded candidate capture, clears residual agent-UID processes before
+private staging and after tests, installs verifier files through non-symlink
+parents as root-owned read-only inputs, streams bounded test logs host-side,
+runs the parser in an isolated root context, and scrubs container staging.
 
 Every checked-in profile explicitly declares `overrides_file`; an empty string
 disables overrides without opening a file. A referenced strict-JSON override
@@ -24,19 +41,27 @@ timezone and noninteractive values.
 
 The command layer may schedule fresh one-task Runner compositions concurrently.
 Profile order, including duplicate weights, determines admission and result
-order. Each occurrence has an exact global execution ID for directories,
-labels, monitoring, and results. A configured loop duration bounds admissions,
+order by default. An arrival trace instead orders selected occurrences by
+scaled offset, preserving profile order for ties; concurrency still bounds
+admission. See [arrival scheduling](../docs/quick-start.md#replay-task-arrivals).
+Each occurrence has an exact global execution ID for directories, labels,
+monitoring, and results. A configured loop duration bounds admissions,
 not cleanup: admitted occurrences always drain through the unchanged lifecycle.
 `runtime.config.gpu_indices` is the only explicit GPU selection input.
 Backend-specific resolution supplies the same effective list to runtime
 construction and NVIDIA sampling without changing the Runner or Recorder
 lifecycle. SGLang is the current implementation of this rule.
 
-Model selection is explicit through `runtime.backend`: `deepseek` retains its
-official bounded preflight, while `sglang` performs bounded exact model
-discovery at a versioned `/v1` endpoint. A local SGLang profile references one
+Ownership is explicit through `runtime.mode`: every external endpoint is
+prepared the same way, and only managed mode names a runtime ARIES prepares.
+Model selection is explicit through `runtime.backend`, which names the kind of
+service behind the endpoint: `deepseek` retains its official bounded preflight,
+while `sglang` performs bounded exact model discovery at a versioned `/v1`
+endpoint. `openai` names any other OpenAI-compatible server, is external only,
+carries no native file, and shares that discovery. A local SGLang profile references one
 strict native YAML file under `runtime.config.file`, whose
-served model and port must match the profile. SGLang may remain external or run
+served model and port must match the profile. External SGLang needs no native file; an optional legacy file reference is not
+read or validated. SGLang may remain external or run
 as one application-owned host process supplied by an explicit command switch.
 The general runtime lifecycle/health interface is separate from inference and
 is not a fifth Runner role. Neither provider stores key bytes in profiles or
@@ -50,6 +75,13 @@ as the conservative fallback. The bridge maps OpenClaw's pinned virtual workspac
 without creating a sandbox symlink. It retains structured JSONL tool records
 plus sensitive, lossless human-readable `bridge/ssh_raw.log` evidence through
 a bounded asynchronous writer whose failure blocks positive bridge revocation.
+
+SWE-bench Pro independently pins its public Parquet dataset and official
+open-source evaluator. The adapter requires exactly 731 public rows, takes each
+task image tag from the row's `dockerhub_tag`, uses `/app` as the repository
+workdir, and keeps gold patch/test data out of `core.Task`. A task is resolved
+only when the pinned parser reports every row-declared `FAIL_TO_PASS` and
+`PASS_TO_PASS` test as passed.
 
 ## Repository boundary
 

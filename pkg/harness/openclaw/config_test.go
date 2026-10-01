@@ -23,7 +23,7 @@ func testModel() core.ModelConfig {
 }
 
 func TestRenderConfigLocksProviderSharedSSHAndPlaceholder(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), ModeAgent, false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestRenderConfigLocksProviderSharedSSHAndPlaceholder(t *testing.T) {
 }
 
 func TestRenderConfigOmitsMaxTokensWhenUnset(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), ModeAgent, false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestRenderConfigOmitsMaxTokensWhenUnset(t *testing.T) {
 func TestRenderConfigSetsMaxTokensWhenConfigured(t *testing.T) {
 	model := testModel()
 	model.MaxOutputTokens = 32000
-	content, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
+	content, err := renderConfig(model, testEndpoint(), ModeAgent, false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestRenderConfigSetsMaxTokensWhenConfigured(t *testing.T) {
 }
 
 func TestRenderConfigOmitsContextWindowWhenUnset(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), ModeAgent, false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestRenderConfigOmitsContextWindowWhenUnset(t *testing.T) {
 func TestRenderConfigSetsContextWindowWhenConfigured(t *testing.T) {
 	model := testModel()
 	model.ContextWindowTokens = 32000
-	content, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
+	content, err := renderConfig(model, testEndpoint(), ModeAgent, false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestRenderConfigSetsContextWindowWhenConfigured(t *testing.T) {
 }
 
 func TestRenderConfigOmitsCompactionWhenUnset(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), ModeAgent, false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestRenderConfigOmitsCompactionWhenUnset(t *testing.T) {
 func TestRenderConfigSetsCompactionTimeoutWhenConfigured(t *testing.T) {
 	model := testModel()
 	model.CompactionTimeoutMs = 600000
-	content, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
+	content, err := renderConfig(model, testEndpoint(), ModeAgent, false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestRenderConfigSetsCompactionTimeoutWhenConfigured(t *testing.T) {
 func TestRenderConfigRoundsCompactionTimeoutUpToWholeSeconds(t *testing.T) {
 	model := testModel()
 	model.CompactionTimeoutMs = 1500
-	content, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
+	content, err := renderConfig(model, testEndpoint(), ModeAgent, false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestRenderConfigSelectsSGLangProviderWithoutSerializingKey(t *testing.T) {
 	model := testModel()
 	model.Provider = "sglang"
 	model.APIKeyEnv = "SGLANG_API_KEY"
-	content, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
+	content, err := renderConfig(model, testEndpoint(), ModeAgent, false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,11 +172,37 @@ func TestRenderConfigSelectsSGLangProviderWithoutSerializingKey(t *testing.T) {
 	}
 }
 
+func TestRenderConfigSetsRealtimeConsultRoutingOnlyForRealtimeMode(t *testing.T) {
+	content, err := renderConfig(testModel(), testEndpoint(), ModeRealtime, false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var configuration openClawConfig
+	if err := json.Unmarshal(content, &configuration); err != nil {
+		t.Fatal(err)
+	}
+	if configuration.Talk == nil || configuration.Talk.Realtime.ConsultRouting != consultRoutingForceAgent {
+		t.Fatalf("talk realtime config = %#v", configuration.Talk)
+	}
+
+	content, err = renderConfig(testModel(), testEndpoint(), ModeVoiceTranscribe, false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration = openClawConfig{}
+	if err := json.Unmarshal(content, &configuration); err != nil {
+		t.Fatal(err)
+	}
+	if configuration.Talk != nil {
+		t.Fatalf("voice-transcribe rendered talk config: %#v", configuration.Talk)
+	}
+}
+
 func TestRenderConfigNormalizesAndStrictlyValidatesSGLangBaseURL(t *testing.T) {
 	model := testModel()
 	model.Provider = "sglang"
 	model.BaseURL += "/"
-	content, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
+	content, err := renderConfig(model, testEndpoint(), ModeAgent, false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +215,7 @@ func TestRenderConfigNormalizesAndStrictlyValidatesSGLangBaseURL(t *testing.T) {
 	}
 	for _, invalid := range []string{"http://host/v1/v1", "http://host/v1?", "http://host/v%31"} {
 		model.BaseURL = invalid
-		if _, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", ""); err == nil {
+		if _, err := renderConfig(model, testEndpoint(), ModeAgent, false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", ""); err == nil {
 			t.Fatalf("accepted SGLang base URL %q", invalid)
 		}
 	}
@@ -209,7 +235,7 @@ func TestRenderConfigRejectsInvalidInputs(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			model, endpoint := testModel(), testEndpoint()
 			mutate(&model, &endpoint)
-			if _, err := renderConfig(model, endpoint, false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", ""); err == nil {
+			if _, err := renderConfig(model, endpoint, ModeAgent, false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", ""); err == nil {
 				t.Fatal("invalid input was accepted")
 			}
 		})
@@ -219,13 +245,13 @@ func TestRenderConfigRejectsInvalidInputs(t *testing.T) {
 func TestRenderConfigAcceptsLowercaseEnvironmentName(t *testing.T) {
 	model := testModel()
 	model.APIKeyEnv = "aries_fake_api_key"
-	if _, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", ""); err != nil {
+	if _, err := renderConfig(model, testEndpoint(), ModeAgent, false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", ""); err != nil {
 		t.Fatalf("renderConfig() rejected a valid environment name: %v", err)
 	}
 }
 
 func TestRenderConfigOmitsWebSearchWhenDisabled(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), ModeAgent, false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +271,7 @@ func TestRenderConfigOmitsWebSearchWhenDisabled(t *testing.T) {
 }
 
 func TestRenderConfigEnablesSearXNGWebSearch(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), true, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), ModeAgent, true, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +304,7 @@ func TestRenderConfigEnablesSearXNGWebSearch(t *testing.T) {
 }
 
 func TestRenderConfigOmitsAMEMPluginWhenDisabled(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), ModeAgent, false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,7 +325,7 @@ func TestRenderConfigOmitsAMEMPluginWhenDisabled(t *testing.T) {
 
 func TestRenderConfigEnablesAMEMPlugin(t *testing.T) {
 	model := testModel()
-	content, err := renderConfig(model, testEndpoint(), false, "", false, false, true, 0, "", "", false, false, "", "", false, "", "", "", "")
+	content, err := renderConfig(model, testEndpoint(), ModeAgent, false, "", false, false, true, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +372,7 @@ func TestRenderConfigEnablesAMEMPlugin(t *testing.T) {
 
 func TestRenderConfigAMEMPluginOverridesLLM(t *testing.T) {
 	model := testModel()
-	content, err := renderConfig(model, testEndpoint(), false, "", false, false, true, 0, "https://api.deepseek.com", "deepseek-v4-flash", false, false, "", "", false, "", "", "", "")
+	content, err := renderConfig(model, testEndpoint(), ModeAgent, false, "", false, false, true, 0, "https://api.deepseek.com", "deepseek-v4-flash", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,7 +388,7 @@ func TestRenderConfigAMEMPluginOverridesLLM(t *testing.T) {
 }
 
 func TestRenderConfigOmitsLosslessClawPluginWhenDisabled(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), ModeAgent, false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -380,7 +406,7 @@ func TestRenderConfigOmitsLosslessClawPluginWhenDisabled(t *testing.T) {
 
 func TestRenderConfigEnablesLosslessClawPluginReusingPrimaryModel(t *testing.T) {
 	model := testModel()
-	content, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", false, true, "", "", false, "", "", "", "")
+	content, err := renderConfig(model, testEndpoint(), ModeAgent, false, "", false, false, false, 0, "", "", false, true, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -433,7 +459,7 @@ func TestRenderConfigEnablesLosslessClawPluginReusingPrimaryModel(t *testing.T) 
 
 func TestRenderConfigLosslessClawPluginOverridesLLM(t *testing.T) {
 	model := testModel()
-	content, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", false, true, "https://api.deepseek.com", "deepseek-v4-flash", false, "", "", "", "")
+	content, err := renderConfig(model, testEndpoint(), ModeAgent, false, "", false, false, false, 0, "", "", false, true, "https://api.deepseek.com", "deepseek-v4-flash", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -466,7 +492,7 @@ func TestRenderConfigLosslessClawPluginOverridesLLM(t *testing.T) {
 }
 
 func TestRenderConfigOmitsMem0PluginWhenDisabled(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), ModeAgent, false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -487,7 +513,7 @@ func TestRenderConfigOmitsMem0PluginWhenDisabled(t *testing.T) {
 
 func TestRenderConfigEnablesMem0Plugin(t *testing.T) {
 	model := testModel()
-	content, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", true, "", "", "", "")
+	content, err := renderConfig(model, testEndpoint(), ModeAgent, false, "", false, false, false, 0, "", "", false, false, "", "", true, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -548,7 +574,7 @@ func TestRenderConfigEnablesMem0Plugin(t *testing.T) {
 
 func TestRenderConfigMem0PluginOverridesLLM(t *testing.T) {
 	model := testModel()
-	content, err := renderConfig(model, testEndpoint(), false, "", false, false, false, 0, "", "", false, false, "", "", true, "", "https://api.deepseek.com", "deepseek-v4-flash", "")
+	content, err := renderConfig(model, testEndpoint(), ModeAgent, false, "", false, false, false, 0, "", "", false, false, "", "", true, "", "https://api.deepseek.com", "deepseek-v4-flash", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -576,7 +602,7 @@ func TestRenderConfigRejectsMem0AndAMEMSameSlotByDesign(t *testing.T) {
 	// but document renderConfig's own last-wins behavior here too so a
 	// future refactor doesn't assume calling both is safe at this layer.
 	model := testModel()
-	content, err := renderConfig(model, testEndpoint(), false, "", false, false, true, 0, "", "", false, false, "", "", true, "", "", "", "")
+	content, err := renderConfig(model, testEndpoint(), ModeAgent, false, "", false, false, true, 0, "", "", false, false, "", "", true, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -597,7 +623,7 @@ func TestRenderConfigMergesAMEMAndLosslessClawSlotsTogether(t *testing.T) {
 	// amem+lossless-claw and mem0+lossless-claw are legitimate combinations
 	// that must not clobber one another's slot entry.
 	model := testModel()
-	content, err := renderConfig(model, testEndpoint(), false, "", false, false, true, 0, "", "", false, true, "", "", false, "", "", "", "")
+	content, err := renderConfig(model, testEndpoint(), ModeAgent, false, "", false, false, true, 0, "", "", false, true, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -614,7 +640,7 @@ func TestRenderConfigMergesAMEMAndLosslessClawSlotsTogether(t *testing.T) {
 }
 
 func TestRenderConfigEnablesTavilyExtractAlongsideSearXNGSearch(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), true, "", true, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), ModeAgent, true, "", true, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -651,7 +677,7 @@ func TestRenderConfigEnablesTavilyExtractAlongsideSearXNGSearch(t *testing.T) {
 }
 
 func TestRenderConfigUsesFirecrawlAsSearchProvider(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), true, "firecrawl", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), ModeAgent, true, "firecrawl", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -679,7 +705,7 @@ func TestRenderConfigUsesFirecrawlAsSearchProvider(t *testing.T) {
 }
 
 func TestRenderConfigCombinesFirecrawlSearchWithTavilyExtract(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), true, "firecrawl", true, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), ModeAgent, true, "firecrawl", true, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -700,7 +726,7 @@ func TestRenderConfigCombinesFirecrawlSearchWithTavilyExtract(t *testing.T) {
 }
 
 func TestRenderConfigUsesTavilyAsSearchProvider(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), true, "tavily", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), ModeAgent, true, "tavily", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -728,7 +754,7 @@ func TestRenderConfigUsesTavilyAsSearchProvider(t *testing.T) {
 }
 
 func TestRenderConfigTavilySearchAndExtractShareOnePluginEntry(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), true, "tavily", true, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), ModeAgent, true, "tavily", true, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -751,7 +777,7 @@ func TestRenderConfigTavilySearchAndExtractShareOnePluginEntry(t *testing.T) {
 }
 
 func TestRenderConfigIgnoresExtractWhenWebSearchDisabled(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, "", true, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), ModeAgent, false, "", true, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -768,7 +794,7 @@ func TestRenderConfigIgnoresExtractWhenWebSearchDisabled(t *testing.T) {
 }
 
 func TestRenderConfigAllowsSubagentsWhenEnabled(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, true, false, 0, "", "", false, false, "", "", false, "", "", "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), ModeAgent, false, "", false, true, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -782,7 +808,7 @@ func TestRenderConfigAllowsSubagentsWhenEnabled(t *testing.T) {
 }
 
 func TestRenderConfigSetsMaxConcurrentSubagentsWhenEnabled(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, true, false, 2, "", "", false, false, "", "", false, "", "", "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), ModeAgent, false, "", false, true, false, 2, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -796,7 +822,7 @@ func TestRenderConfigSetsMaxConcurrentSubagentsWhenEnabled(t *testing.T) {
 }
 
 func TestRenderConfigOmitsSubagentsBlockWhenNoLimitSet(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, true, false, 0, "", "", false, false, "", "", false, "", "", "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), ModeAgent, false, "", false, true, false, 0, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -810,7 +836,7 @@ func TestRenderConfigOmitsSubagentsBlockWhenNoLimitSet(t *testing.T) {
 }
 
 func TestRenderConfigIgnoresMaxConcurrentWhenSubagentsDisabled(t *testing.T) {
-	content, err := renderConfig(testModel(), testEndpoint(), false, "", false, false, false, 2, "", "", false, false, "", "", false, "", "", "", "")
+	content, err := renderConfig(testModel(), testEndpoint(), ModeAgent, false, "", false, false, false, 2, "", "", false, false, "", "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -922,5 +948,94 @@ func TestLauncherExportsMem0LLMKey(t *testing.T) {
 	disabledScript := string(launcherScript("ARIES_FAKE_API_KEY", "", false, false, false, false, false, false, false, false, false, false))
 	if strings.Contains(disabledScript, "MEM0_LLM_API_KEY") || strings.Contains(disabledScript, "mem0-llm.key") {
 		t.Fatalf("launcher exports mem0 LLM key when mem0 is disabled: %s", disabledScript)
+	}
+}
+
+func TestLauncherExportsMCPHostVariables(t *testing.T) {
+	script := string(launcherScript("ARIES_FAKE_API_KEY", "", false, false, false, false, false, false, false, false, false, false, "TOOLATHLON_API_KEY", "OTHER_KEY"))
+	for _, required := range []string{
+		"TOOLATHLON_API_KEY=\"$(cat /run/aries/mcp_TOOLATHLON_API_KEY.key)\"",
+		"export TOOLATHLON_API_KEY",
+		"OTHER_KEY=\"$(cat /run/aries/mcp_OTHER_KEY.key)\"",
+		"export OTHER_KEY",
+	} {
+		if !strings.Contains(script, required) {
+			t.Fatalf("launcher missing MCP export %q: %s", required, script)
+		}
+	}
+}
+
+// A generic OpenAI-compatible server is keyed under the neutral "aries"
+// provider id, like DeepSeek, and its base URL follows the /v1 rule.
+func TestRenderConfigKeysOpenAICompatibleProviderAsAries(t *testing.T) {
+	model := testModel()
+	model.Provider = "openai"
+	model.BaseURL = "http://vllm.local:8000/v1/"
+	model.APIKeyEnv = "VLLM_API_KEY"
+	content, err := renderConfig(model, testEndpoint(), ModeAgent, false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var configuration openClawConfig
+	if err := json.Unmarshal(content, &configuration); err != nil {
+		t.Fatal(err)
+	}
+	provider, ok := configuration.Models.Providers["aries"]
+	if !ok || len(configuration.Models.Providers) != 1 || provider.BaseURL != "http://vllm.local:8000/v1" || provider.APIKey != "${VLLM_API_KEY}" || configuration.Agents.Defaults.Model.Primary != "aries/deterministic-model" {
+		t.Fatalf("configuration = %#v", configuration)
+	}
+	model.BaseURL = "http://vllm.local:8000"
+	if _, err := renderConfig(model, testEndpoint(), ModeAgent, false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", ""); err == nil {
+		t.Fatal("accepted an openai base URL without /v1")
+	}
+}
+
+func TestRenderConfig_MCPServersAndSandboxAllowlist(t *testing.T) {
+	servers := []core.MCPServerConfig{
+		{
+			Name:      "sqlite-server",
+			Command:   "mcp-server-sqlite",
+			Args:      []string{"--db-path", "/tmp/test.db"},
+			Env:       map[string]string{"DEBUG": "1"},
+			SecretEnv: map[string]string{"API_KEY": "TOOLATHLON_API_KEY"},
+		},
+		{
+			Name: "remote-tools",
+			URL:  "https://mcp.example.com/sse",
+		},
+	}
+
+	content, err := renderConfig(testModel(), testEndpoint(), ModeAgent, false, "", false, false, false, 0, "", "", false, false, "", "", false, "", "", "", "", MCPOptions{
+		Servers: servers,
+	})
+	if err != nil {
+		t.Fatalf("renderConfig failed: %v", err)
+	}
+
+	var configuration openClawConfig
+	if err := json.Unmarshal(content, &configuration); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+
+	if configuration.MCP == nil || len(configuration.MCP.Servers) != 2 {
+		t.Fatalf("mcp.servers = %#v, want 2 servers", configuration.MCP)
+	}
+
+	sqlite, ok := configuration.MCP.Servers["sqlite-server"]
+	if !ok || sqlite.Command != "mcp-server-sqlite" || sqlite.Transport != "stdio" || len(sqlite.Args) != 2 || sqlite.Env["API_KEY"] != "${TOOLATHLON_API_KEY}" || sqlite.Env["DEBUG"] != "1" {
+		t.Fatalf("sqlite server config = %#v", sqlite)
+	}
+
+	remote, ok := configuration.MCP.Servers["remote-tools"]
+	if !ok || remote.URL != "https://mcp.example.com/sse" || remote.Transport != "sse" {
+		t.Fatalf("remote server config = %#v", remote)
+	}
+
+	if configuration.Tools.Sandbox == nil {
+		t.Fatal("tools.sandbox must not be nil when MCP servers are provided")
+	}
+	alsoAllow := configuration.Tools.Sandbox.Tools.AlsoAllow
+	if len(alsoAllow) != 1 || alsoAllow[0] != "bundle-mcp" {
+		t.Fatalf("tools.sandbox.tools.alsoAllow = %v, want [bundle-mcp]", alsoAllow)
 	}
 }

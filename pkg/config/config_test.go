@@ -22,7 +22,7 @@ const validConfig = `{
   "model":{"id":"fake","base_url":"http://127.0.0.1:8080","api_key_env":"DEEPSEEK_API_KEY"}
 }`
 
-const validVersions = `{"terminalbench2":{"repository_url":"https://example.invalid/terminal-bench-2.git","revision":"0123456789abcdef0123456789abcdef01234567"},"deepresearchbench":{"repository_url":"https://example.invalid/deep-research-bench.git","revision":"fedcba9876543210fedcba9876543210fedcba98"},"sweatlasqa":{"repository_url":"https://example.invalid/swe-atlas.git","revision":"1111111111111111111111111111111111111111"},"openclaw":{"image":"ghcr.io/openclaw/openclaw:2026.7.1"},"hermes":{"image":"docker.io/nousresearch/hermes-agent:v2026.5.29.2"}}`
+const validVersions = `{"terminalbench2":{"repository_url":"https://example.invalid/terminal-bench-2.git","revision":"0123456789abcdef0123456789abcdef01234567"},"deepresearchbench":{"repository_url":"https://example.invalid/deep-research-bench.git","revision":"fedcba9876543210fedcba9876543210fedcba98"},"sweatlasqa":{"repository_url":"https://example.invalid/swe-atlas.git","revision":"1111111111111111111111111111111111111111"},"swebenchpro":{"dataset_repository_url":"https://example.invalid/swe-bench-pro-data.git","dataset_revision":"1111111111111111111111111111111111111111","evaluator_repository_url":"https://example.invalid/swe-bench-pro-evaluator.git","evaluator_revision":"2222222222222222222222222222222222222222"},"openclaw":{"image":"ghcr.io/openclaw/openclaw:2026.7.1"},"hermes":{"image":"docker.io/nousresearch/hermes-agent:v2026.8.31"}}`
 
 func TestNormalizedRuntimeSchema(t *testing.T) {
 	cfg, err := Decode(strings.NewReader(validConfig))
@@ -48,6 +48,10 @@ func TestNormalizedRuntimeSchema(t *testing.T) {
 	if _, err := Decode(strings.NewReader(external)); err != nil {
 		t.Fatal(err)
 	}
+	external = strings.Replace(external, `,"config":{"file":"native.yaml"}`, "", 1)
+	if _, err := Decode(strings.NewReader(external)); err != nil {
+		t.Fatalf("external SGLang without native config: %v", err)
+	}
 }
 
 func TestRealtimeHarnessConfigValidationAndResolution(t *testing.T) {
@@ -59,14 +63,57 @@ func TestRealtimeHarnessConfigValidationAndResolution(t *testing.T) {
 	if cfg.Harness.Mode != "realtime" || cfg.Harness.Realtime.ChunkDuration != 25*time.Millisecond || cfg.Harness.Realtime.ListenDuration != 3*time.Second || cfg.Harness.Realtime.TrailingSilenceMillis != 300 || !cfg.Harness.Realtime.IncludeEvents || cfg.Harness.Realtime.TTS.APIKeyEnv != "OPENAI_API_KEY" || cfg.Harness.Realtime.TTS.Timeout != 2*time.Second {
 		t.Fatalf("harness realtime = %#v", cfg.Harness)
 	}
+	transcribe := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","mode":"voice-transcribe","voice_transcribe":{"tts":{"provider":"openai","model":"gpt-4o-mini-tts","voice":"alloy","timeout":"2s","speed":1.1},"chunk_duration":"25ms","listen_duration":"3s","quiet_duration":"250ms","agent_wait_duration":"2s","tool_call_timeout":"1s","trailing_silence_ms":300,"voice":"alloy","reasoning_effort":"low","include_events":true}}`, 1)
+	if cfg, err := Decode(strings.NewReader(transcribe)); err != nil || cfg.Harness.Mode != "voice-transcribe" || cfg.Harness.VoiceTranscribe.ChunkDuration != 25*time.Millisecond || cfg.Harness.VoiceTranscribe.TTS.Timeout != 2*time.Second {
+		t.Fatalf("decode OpenClaw voice-transcribe = %#v, %v", cfg.Harness, err)
+	}
 
 	for name, input := range map[string]string{
-		"bad mode":       strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","mode":"other"}`, 1),
-		"agent realtime": strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","mode":"agent","realtime":{"audio_path":"audio.wav"}}`, 1),
-		"audio path":     strings.Replace(realtime, `"tts":{"provider":"openai","model":"gpt-4o-mini-tts","voice":"alloy","timeout":"2s","speed":1.1}`, `"audio_path":"audio.wav","tts":{"provider":"openai","model":"gpt-4o-mini-tts","voice":"alloy","timeout":"2s","speed":1.1}`, 1),
-		"bad duration":   strings.Replace(realtime, `"chunk_duration":"25ms"`, `"chunk_duration":"0s"`, 1),
-		"bad silence":    strings.Replace(realtime, `"trailing_silence_ms":300`, `"trailing_silence_ms":-1`, 1),
-		"bad tts":        strings.Replace(realtime, `"provider":"openai"`, `"provider":"elevenlabs"`, 1),
+		"bad mode":                  strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","mode":"other"}`, 1),
+		"agent realtime":            strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","mode":"agent","realtime":{"audio_path":"audio.wav"}}`, 1),
+		"audio path":                strings.Replace(realtime, `"tts":{"provider":"openai","model":"gpt-4o-mini-tts","voice":"alloy","timeout":"2s","speed":1.1}`, `"audio_path":"audio.wav","tts":{"provider":"openai","model":"gpt-4o-mini-tts","voice":"alloy","timeout":"2s","speed":1.1}`, 1),
+		"bad duration":              strings.Replace(realtime, `"chunk_duration":"25ms"`, `"chunk_duration":"0s"`, 1),
+		"bad silence":               strings.Replace(realtime, `"trailing_silence_ms":300`, `"trailing_silence_ms":-1`, 1),
+		"bad tts":                   strings.Replace(realtime, `"provider":"openai"`, `"provider":"elevenlabs"`, 1),
+		"transcribe realtime block": strings.Replace(realtime, `"mode":"realtime"`, `"mode":"voice-transcribe"`, 1),
+		"openclaw transcribe stt":   strings.Replace(transcribe, `"include_events":true`, `"include_events":true,"stt":{"provider":"openai"}`, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Decode(strings.NewReader(input)); err == nil {
+				t.Fatal("expected rejection")
+			}
+		})
+	}
+}
+
+func TestHermesVoiceTranscribeConfigValidationAndResolution(t *testing.T) {
+	voice := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"hermes","mode":"voice-transcribe","voice_transcribe":{"tts":{"provider":"openai","model":"gpt-4o-mini-tts","voice":"alloy","timeout":"2s","speed":1.1},"stt":{"provider":"openai","model":"gpt-4o-mini-transcribe","language":"en","timeout":"3s"}}}`, 1)
+	voice = strings.Replace(voice, `"bridge":{"type":"openclaw-ssh"}`, `"bridge":{"type":"hermes-ssh"}`, 1)
+	cfg, err := Decode(strings.NewReader(voice))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Harness.Mode != "voice-transcribe" || cfg.Harness.VoiceTranscribe.TTS.APIKeyEnv != "OPENAI_API_KEY" || cfg.Harness.VoiceTranscribe.TTS.Timeout != 2*time.Second || cfg.Harness.VoiceTranscribe.STT.Timeout != 3*time.Second || cfg.Harness.VoiceTranscribe.STT.Language != "en" {
+		t.Fatalf("harness voice_transcribe = %#v", cfg.Harness.VoiceTranscribe)
+	}
+
+	localSTT := strings.Replace(voice, `"provider":"openai","model":"gpt-4o-mini-transcribe","language":"en"`, `"provider":"local","language":"en"`, 1)
+	cfg, err = Decode(strings.NewReader(localSTT))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Harness.VoiceTranscribe.STT.Model != "base" {
+		t.Fatalf("local stt model = %q, want base", cfg.Harness.VoiceTranscribe.STT.Model)
+	}
+
+	for name, input := range map[string]string{
+		"agent voice": func() string {
+			input := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"hermes","mode":"agent","voice_transcribe":{"tts":{"provider":"openai","model":"gpt-4o-mini-tts","voice":"alloy"},"stt":{"provider":"openai"}}}`, 1)
+			return strings.Replace(input, `"bridge":{"type":"openclaw-ssh"}`, `"bridge":{"type":"hermes-ssh"}`, 1)
+		}(),
+		"realtime voice": strings.Replace(voice, `"mode":"voice-transcribe","voice_transcribe"`, `"mode":"realtime","voice_transcribe"`, 1),
+		"bad stt":        strings.Replace(voice, `"provider":"openai","model":"gpt-4o-mini-transcribe","language":"en"`, `"provider":"bad","model":"gpt-4o-mini-transcribe","language":"en"`, 1),
+		"bad timeout":    strings.Replace(voice, `"timeout":"3s"`, `"timeout":"0s"`, 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := Decode(strings.NewReader(input)); err == nil {
@@ -812,6 +859,58 @@ func TestStructuredSubtasksValidation(t *testing.T) {
 	}
 }
 
+const validSweatlasqaConfig = `{
+  "name":"test-run","versions_file":"../configs/versions.json",
+  "benchmark":{"type":"sweatlasqa","root":".cache/swe-atlas-qa","tasks":["task-1"],
+    "judge":{"provider":"deepseek","base_url":"https://api.deepseek.com","model":"deepseek-v4-flash","api_key_env":"DEEPSEEK_API_KEY"}},
+  "harness":{"type":"openclaw"},"sandbox":{"type":"docker"},"bridge":{"type":"openclaw-ssh"},
+  "runtime":{"backend":"deepseek","mode":"external"},
+  "model":{"id":"fake","base_url":"http://127.0.0.1:8080","api_key_env":"DEEPSEEK_API_KEY"}
+}`
+
+func TestSweatlasqaJudgeDisabledValidation(t *testing.T) {
+	if _, err := Decode(strings.NewReader(validSweatlasqaConfig)); err != nil {
+		t.Fatal(err)
+	}
+
+	judgeDisabled := strings.Replace(validSweatlasqaConfig, `"judge":{"provider":"deepseek","base_url":"https://api.deepseek.com","model":"deepseek-v4-flash","api_key_env":"DEEPSEEK_API_KEY"}`, `"judge":{"enabled":false}`, 1)
+	if _, err := Decode(strings.NewReader(judgeDisabled)); err != nil {
+		t.Fatalf("judge.enabled:false alone rejected: %v", err)
+	}
+
+	judgeDisabledWithFields := strings.Replace(validSweatlasqaConfig, `"judge":{"provider":"deepseek"`, `"judge":{"enabled":false,"provider":"deepseek"`, 1)
+	if _, err := Decode(strings.NewReader(judgeDisabledWithFields)); err == nil {
+		t.Fatal("expected rejection of judge model fields set alongside judge.enabled:false")
+	}
+
+	missingJudge := strings.Replace(validSweatlasqaConfig, ",\n    \"judge\":{\"provider\":\"deepseek\",\"base_url\":\"https://api.deepseek.com\",\"model\":\"deepseek-v4-flash\",\"api_key_env\":\"DEEPSEEK_API_KEY\"}", ``, 1)
+	if _, err := Decode(strings.NewReader(missingJudge)); err == nil {
+		t.Fatal("expected rejection of a missing judge block for sweatlasqa")
+	}
+
+	withEnvironment := strings.Replace(validSweatlasqaConfig, `"root":".cache/swe-atlas-qa","tasks":["task-1"],`, `"root":".cache/swe-atlas-qa","tasks":["task-1"],"environment":{"image":"x"},`, 1)
+	if _, err := Decode(strings.NewReader(withEnvironment)); err == nil {
+		t.Fatal("expected rejection of benchmark.environment for sweatlasqa")
+	}
+
+	withFact := strings.Replace(validSweatlasqaConfig, `"root":".cache/swe-atlas-qa","tasks":["task-1"],`, `"root":".cache/swe-atlas-qa","tasks":["task-1"],"fact":{},`, 1)
+	if _, err := Decode(strings.NewReader(withFact)); err == nil {
+		t.Fatal("expected rejection of benchmark.fact for sweatlasqa")
+	}
+}
+
+func TestSweatlasqaVersionsRequireRepositoryPin(t *testing.T) {
+	missingRepositoryURL := strings.Replace(validVersions, `"sweatlasqa":{"repository_url":"https://example.invalid/swe-atlas.git","revision":"1111111111111111111111111111111111111111"}`, `"sweatlasqa":{"revision":"1111111111111111111111111111111111111111"}`, 1)
+	if _, err := DecodeVersions(strings.NewReader(missingRepositoryURL)); err == nil {
+		t.Fatal("expected rejection of a missing sweatlasqa.repository_url")
+	}
+
+	missingRevision := strings.Replace(validVersions, `"sweatlasqa":{"repository_url":"https://example.invalid/swe-atlas.git","revision":"1111111111111111111111111111111111111111"}`, `"sweatlasqa":{"repository_url":"https://example.invalid/swe-atlas.git"}`, 1)
+	if _, err := DecodeVersions(strings.NewReader(missingRevision)); err == nil {
+		t.Fatal("expected rejection of a missing sweatlasqa.revision")
+	}
+}
+
 func TestTerminalBench2RejectsEnvironmentAndJudge(t *testing.T) {
 	cases := map[string]struct {
 		input   string
@@ -852,6 +951,29 @@ func TestTerminalBench2RejectsEnvironmentAndJudge(t *testing.T) {
 				t.Fatalf("error = %q, want it to contain %q", err.Error(), testCase.wantErr)
 			}
 		})
+	}
+}
+
+func TestSWEbenchProRejectsUnrelatedBenchmarkBlocks(t *testing.T) {
+	base := strings.Replace(validConfig, `"type":"terminalbench2"`, `"type":"swebenchpro"`, 1)
+	for name, testCase := range map[string]struct {
+		block   string
+		wantErr string
+	}{
+		"environment": {block: `,"environment":{"image":"x"}`, wantErr: "benchmark.environment must not be set for swebenchpro"},
+		"judge":       {block: `,"judge":{"enabled":false}`, wantErr: "judge must not be set for swebenchpro"},
+		"fact":        {block: `,"fact":{"jina_api_key_env":"JINA_API_KEY"}`, wantErr: "fact must not be set for swebenchpro"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			input := strings.Replace(base, `"tasks":["fix-git"]}`, `"tasks":["fix-git"]`+testCase.block+`}`, 1)
+			_, err := Decode(strings.NewReader(input))
+			if err == nil || !strings.Contains(err.Error(), testCase.wantErr) {
+				t.Fatalf("error = %v, want it to contain %q", err, testCase.wantErr)
+			}
+		})
+	}
+	if _, err := Decode(strings.NewReader(base)); err != nil {
+		t.Fatalf("valid swebenchpro config rejected: %v", err)
 	}
 }
 
@@ -918,7 +1040,7 @@ func TestCheckedInProfilesLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 97 {
+	if len(paths) != 103 {
 		t.Fatalf("profiles=%v", paths)
 	}
 	for _, path := range paths {
@@ -934,6 +1056,16 @@ func TestCheckedInProfilesLoad(t *testing.T) {
 				t.Fatalf("%s realtime harness: %#v", path, cfg.Harness)
 			}
 		}
+		if strings.Contains(path, "openclaw") && strings.Contains(path, "voice-transcribe") {
+			if cfg.Harness.Type != "openclaw" || cfg.Harness.Mode != "voice-transcribe" || cfg.Harness.VoiceTranscribe.TTS.APIKeyEnv != "OPENAI_API_KEY" || cfg.Harness.VoiceTranscribe.ChunkDuration != 50*time.Millisecond {
+				t.Fatalf("%s OpenClaw voice harness: %#v", path, cfg.Harness)
+			}
+		}
+		if strings.Contains(path, "hermes") && strings.Contains(path, "voice-transcribe") {
+			if cfg.Harness.Type != "hermes" || cfg.Harness.Mode != "voice-transcribe" || cfg.Harness.VoiceTranscribe.TTS.APIKeyEnv != "OPENAI_API_KEY" || cfg.Harness.VoiceTranscribe.STT.Model != "gpt-4o-mini-transcribe" {
+				t.Fatalf("%s voice harness: %#v", path, cfg.Harness)
+			}
+		}
 	}
 }
 
@@ -946,14 +1078,21 @@ func TestLoadRuntimeOverridesStrictSparseAndChecked(t *testing.T) {
 		}
 		return p
 	}
-	overrides, err := LoadRuntimeOverrides(write("valid.json", `{"harness_resources":{"cpu":1.25,"memory_mb":1024},"agent_sandbox_resources":{"cpu":2.5,"memory_mb":4096},"agent_timeout_seconds":12.5}`))
+	overrides, err := LoadRuntimeOverrides(write("valid.json", `{"harness_resources":{"cpu":1.25,"memory_mb":1024},"agent_sandbox_resources":{"cpu":2.5,"memory_mb":4096},"agent_timeout_seconds":12.5,"verifier_timeout_floor_seconds":900}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if overrides.AgentTimeout == nil || *overrides.AgentTimeout != 12500*time.Millisecond {
 		t.Fatalf("%#v", overrides)
 	}
-	for name, content := range map[string]string{"unknown": `{"future":1}`, "nested": `{"harness_resources":{"future":1}}`, "trailing": `{} {}`, "zero": `{"agent_sandbox_resources":{"cpu":0}}`, "overflow": `{"agent_timeout_seconds":1e999}`} {
+	if overrides.VerifierTimeoutFloor == nil || *overrides.VerifierTimeoutFloor != 15*time.Minute {
+		t.Fatalf("%#v", overrides)
+	}
+	sparse, err := LoadRuntimeOverrides(write("sparse.json", `{"agent_timeout_seconds":12.5}`))
+	if err != nil || sparse.VerifierTimeoutFloor != nil {
+		t.Fatalf("sparse = %#v, err = %v", sparse, err)
+	}
+	for name, content := range map[string]string{"unknown": `{"future":1}`, "nested": `{"harness_resources":{"future":1}}`, "trailing": `{} {}`, "zero": `{"agent_sandbox_resources":{"cpu":0}}`, "overflow": `{"agent_timeout_seconds":1e999}`, "floor zero": `{"verifier_timeout_floor_seconds":0}`, "floor negative": `{"verifier_timeout_floor_seconds":-1}`} {
 		if _, err := LoadRuntimeOverrides(write(name+".json", content)); err == nil {
 			t.Fatalf("accepted %s", name)
 		}
@@ -961,6 +1100,43 @@ func TestLoadRuntimeOverridesStrictSparseAndChecked(t *testing.T) {
 	threshold := math.Exp2(63) / 1e9
 	if _, err := LoadRuntimeOverrides(write("threshold.json", fmt.Sprintf(`{"harness_resources":{"cpu":%g}}`, threshold))); err == nil {
 		t.Fatal("accepted overflow threshold")
+	}
+}
+
+func TestLoadRuntimeOverridesNanosecondBoundary(t *testing.T) {
+	for _, field := range []string{"agent_timeout_seconds", "verifier_timeout_floor_seconds"} {
+		for _, tc := range []struct {
+			name    string
+			seconds string
+			want    time.Duration
+		}{
+			{name: "sub-nanosecond", seconds: "0.0000000005"},
+			{name: "one-nanosecond", seconds: "0.000000001", want: time.Nanosecond},
+		} {
+			t.Run(field+"/"+tc.name, func(t *testing.T) {
+				path := filepath.Join(t.TempDir(), "overrides.json")
+				if err := os.WriteFile(path, []byte(fmt.Sprintf(`{"%s":%s}`, field, tc.seconds)), 0600); err != nil {
+					t.Fatal(err)
+				}
+				overrides, err := LoadRuntimeOverrides(path)
+				if tc.want == 0 {
+					if err == nil || !strings.Contains(err.Error(), field) {
+						t.Fatalf("expected %s validation error, got %v", field, err)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				got := overrides.AgentTimeout
+				if field == "verifier_timeout_floor_seconds" {
+					got = overrides.VerifierTimeoutFloor
+				}
+				if got == nil || *got != tc.want {
+					t.Fatalf("%s = %v, want %v", field, got, tc.want)
+				}
+			})
+		}
 	}
 }
 
@@ -976,11 +1152,28 @@ func TestDecodeVersionsValidation(t *testing.T) {
 	}
 }
 
+func TestSWEbenchProVersionPinsAreMandatory(t *testing.T) {
+	for name, field := range map[string]string{
+		"dataset URL":        `"dataset_repository_url":"https://example.invalid/swe-bench-pro-data.git"`,
+		"dataset revision":   `"dataset_revision":"1111111111111111111111111111111111111111"`,
+		"evaluator URL":      `"evaluator_repository_url":"https://example.invalid/swe-bench-pro-evaluator.git"`,
+		"evaluator revision": `"evaluator_revision":"2222222222222222222222222222222222222222"`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			parts := strings.SplitN(field, ":", 2)
+			input := strings.Replace(validVersions, field, parts[0]+`:""`, 1)
+			if _, err := DecodeVersions(strings.NewReader(input)); err == nil || !strings.Contains(err.Error(), "swebenchpro") {
+				t.Fatalf("missing %s: err=%v", field, err)
+			}
+		})
+	}
+}
+
 // A catalog written before a harness existed must keep loading, so an absent
 // image is only an error for the harness that actually needs it. An image that
 // is present is still pin-validated.
 func TestVersionsRequireOnlyTheSelectedHarnessImage(t *testing.T) {
-	withoutHermes := `{"terminalbench2":{"repository_url":"https://example.invalid/terminal-bench-2.git","revision":"0123456789abcdef0123456789abcdef01234567"},"deepresearchbench":{"repository_url":"https://example.invalid/deep-research-bench.git","revision":"fedcba9876543210fedcba9876543210fedcba98"},"sweatlasqa":{"repository_url":"https://example.invalid/swe-atlas.git","revision":"1111111111111111111111111111111111111111"},"openclaw":{"image":"ghcr.io/openclaw/openclaw:2026.7.1"}}`
+	withoutHermes := `{"terminalbench2":{"repository_url":"https://example.invalid/terminal-bench-2.git","revision":"0123456789abcdef0123456789abcdef01234567"},"deepresearchbench":{"repository_url":"https://example.invalid/deep-research-bench.git","revision":"fedcba9876543210fedcba9876543210fedcba98"},"sweatlasqa":{"repository_url":"https://example.invalid/swe-atlas.git","revision":"1111111111111111111111111111111111111111"},"swebenchpro":{"dataset_repository_url":"https://example.invalid/swe-bench-pro-data.git","dataset_revision":"1111111111111111111111111111111111111111","evaluator_repository_url":"https://example.invalid/swe-bench-pro-evaluator.git","evaluator_revision":"2222222222222222222222222222222222222222"},"openclaw":{"image":"ghcr.io/openclaw/openclaw:2026.7.1"}}`
 	versions, err := DecodeVersions(strings.NewReader(withoutHermes))
 	if err != nil {
 		t.Fatalf("catalog without hermes.image was rejected: %v", err)
@@ -999,10 +1192,10 @@ func TestVersionsRequireOnlyTheSelectedHarnessImage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if image, err := full.HarnessImage("hermes"); err != nil || image != "docker.io/nousresearch/hermes-agent:v2026.5.29.2" {
+	if image, err := full.HarnessImage("hermes"); err != nil || image != "docker.io/nousresearch/hermes-agent:v2026.8.31" {
 		t.Fatalf("hermes image = %q, %v", image, err)
 	}
-	unpinned := strings.Replace(validVersions, "hermes-agent:v2026.5.29.2", "hermes-agent:latest", 1)
+	unpinned := strings.Replace(validVersions, "hermes-agent:v2026.8.31", "hermes-agent:latest", 1)
 	if _, err := DecodeVersions(strings.NewReader(unpinned)); err == nil {
 		t.Fatal("unpinned hermes.image was accepted")
 	}
@@ -1650,5 +1843,166 @@ func TestSWEAtlasQAMemRLStudyArmsDifferOnlyInMemRL(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The openai backend names any OpenAI-compatible server. It is external only,
+// carries no native configuration, and shares the /v1 base URL rule.
+func TestOpenAIBackendIsExternalOnly(t *testing.T) {
+	openai := strings.Replace(validConfig, `"runtime":{"backend":"deepseek","mode":"external"}`, `"runtime":{"backend":"openai","mode":"external"}`, 1)
+	openai = strings.Replace(openai, `http://127.0.0.1:8080`, `http://vllm.local:8000/v1/`, 1)
+	cfg, err := Decode(strings.NewReader(openai))
+	if err != nil || cfg.Model.BaseURL != "http://vllm.local:8000/v1" || cfg.CoreModel().Provider != "openai" {
+		t.Fatalf("url=%q provider=%q err=%v", cfg.Model.BaseURL, cfg.CoreModel().Provider, err)
+	}
+	rejected := map[string]string{
+		"managed mode":    strings.Replace(openai, `"mode":"external"`, `"mode":"managed"`, 1),
+		"native file":     strings.Replace(openai, `"mode":"external"`, `"mode":"external","config":{"file":"native.yaml"}`, 1),
+		"path without v1": strings.Replace(openai, `http://vllm.local:8000/v1/`, `http://vllm.local:8000`, 1),
+		"unknown backend": strings.Replace(openai, `"backend":"openai"`, `"backend":"vllm"`, 1),
+	}
+	for name, text := range rejected {
+		if _, err := Decode(strings.NewReader(text)); err == nil {
+			t.Fatalf("%s: expected rejection", name)
+		}
+	}
+}
+
+const hermesExtraBody = `{"user":"${ARIES_RUN_ID}-${ARIES_TASK_ID}","chat_template_kwargs":{"preserve_thinking":true},"metadata":{"trace":true}}`
+
+func TestHermesOnlyBlocksAndGenerationSettings(t *testing.T) {
+	hermes := hermesContextConfig()
+	cfg, err := Decode(strings.NewReader(hermes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Harness.Compaction == nil || cfg.Harness.Compaction.ThresholdTokens != 65536 {
+		t.Fatalf("compaction = %#v", cfg.Harness.Compaction)
+	}
+	if cfg.Harness.Hermes == nil || string(cfg.Harness.Hermes.ExtraBody) != hermesExtraBody {
+		t.Fatalf("hermes block = %#v", cfg.Harness.Hermes)
+	}
+	// Exact credential names are rejected, not substrings: sampling knobs that
+	// happen to contain "token" or "key" are ordinary request fields.
+	if _, err := Decode(strings.NewReader(strings.Replace(hermes, hermesExtraBody, `{"max_tokens":100,"top_k":5,"key_values":1,"tokens_to_keep":2}`, 1))); err != nil {
+		t.Fatalf("sampling fields rejected: %v", err)
+	}
+	model := cfg.CoreModel()
+	if model.ContextLength != 262144 || model.MaxTokens != 32768 || model.Temperature == nil || *model.Temperature != 1.0 {
+		t.Fatalf("core model = %#v", model)
+	}
+
+	rejected := map[string]string{
+		"compaction under openclaw":   strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","compaction":{"threshold_tokens":1000}}`, 1),
+		"hermes block under openclaw": strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","hermes":{"extra_body":{"a":1}}}`, 1),
+		"empty hermes block":          strings.Replace(hermes, `"hermes":{"extra_body":`+hermesExtraBody+`}`, `"hermes":{}`, 1),
+		"null extra_body":             strings.Replace(hermes, hermesExtraBody, `null`, 1),
+		"api key field":               strings.Replace(hermes, hermesExtraBody, `{"auth":{"api_key":"sk-live"}}`, 1),
+		"authorization field":         strings.Replace(hermes, hermesExtraBody, `{"Authorization":"Bearer x"}`, 1),
+		"token field in array":        strings.Replace(hermes, hermesExtraBody, `{"tools":[{"name":"a"},{"access-token":"x"}]}`, 1),
+		"secret field nested":         strings.Replace(hermes, hermesExtraBody, `{"metadata":{"trace":{"client_secret":"x"}}}`, 1),
+		"eviction demo removed":       strings.Replace(hermes, `"metadata":{"trace":true}`, `"metadata":{"trace":`, 1),
+		"generation under openclaw":   strings.Replace(validConfig, `"api_key_env":"DEEPSEEK_API_KEY"}`, `"api_key_env":"DEEPSEEK_API_KEY","context_length":1000}`, 1),
+		"empty compaction":            strings.Replace(hermes, `"compaction":{"threshold_tokens":65536}`, `"compaction":{}`, 1),
+		"extra_body array":            strings.Replace(hermes, hermesExtraBody, `[1]`, 1),
+		"extra_body empty object":     strings.Replace(hermes, hermesExtraBody, `{}`, 1),
+		"extra_body scalar":           strings.Replace(hermes, hermesExtraBody, `"x"`, 1),
+		"foreign placeholder":         strings.Replace(hermes, `${ARIES_TASK_ID}`, `${VLLM_API_KEY}`, 1),
+		"env placeholder form":        strings.Replace(hermes, `${ARIES_TASK_ID}`, `${env:ARIES_TASK_ID}`, 1),
+		"extra_body under deepseek":   strings.Replace(hermes, `"backend":"openai"`, `"backend":"deepseek"`, 1),
+		"threshold fills window":      strings.Replace(hermes, `"threshold_tokens":65536`, `"threshold_tokens":262144`, 1),
+		"max tokens fills window":     strings.Replace(hermes, `"max_tokens":32768`, `"max_tokens":262144`, 1),
+		"temperature out of range":    strings.Replace(hermes, `"temperature":1.0`, `"temperature":3`, 1),
+	}
+	for name, text := range rejected {
+		if _, err := Decode(strings.NewReader(text)); err == nil {
+			t.Fatalf("%s: expected rejection", name)
+		}
+	}
+}
+
+// Profiles reject unsupported or ambiguous temperature settings before setup.
+func TestHermesTemperatureRequestValidation(t *testing.T) {
+	profile := hermesContextConfig()
+	for _, backend := range []string{"openai", "sglang"} {
+		candidate := strings.Replace(profile, `"backend":"openai"`, `"backend":"`+backend+`"`, 1)
+		candidate = strings.Replace(candidate, `"temperature":1.0`, `"temperature":0.0`, 1)
+		cfg, err := Decode(strings.NewReader(candidate))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Model.Temperature == nil || *cfg.Model.Temperature != 0 {
+			t.Fatal("explicit zero lost")
+		}
+	}
+	for _, candidate := range []string{
+		strings.Replace(profile, hermesExtraBody, `{"temperature":0.2}`, 1),
+		strings.Replace(strings.Replace(profile, `"backend":"openai"`, `"backend":"deepseek"`, 1), `,"hermes":{"extra_body":`+hermesExtraBody+`}`, "", 1),
+	} {
+		if _, err := Decode(strings.NewReader(candidate)); err == nil || !strings.Contains(err.Error(), "temperature") {
+			t.Fatalf("expected temperature error, got %v", err)
+		}
+	}
+}
+
+func hermesContextConfig() string {
+	hermes := strings.Replace(validConfig, `"harness":{"type":"openclaw"},"sandbox":{"type":"docker"},"bridge":{"type":"openclaw-ssh"}`,
+		`"harness":{"type":"hermes","compaction":{"threshold_tokens":65536},"hermes":{"extra_body":`+hermesExtraBody+`}},"sandbox":{"type":"docker"},"bridge":{"type":"hermes-ssh"}`, 1)
+	hermes = strings.Replace(hermes, `"runtime":{"backend":"deepseek","mode":"external"}`, `"runtime":{"backend":"openai","mode":"external"}`, 1)
+	hermes = strings.Replace(hermes, `"model":{"id":"fake","base_url":"http://127.0.0.1:8080","api_key_env":"DEEPSEEK_API_KEY"}`,
+		`"model":{"id":"fake","base_url":"http://vllm.local:8000/v1","api_key_env":"VLLM_API_KEY","context_length":262144,"max_tokens":32768,"temperature":1.0}`, 1)
+	return hermes
+}
+
+func TestHarnessMCPServerConfigValidation(t *testing.T) {
+	validMCP := strings.Replace(validConfig, `"harness":{"type":"openclaw"}`,
+		`"harness":{"type":"openclaw","mcp_servers":[{"name":"fetch","command":"uvx","args":["mcp-server-fetch"],"env":{"DEBUG":"1"},"secret_env":{"API_KEY":"HOST_API_KEY"}},{"name":"weather","url":"https://weather.example.com/sse"}]}`, 1)
+
+	cfg, err := Decode(strings.NewReader(validMCP))
+	if err != nil {
+		t.Fatalf("decode valid mcp servers: %v", err)
+	}
+	if len(cfg.Harness.MCPServers) != 2 {
+		t.Fatalf("expected 2 mcp servers, got %d", len(cfg.Harness.MCPServers))
+	}
+	if cfg.Harness.MCPServers[0].Name != "fetch" || cfg.Harness.MCPServers[0].Command != "uvx" {
+		t.Fatalf("mcp server 0 mismatch: %#v", cfg.Harness.MCPServers[0])
+	}
+	if cfg.Harness.MCPServers[0].Env["DEBUG"] != "1" || cfg.Harness.MCPServers[0].SecretEnv["API_KEY"] != "HOST_API_KEY" {
+		t.Fatalf("mcp server 0 env mismatch: %#v", cfg.Harness.MCPServers[0])
+	}
+	if cfg.Harness.MCPServers[1].Name != "weather" || cfg.Harness.MCPServers[1].URL != "https://weather.example.com/sse" {
+		t.Fatalf("mcp server 1 mismatch: %#v", cfg.Harness.MCPServers[1])
+	}
+
+	invalidCases := map[string]string{
+		"unsupported harness": strings.Replace(validConfig, `"harness":{"type":"openclaw"}`,
+			`"harness":{"type":"noop","mcp_servers":[{"name":"s1","command":"c1"}]}`, 1),
+		"duplicate names": strings.Replace(validConfig, `"harness":{"type":"openclaw"}`,
+			`"harness":{"type":"openclaw","mcp_servers":[{"name":"dup","command":"c1"},{"name":"dup","url":"https://example.com"}]}`, 1),
+		"empty name": strings.Replace(validConfig, `"harness":{"type":"openclaw"}`,
+			`"harness":{"type":"openclaw","mcp_servers":[{"name":"","command":"c1"}]}`, 1),
+		"whitespace in name": strings.Replace(validConfig, `"harness":{"type":"openclaw"}`,
+			`"harness":{"type":"openclaw","mcp_servers":[{"name":"bad name","command":"c1"}]}`, 1),
+		"both command and url": strings.Replace(validConfig, `"harness":{"type":"openclaw"}`,
+			`"harness":{"type":"openclaw","mcp_servers":[{"name":"s1","command":"c1","url":"https://example.com"}]}`, 1),
+		"relative url": strings.Replace(validConfig, `"harness":{"type":"openclaw"}`,
+			`"harness":{"type":"openclaw","mcp_servers":[{"name":"s1","url":"/local/path"}]}`, 1),
+		"invalid env key": strings.Replace(validConfig, `"harness":{"type":"openclaw"}`,
+			`"harness":{"type":"openclaw","mcp_servers":[{"name":"s1","command":"c1","env":{"BAD-KEY":"val"}}]}`, 1),
+		"invalid secret_env host var": strings.Replace(validConfig, `"harness":{"type":"openclaw"}`,
+			`"harness":{"type":"openclaw","mcp_servers":[{"name":"s1","command":"c1","secret_env":{"KEY":"bad-var!"}}]}`, 1),
+		"env on url server": strings.Replace(validConfig, `"harness":{"type":"openclaw"}`,
+			`"harness":{"type":"openclaw","mcp_servers":[{"name":"s1","url":"https://example.com","env":{"DEBUG":"1"}}]}`, 1),
+		"secret_env on url server": strings.Replace(validConfig, `"harness":{"type":"openclaw"}`,
+			`"harness":{"type":"openclaw","mcp_servers":[{"name":"s1","url":"https://example.com","secret_env":{"KEY":"HOST_KEY"}}]}`, 1),
+		"env and secret_env collision": strings.Replace(validConfig, `"harness":{"type":"openclaw"}`,
+			`"harness":{"type":"openclaw","mcp_servers":[{"name":"s1","command":"c1","env":{"KEY":"val"},"secret_env":{"KEY":"HOST_KEY"}}]}`, 1),
+	}
+
+	for name, text := range invalidCases {
+		if _, err := Decode(strings.NewReader(text)); err == nil {
+			t.Fatalf("%s: expected rejection, but got nil error", name)
+		}
 	}
 }

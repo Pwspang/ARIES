@@ -30,6 +30,7 @@ type Environment struct {
 	GPUs         int               `json:"gpus,omitempty"`
 	AllowNetwork bool              `json:"allow_network"`
 	Env          map[string]string `json:"env,omitempty"`
+	ExecUser     string            `json:"-"`
 }
 
 // SandboxRequest carries stable run and task identity separately from the
@@ -42,12 +43,14 @@ type SandboxRequest struct {
 
 // Command is an argument-safe process invocation inside a sandbox.
 type Command struct {
-	Path    string            `json:"path"`
-	Args    []string          `json:"args,omitempty"`
-	Dir     string            `json:"dir,omitempty"`
-	Env     map[string]string `json:"env,omitempty"`
-	Stdin   []byte            `json:"-"`
-	Timeout time.Duration     `json:"timeout,omitempty"`
+	Path             string            `json:"path"`
+	Args             []string          `json:"args,omitempty"`
+	Dir              string            `json:"dir,omitempty"`
+	Env              map[string]string `json:"env,omitempty"`
+	Stdin            []byte            `json:"-"`
+	Timeout          time.Duration     `json:"timeout,omitempty"`
+	User             string            `json:"-"`
+	OutputLimitBytes int               `json:"-"`
 }
 
 // CommandResult records a completed sandbox process.
@@ -118,6 +121,12 @@ type ModelConfig struct {
 	// local sglang backend — most auto-compaction attempts there fail on
 	// timeout rather than on the compaction actually being impossible.
 	CompactionTimeoutMs int `json:"compaction_timeout_ms,omitempty"`
+	// ContextLength, MaxTokens, and Temperature are optional generation
+	// settings the harness writes into its own model configuration. Zero or
+	// nil keeps the harness default. Only the Hermes harness renders them.
+	ContextLength int      `json:"context_length,omitempty"`
+	MaxTokens     int      `json:"max_tokens,omitempty"`
+	Temperature   *float64 `json:"temperature,omitempty"`
 }
 
 // ToolEndpoint is the bridge endpoint and task-local file contract given to a
@@ -225,7 +234,11 @@ type TaskResult struct {
 	Evaluation Evaluation      `json:"evaluation"`
 	Observer   ObserverResult  `json:"observer"`
 	Cleanup    CleanupResult   `json:"cleanup"`
-	Duration   time.Duration   `json:"duration"`
+	// StartedAt is when the runner began the task: with an arrival schedule
+	// it is the realised start, which an analysis sets against the offset the
+	// schedule asked for.
+	StartedAt time.Time     `json:"started_at,omitempty"`
+	Duration  time.Duration `json:"duration"`
 }
 
 // RunSummary is a direct count of task outcomes.

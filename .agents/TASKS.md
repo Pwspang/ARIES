@@ -37,6 +37,95 @@ Evidence:
   AgentMemory, took effect with an unchanged `bin/aries` sha256.
 - A frozen-state run left the frozen directory byte-identical.
 
+## PR #49 — In-harness MCP server support (Closes #35)
+
+- Added Model Context Protocol (MCP) server configuration support to ARIES harnesses.
+- Relocated `MCPServerConfig` and `ValidateMCPServer` to `pkg/core` to enforce clean package boundaries per AGENTS.md.
+- Supported plain text `env` and host credentials `secret_env` on command servers; staged secrets into private key files (`0600`) exported by container launcher scripts rather than container environment metadata.
+- Implemented container-native MCP execution for OpenClaw and Hermes harnesses:
+  - OpenClaw renders MCP servers into `openclaw.json` and gates sandboxed execution via `"bundle-mcp"` in `alsoAllow`.
+  - Hermes renders MCP servers into `config.yaml` under `mcp_servers`.
+- Tool invocation and execution remain strictly contained within the agent harness container.
+- Cleaned dependency graph: removed external `github.com/modelcontextprotocol/go-sdk` dependency, restoring upstream `go.mod` and `go.sum`.
+
+## Verifier timeout floor
+
+- `verifier_timeout_floor_seconds` in the runtime overrides file raises a
+  Terminal-Bench task's verifier budget to at least that value and never lowers
+  one. The overfull-hbox task declares 360 s and its test script installs
+  packages first, so every arm scored TIMEOUT there regardless of the agent.
+- The floor rides `terminalbench.Options` from the wiring; the benchmark applies
+  it when it loads a task, so the agent deadline and the private verifier
+  material are untouched. Unit checks cover decode, rejection of non-positive
+  values, raising, and not lowering.
+
+## PR #51 — Effective Hermes temperature
+
+- Confirmed the pinned one-shot ignores model YAML temperature. Route explicit
+  profile temperature through custom-provider request extra_body, preserving
+  zero and existing JSON number precision. Reject duplicate temperature sources
+  and unsupported native DeepSeek temperature before setup and rendering.
+- Retained the reviewed Hermes-specific extra_body block and credential checks;
+  shared model and compaction data remain unchanged for future harness support.
+- Regression-first unit checks and a real pinned v2026.8.31 one-shot HTTP test
+  reproduced the defect, then passed for zero and 0.7 with unrelated request
+  fields preserved. Independent diff review found no blocking issue.
+- The same real one-shot now covers legacy v2026.5.29.2 and confirms its
+  request path accepts the explicit context length and sends max tokens,
+  temperature, and custom extra-body data. Source inspection confirms that
+  release ignores only the new absolute `compression.threshold_tokens` cap.
+- Build, unit, race, lint, and every integration package except the unchanged
+  SWE-bench Pro LFS fixture pass. That environment gap is recorded under PR #50.
+  SDK inspection confirms zero ARIES containers/networks; diff and key scans pass.
+
+## PR #50 — External SGLang review correction
+
+- Removed the native launch-file requirement from external SGLang profile
+  validation and preparation; retained managed configuration and external
+  ownership checks. Existing optional external file references remain accepted
+  but are not opened. Added decode and no-side-effect preparation regressions.
+- Build, unit, race, and lint checks pass. All integration packages except
+  SWE-bench Pro pass. That fixture initially lacked Git LFS; an ignored local
+  official Git LFS installation still leaves the pinned Parquet as an LFS
+  pointer, so the dataset integration remains an explicit environment gap.
+- Final Docker inspection found no ARIES containers or networks.
+
+## R22 — Public SWE-bench Pro benchmark adapter
+
+1. [x] Pin the public dataset and official open-source evaluator independently,
+   install them atomically with Git LFS resolution, and strictly validate all
+   731 public rows plus their task-specific evaluator files.
+2. [x] Map selected rows to benchmark-neutral tasks and row-provided tagged
+   images while keeping gold patches, verifier tests, gold revisions, and test
+   expectations out of `core.Task`.
+3. [x] Before bridge access, capture private verifier and initial ignored-build
+   snapshots, restore the base worktree, remove local remotes/future refs and
+   unreachable gold history, and positively prove the sanitized state.
+4. [x] After harness stop and bridge revocation, capture the candidate patch,
+   restore the fresh-image baseline, inject only the pinned verifier inputs,
+   and score all `FAIL_TO_PASS` plus `PASS_TO_PASS` expectations.
+5. [x] Add strict configuration/version decoding, explicit command wiring, a
+   one-task profile, package regressions, real pinned-source integration
+   coverage for all 731 tasks, and public/internal documentation.
+6. [x] Complete focused, race, full release, Docker-backed gold-patch, cleanup,
+   secret, and final diff validation; record any environment gap before the
+   standalone commit.
+
+Completion evidence:
+
+- The exact pinned dataset and evaluator load all 731 public tasks; schema, task
+  order, image tags, prompt construction, selector/file separation, and private
+  state validation pass against the real upstream artifacts.
+- A pinned qutebrowser image resolves with the dataset gold patch and remains
+  unresolved with an empty patch. The same E2E leaves a background agent-owned
+  process before evaluation, proving the UID quiescence gate and container
+  cleanup on both outcomes.
+- Focused and race tests, `make build`, `make test`, `make test-race`,
+  `make lint`, `make integration`, `go mod verify`, and `git diff --check` pass.
+  The root filesystem Go cache was full, so validation used the ignored
+  repository-local `.cache/go-build`; no product behavior or tracked artifact
+  depends on that cache.
+
 ## R21 — GPU metrics data-flow cleanup
 
 Cleanup plan, based on `8b4930c` and executed regression-first:
