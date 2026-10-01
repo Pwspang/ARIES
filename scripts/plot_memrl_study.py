@@ -14,8 +14,9 @@ Writes to scripts/out_memrl/:
   efficiency.png     tool calls, API calls, prompt/output tokens, wall time,
                      iteration-cap share per condition, mean and 95% CI
   accuracy_test.png, efficiency_test.png
-                     the same, for the held-out test split only (control vs
-                     frozen MemRL), each panel with its paired delta and p
+                     the held-out test split only (control vs frozen MemRL):
+                     agg_score, and the efficiency metrics, each panel with
+                     its paired delta and p
   paired_deltas.png  per-task paired MemRL - control deltas with 95% CI
   training.png       agg_score and recall by window of 15 training tasks
 """
@@ -103,7 +104,7 @@ def condition_bars(ax, groups, conditions, key, scale, rng, decimals):
              for _, s, a, e in conditions]
     means = [m * scale for m, _, _ in stats]
     colors = [CONTROL if a == "control" else MEMRL for _, _, a, _ in conditions]
-    ax.bar(xs, means, width=0.55 if len(conditions) > 2 else 0.45, color=colors, zorder=2)
+    ax.bar(xs, means, width=0.55 if len(conditions) > 2 else 0.35, color=colors, zorder=2)
     ax.errorbar(xs, means, yerr=[[(m - lo) * scale for m, lo, _ in stats], [(hi - m) * scale for m, _, hi in stats]],
                 fmt="none", ecolor=INK_2, elinewidth=1, capsize=3, zorder=3)
     for x, (m, _, hi) in zip(xs, stats):
@@ -129,7 +130,7 @@ def plot_conditions(groups, conditions, metrics, title, ncols, path, note, rng, 
     also names the paired per-task delta of the second minus the first."""
     nrows = -(-len(metrics) // ncols)
     width = 5.2 if len(conditions) > 2 else 3.4
-    fig, axes = plt.subplots(nrows, ncols, figsize=(width * ncols, 3.4 * nrows + 0.6), squeeze=False)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(max(width * ncols, 6), 3.4 * nrows + 0.6), squeeze=False)
     for ax, (key, label, scale) in zip(axes.flat, metrics):
         decimals = 2 if max(abs(scale * r[key]) for rs in groups.values() for r in rs) < 10 else 0
         condition_bars(ax, groups, conditions, key, scale, rng, decimals)
@@ -259,7 +260,7 @@ def main():
     test_note = (f"Hermes + Qwen3.6-35B-A3B on swe-atlas-qa, {args.study} study, the same {tasks} held-out test tasks\n"
                  "in both arms, both at concurrency 8. Bars: mean, 95% bootstrap CI over tasks.\n"
                  "Paired delta: MemRL - control per task, 95% CI, sign-flip p.")
-    plot_conditions(groups, TEST_CONDITIONS, ACCURACY, "Held-out test accuracy: control vs frozen MemRL", 2,
+    plot_conditions(groups, TEST_CONDITIONS, ACCURACY[:1], "Held-out test accuracy: control vs frozen MemRL", 1,
                     args.out / "accuracy_test.png", test_note, random.Random(args.seed), random.Random(args.seed))
     plot_conditions(groups, TEST_CONDITIONS, EFFICIENCY,
                     "Held-out test efficiency: control vs frozen MemRL (lower is better)", 3,
