@@ -8,8 +8,8 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
  && npm rebuild tree-sitter tree-sitter-go tree-sitter-cpp tree-sitter-java tree-sitter-rust \
       tree-sitter-scala tree-sitter-python tree-sitter-c-sharp tree-sitter-javascript tree-sitter-typescript
-COPY build-index.mjs setup-milvus.mjs mcp-check.mjs ./
+COPY build-index.mjs setup-milvus.mjs mcp-check.mjs serve-mcp.mjs ./
 ENV PATH=/opt/coderag/node_modules/.bin:$PATH \
     NODE_ENV=production
 # Default: serve claude-context (stdio) over SSE on :8000 (GET /sse, POST /message).
-CMD ["supergateway", "--stdio", "claude-context-mcp", "--port", "8000"]
+CMD ["supergateway", "--stdio", "node /opt/coderag/serve-mcp.mjs", "--port", "8000"]

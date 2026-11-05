@@ -53,6 +53,13 @@ measure   retrieval_share.py runs/<run-id> …                        (harness t
   claude-context process per MCP session, so `execution.concurrency` above 1
   is fine.
 
+**Query instruction.** Instruction-tuned embedding models such as Qwen3-Embedding expect each
+query in the form `Instruct: <task>\nQuery:<text>`. claude-context doesn't add this.
+`CODERAG_QUERY_INSTRUCTION` in `embedding.env` sets the instruction, and
+[`image/serve-mcp.mjs`](../../scripts/sweatlas-coderag/image/serve-mcp.mjs) prefixes it to the
+search query only. Documents are indexed without it, so changing it needs only
+`coderag.sh serve`, not a rebuild. BM25 still sees the raw query.
+
 Build and serve must use the same embedding provider and model, because each
 query is embedded when it is made. The servers are reached the same way as
 [external SGLang](../configuration.md#external-sglang): the address must be

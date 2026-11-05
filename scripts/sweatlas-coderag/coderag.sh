@@ -171,7 +171,7 @@ serve() {
       -e CODE_CHUNKS_COLLECTION_NAME_OVERRIDE="swe_atlas_$slug" \
       -e CLAUDE_CONTEXT_BACKGROUND_SYNC=false -e CLAUDE_CONTEXT_TRIGGER_WATCHER=false \
       -v "$STATE/repos/$slug:/app:ro" -p "0.0.0.0:$port:8000" \
-      "$IMAGE" supergateway --stdio claude-context-mcp --port 8000 --healthEndpoint /healthz "${tool_args[@]}" >/dev/null
+      "$IMAGE" supergateway --stdio "node /opt/coderag/serve-mcp.mjs" --port 8000 --healthEndpoint /healthz "${tool_args[@]}" >/dev/null
     echo "$slug -> http://$HOST_ADDR:$port/sse"
   done
 }
