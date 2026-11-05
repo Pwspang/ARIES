@@ -116,3 +116,10 @@ means picking a `judge.id` string that endpoint actually accepts.
 `./bin/aries setup profiles/openclaw-sweatlasqa-smoke1-deepseek.json` (or
 `profiles/openclaw-sweatlasqa-smoke1-sglang.json`, or the equivalent setup
 entry point) before the first run.
+
+### Experiment: CodeRAG retrieval share
+
+To measure how much of the agent's tool use is code retrieval when a code RAG
+is available, see [SWE-Atlas QA with a CodeRAG tool](swe-atlas-qa-coderag.md).
+It adds an offline-built, read-only claude-context index per repository through
+`harness.mcp_servers`, without changing the benchmark or its grading.

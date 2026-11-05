@@ -1,0 +1,11 @@
+{
+  "name": "aries-coderag",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@zilliz/claude-context-core": "0.1.15",
+    "@zilliz/claude-context-mcp": "0.1.15",
+    "@modelcontextprotocol/sdk": "1.12.1",
+    "supergateway": "4.2.0"
+  }
+}
