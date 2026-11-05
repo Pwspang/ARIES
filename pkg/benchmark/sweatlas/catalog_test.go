@@ -64,3 +64,62 @@ func TestPreparedCatalogForksConcurrentOccurrencesWithoutReload(t *testing.T) {
 	}
 	group.Wait()
 }
+
+// InstructionAppend reaches the harness's instruction for every occurrence and
+// never reaches the judge, whose question comes from the private tests/ tree.
+func TestInstructionAppendReachesHarnessNotJudge(t *testing.T) {
+	const appended = "Use coderag__search_code to locate code."
+	root := writeFixture(t)
+	options := testOptions(root, []string{qaTaskID}, t.TempDir())
+	options.InstructionAppend = "  " + appended + "\n"
+	catalog, err := New(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := catalog.Tasks(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.TrimSpace(qaInstruction) + "\n\n" + appended
+	if tasks[0].Instruction != want {
+		t.Fatalf("Instruction = %q, want %q", tasks[0].Instruction, want)
+	}
+	occurrence, err := catalog.ForTask(tasks[0].ID, tasks[0].ID+"-001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := occurrence.(*Benchmark)
+	selected, err := owner.Tasks(context.Background())
+	if err != nil || selected[0].Instruction != want {
+		t.Fatalf("occurrence instruction = %v, %v", selected, err)
+	}
+
+	chat := &stubChat{responses: []string{ratingResponse("YES"), ratingResponse("YES")}}
+	owner.judge = chat
+	if _, err := owner.Evaluate(context.Background(), selected[0], &evaluateFake{downloadContent: finalAnswerTag + "\nthe answer\n"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if chat.calls == 0 {
+		t.Fatal("judge was not called")
+	}
+	for _, prompt := range chat.prompts {
+		if strings.Contains(prompt, appended) {
+			t.Fatalf("judge prompt contains the harness-only text: %q", prompt)
+		}
+	}
+}
+
+func TestTasksKeepInstructionVerbatimByDefault(t *testing.T) {
+	root := writeFixture(t)
+	catalog, err := New(testOptions(root, []string{qaTaskID}, t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := catalog.Tasks(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tasks[0].Instruction != strings.TrimSpace(qaInstruction) {
+		t.Fatalf("Instruction = %q, want instruction.md verbatim", tasks[0].Instruction)
+	}
+}

@@ -9,6 +9,7 @@
 #   coderag.sh serve [slug...]        start read-only SSE MCP servers (one per repo)
 #   coderag.sh check [slug...]        tools, search_code, clear_index refused, rows unchanged (from another network)
 #   coderag.sh profiles BASE.json     per-repo coderag + baseline ARIES profiles into $STATE/profiles
+#                                     (coderag profiles also set benchmark.instruction_append)
 #   coderag.sh ports                  slug -> host port -> MCP URL
 #   coderag.sh down                   stop MCP servers and Milvus (index kept in $STATE/milvus/data)
 #
@@ -18,6 +19,8 @@
 #   CODERAG_EMBEDDING_ENV  embedding endpoint env file shared by build and serve (default: $STATE/embedding.env)
 #   CODERAG_HOST_ADDR      address harness containers use to reach the servers (default: first `hostname -I`)
 #   CODERAG_TOOLS          space-separated tool allow-list for the served endpoint (default: all four tools)
+#   CODERAG_INSTRUCTION_APPEND  benchmark.instruction_append for the coderag profiles
+#                          (default: require the tool for retrieval; set empty to omit)
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$here/../.." && pwd)"
@@ -26,6 +29,8 @@ DATASET="${CODERAG_DATASET:-$repo_root/.cache/swe-atlas-qa}"
 EMBED_ENV="${CODERAG_EMBEDDING_ENV:-$STATE/embedding.env}"
 HOST_ADDR="${CODERAG_HOST_ADDR:-$(hostname -I | awk '{print $1}')}"
 TOOLS="${CODERAG_TOOLS:-}"
+DEFAULT_INSTRUCTION_APPEND='A semantic code search tool, search_code from the coderag MCP server, indexes the repository at /app. You MUST use it (path "/app" plus a natural-language query) to locate code instead of grep, find or ls. Use shell commands only to read specific lines from files the tool returned, or to run code.'
+INSTRUCTION_APPEND="${CODERAG_INSTRUCTION_APPEND-$DEFAULT_INSTRUCTION_APPEND}"
 
 IMAGE=aries-coderag:0.1.15
 MILVUS_IMAGE=milvusdb/milvus:v2.6.4
@@ -204,11 +209,12 @@ check() {
 profiles() {
   base="${1:?usage: coderag.sh profiles BASE_PROFILE.json}"
   mkdir -p "$STATE/profiles"
-  python3 -I - "$base" "$HOST_ADDR" "$PORT_BASE" "$(repos_json)" "$STATE/profiles" <<'EOF'
+  python3 -I - "$base" "$HOST_ADDR" "$PORT_BASE" "$(repos_json)" "$STATE/profiles" "$INSTRUCTION_APPEND" <<'EOF'
 import json, pathlib, sys
 base_path, host, port_base = pathlib.Path(sys.argv[1]).resolve(), sys.argv[2], int(sys.argv[3])
 repos = json.loads(pathlib.Path(sys.argv[4]).read_text())
 out = pathlib.Path(sys.argv[5])
+instruction_append = sys.argv[6].strip()
 base = json.loads(base_path.read_text())
 for i, (slug, entry) in enumerate(repos.items()):
     for variant in ("coderag", "baseline"):
@@ -224,9 +230,12 @@ for i, (slug, entry) in enumerate(repos.items()):
             p["runtime"]["config"]["file"] = str((base_path.parent / runtime_file).resolve())
         p["benchmark"]["tasks"] = entry["tasks"]
         servers = [s for s in p["harness"].get("mcp_servers", []) if s.get("name") != "coderag"]
+        p["benchmark"].pop("instruction_append", None)
         if variant == "coderag":
             servers.append({"name": "coderag", "url": f"http://{host}:{port_base + i}/sse",
                             "transport": "sse", "timeout_seconds": 60})
+            if instruction_append:
+                p["benchmark"]["instruction_append"] = instruction_append
         if servers:
             p["harness"]["mcp_servers"] = servers
         else:
@@ -255,5 +264,5 @@ case "$cmd" in
   profiles) profiles "$@" ;;
   ports) ports ;;
   down) down ;;
-  *) sed -n '2,21p' "$0"; exit 2 ;;
+  *) sed -n '2,23p' "$0"; exit 2 ;;
 esac

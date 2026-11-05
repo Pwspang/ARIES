@@ -60,18 +60,23 @@ type Options struct {
 	Judge            core.ModelConfig
 	JudgeDisabled    bool
 	APIKeyLookup     func(string) ([]byte, bool)
+	// InstructionAppend, when non-empty, is appended after a blank line to
+	// each task's instruction for the harness. The judge never sees it: its
+	// question comes from the private tests/ tree.
+	InstructionAppend string
 }
 
 // Benchmark discovers selected SWE-Atlas QA tasks and retains their private
 // verifier trees until evaluation.
 type Benchmark struct {
-	tasks            []core.Task
-	root             string
-	taskIDs          []string
-	executionTaskIDs []string
-	outputDir        string
-	revision         string
-	judge            chatter
+	tasks             []core.Task
+	root              string
+	taskIDs           []string
+	executionTaskIDs  []string
+	outputDir         string
+	revision          string
+	judge             chatter
+	instructionAppend string
 
 	mu      sync.RWMutex
 	details map[string]taskDetails
@@ -199,6 +204,8 @@ func New(options Options) (*Benchmark, error) {
 		revision:         options.Revision,
 		judge:            judge,
 		details:          make(map[string]taskDetails, len(options.TaskIDs)),
+
+		instructionAppend: strings.TrimSpace(options.InstructionAppend),
 	}, nil
 }
 
@@ -254,6 +261,9 @@ func (b *Benchmark) Tasks(ctx context.Context) ([]core.Task, error) {
 		task, private, err := loadTask(b.root, id)
 		if err != nil {
 			return nil, fmt.Errorf("load sweatlas task %q: %w", id, err)
+		}
+		if b.instructionAppend != "" {
+			task.Instruction += "\n\n" + b.instructionAppend
 		}
 		executionID := b.executionTaskIDs[index]
 		task.ID = executionID

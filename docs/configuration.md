@@ -823,7 +823,10 @@ these guides:
   image with its research services. An omitted `judge` reuses the harness model identity;
   optional `fact` configures citation checking.
 - [SWE-Atlas QA](benchmarks/swe-atlas-qa.md) requires a `judge` block, which can
-  explicitly disable grading. It rejects `environment` and `fact`.
+  explicitly disable grading. It rejects `environment` and `fact`. The optional
+  [`instruction_append`](benchmarks/swe-atlas-qa.md#harness-prompt-append) adds
+  text to every task prompt the harness receives, never to what the judge
+  reads. Only `sweatlasqa` accepts it.
 - [SWE-bench Pro](benchmarks/swe-bench-pro.md) derives environments from dataset
   rows and uses its pinned evaluator in a fresh sandbox from the task image, so
   `agent_sandbox_resources` overrides do not apply to evaluation. It rejects

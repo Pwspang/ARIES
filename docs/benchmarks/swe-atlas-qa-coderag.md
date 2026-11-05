@@ -7,10 +7,25 @@ unchanged. Each run's profile adds the CodeRAG as a URL server under
 `harness.mcp_servers` (see [MCP configuration](../implementation/harnesses.md#model-context-protocol-mcp)).
 The tooling is in [`scripts/sweatlas-coderag/`](../../scripts/sweatlas-coderag/).
 
-Giving the agent a tool changes the experimental method, so record the
-CodeRAG runs as such. Run each repository's baseline profile too, so the two
-can be compared. The task's `instruction.md` is still passed verbatim, which
-means the agent learns about the tool only from its MCP description.
+Giving the agent a tool, and telling it to use the tool, changes the
+experimental method, so record the CodeRAG runs as such. Run each repository's
+baseline profile too, so the two can be compared.
+
+Neither OpenClaw nor Hermes puts an MCP server's `instructions` into the prompt.
+Both show the model only each tool's description; OpenClaw also caps each
+description at 1,200 characters. In smoke runs with claude-context's default
+description, agents never called the tool. So by default the `coderag`
+profiles set [`benchmark.instruction_append`](swe-atlas-qa.md#harness-prompt-append)
+to require the tool for locating code:
+
+> A semantic code search tool, search_code from the coderag MCP server, indexes
+> the repository at /app. You MUST use it (path "/app" plus a natural-language
+> query) to locate code instead of grep, find or ls. Use shell commands only to
+> read specific lines from files the tool returned, or to run code.
+
+Set `CODERAG_INSTRUCTION_APPEND` to change this text, or to an empty value to
+omit it. Baseline profiles never set it. The judge never sees the appended
+text.
 
 ## Design
 
@@ -93,7 +108,8 @@ manifests, and generated profiles.
    container takes. It lists the tools, runs `search_code` on `/app`, confirms
    that `clear_index` is refused, and confirms the row count did not change.
 7. Run `scripts/sweatlas-coderag/coderag.sh profiles <base-profile>.json`. This
-   writes a `coderag` profile and a `baseline` profile for each repository into
+   writes a `coderag` profile (MCP server plus the appended instruction) and a
+   `baseline` profile (neither) for each repository into
    `.cache/coderag/profiles/`. Use your own SWE-Atlas QA profile as the base,
    with its model and judge. Then run `./bin/aries setup` and `./bin/aries` on
    each profile.

@@ -455,6 +455,28 @@ func TestSweatlasqaJudgeDisabledValidation(t *testing.T) {
 	}
 }
 
+func TestSweatlasqaInstructionAppendValidation(t *testing.T) {
+	withAppend := func(base, value string) string {
+		return strings.Replace(base, `"tasks":[`, `"instruction_append":`+value+`,"tasks":[`, 1)
+	}
+	cfg, err := Decode(strings.NewReader(withAppend(validSweatlasqaConfig, `"Use the search tool.\nThen answer."`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Benchmark.InstructionAppend != "Use the search tool.\nThen answer." {
+		t.Fatalf("InstructionAppend = %q", cfg.Benchmark.InstructionAppend)
+	}
+	for name, input := range map[string]string{
+		"other benchmark": withAppend(validConfig, `"x"`),
+		"blank":           withAppend(validSweatlasqaConfig, `"  \n "`),
+		"control":         withAppend(validSweatlasqaConfig, `"a\u0007b"`),
+	} {
+		if _, err := Decode(strings.NewReader(input)); err == nil || !strings.Contains(err.Error(), "instruction_append") {
+			t.Errorf("%s: error = %v, want instruction_append rejection", name, err)
+		}
+	}
+}
+
 func TestSweatlasqaVersionsRequireRepositoryPin(t *testing.T) {
 	missingRepositoryURL := strings.Replace(validVersions, `"sweatlasqa":{"repository_url":"https://example.invalid/swe-atlas.git","revision":"1111111111111111111111111111111111111111"}`, `"sweatlasqa":{"revision":"1111111111111111111111111111111111111111"}`, 1)
 	if _, err := DecodeVersions(strings.NewReader(missingRepositoryURL)); err == nil {

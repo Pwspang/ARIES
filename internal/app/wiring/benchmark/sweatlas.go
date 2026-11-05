@@ -23,6 +23,8 @@ func NewSWEAtlas(cfg config.Config, outputRoot string, taskIDs, executionIDs []s
 		Judge:            judgeModel,
 		JudgeDisabled:    judgeDisabled,
 		APIKeyLookup:     lookup,
+
+		InstructionAppend: cfg.Benchmark.InstructionAppend,
 	})
 }
 

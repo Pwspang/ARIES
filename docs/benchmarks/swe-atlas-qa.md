@@ -23,11 +23,34 @@ subset of `data/qa` with DeepSeek as both the harness model and the judge, at
 Each task is a directory under the pinned checkout containing `task.toml`
 (same `schema_version = "1.1"` shape as Terminal-Bench 2's task files — a
 pre-built `docker_image`, resource limits, agent/verifier timeouts),
-`instruction.md` (the codebase question, read and passed to the agent
-verbatim — unlike Deep Research Bench, ARIES adds no prompt wrapper), and a
+`instruction.md` (the codebase question, passed to the agent verbatim
+unless the profile sets [`instruction_append`](#harness-prompt-append)), and a
 private `tests/` directory (`rubrics.json`, `system_prompt.txt`,
 `user_prompt_template.txt`, optional `prompt.txt`) that ARIES reads directly
 from the host checkout — none of it is ever uploaded into the sandbox.
+
+### Harness prompt append
+
+`benchmark.instruction_append` is optional. When set, ARIES appends its text to
+every task's `instruction.md`, after a blank line, in the prompt that only the
+harness receives:
+
+```json
+"benchmark": {
+  "type": "sweatlasqa",
+  "instruction_append": "A semantic code search tool, coderag__search_code, ..."
+}
+```
+
+The judge reads its question from the private `tests/` files, so grading is
+unchanged. ARIES trims the text and rejects it if it is blank or contains
+control characters other than newline and tab. Other benchmark types reject
+the field.
+
+Setting it changes the experimental method, so compare against a profile
+without it. The appended prompt is recorded verbatim in the harness session
+telemetry. [SWE-Atlas QA with a CodeRAG tool](swe-atlas-qa-coderag.md) uses it
+to require the retrieval tool.
 
 QA tasks start in `/app`, where the upstream images contain the repository.
 This follows the pinned [QA agent configuration](https://github.com/scaleapi/SWE-Atlas/blob/6de82c3603fb9e254170b440d7560441eb257176/run_config/qa/mswea_qa_config.yaml)

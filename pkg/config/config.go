@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/hyscale-lab/aries/pkg/containerimage"
 	"github.com/hyscale-lab/aries/pkg/core"
@@ -128,6 +129,12 @@ type BenchmarkConfig struct {
 	Judge       *JudgeConfig          `json:"judge,omitempty"`
 	Fact        *FactConfig           `json:"fact,omitempty"`
 	Toolathlon  *ToolathlonConfig     `json:"toolathlon,omitempty"`
+	// InstructionAppend (sweatlasqa only) is appended, after a blank line, to
+	// every task's instruction.md in the prompt the harness receives. The
+	// judge reads its question from the task's private tests/ and never sees
+	// it. Setting it is an experimental method change; unset keeps the
+	// published instruction verbatim.
+	InstructionAppend string `json:"instruction_append,omitempty"`
 }
 
 // ToolathlonConfig tunes the Toolathlon adapter (see BenchmarkConfig). All
@@ -866,6 +873,19 @@ func validateHTTPBaseURL(name, value string) error {
 // the wiring layer's ValidateComponents responsibility, so unknown types
 // still decode into a Config for that check to inspect and reject.
 func (c *Config) validateBenchmarkType() error {
+	if c.Benchmark.InstructionAppend != "" {
+		if c.Benchmark.Type != "sweatlasqa" {
+			return fmt.Errorf("benchmark.instruction_append must not be set for %s", c.Benchmark.Type)
+		}
+		if strings.TrimSpace(c.Benchmark.InstructionAppend) == "" {
+			return errors.New("benchmark.instruction_append must not be blank")
+		}
+		if strings.ContainsFunc(c.Benchmark.InstructionAppend, func(r rune) bool {
+			return unicode.IsControl(r) && r != '\n' && r != '\t'
+		}) {
+			return errors.New("benchmark.instruction_append must not contain control characters other than newline and tab")
+		}
+	}
 	switch c.Benchmark.Type {
 	case "deepresearchbench":
 		if c.Benchmark.Environment == nil || strings.TrimSpace(c.Benchmark.Environment.Image) == "" {
