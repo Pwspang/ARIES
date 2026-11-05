@@ -962,7 +962,9 @@ func TestHermesOnlyBlocksAndGenerationSettings(t *testing.T) {
 		"token field in array":        strings.Replace(hermes, hermesExtraBody, `{"tools":[{"name":"a"},{"access-token":"x"}]}`, 1),
 		"secret field nested":         strings.Replace(hermes, hermesExtraBody, `{"metadata":{"trace":{"client_secret":"x"}}}`, 1),
 		"eviction demo removed":       strings.Replace(hermes, `"metadata":{"trace":true}`, `"metadata":{"trace":`, 1),
-		"generation under openclaw":   strings.Replace(validConfig, `"api_key_env":"DEEPSEEK_API_KEY"}`, `"api_key_env":"DEEPSEEK_API_KEY","context_length":1000}`, 1),
+		"temperature under openclaw":  strings.Replace(validConfig, `"api_key_env":"DEEPSEEK_API_KEY"}`, `"api_key_env":"DEEPSEEK_API_KEY","temperature":1.0}`, 1),
+		"openclaw max fills window":   strings.Replace(validConfig, `"api_key_env":"DEEPSEEK_API_KEY"}`, `"api_key_env":"DEEPSEEK_API_KEY","context_length":8192,"max_tokens":8192}`, 1),
+		"openclaw negative max":       strings.Replace(validConfig, `"api_key_env":"DEEPSEEK_API_KEY"}`, `"api_key_env":"DEEPSEEK_API_KEY","max_tokens":-1}`, 1),
 		"empty compaction":            strings.Replace(hermes, `"compaction":{"threshold_tokens":65536}`, `"compaction":{}`, 1),
 		"extra_body array":            strings.Replace(hermes, hermesExtraBody, `[1]`, 1),
 		"extra_body empty object":     strings.Replace(hermes, hermesExtraBody, `{}`, 1),
@@ -978,6 +980,18 @@ func TestHermesOnlyBlocksAndGenerationSettings(t *testing.T) {
 		if _, err := Decode(strings.NewReader(text)); err == nil {
 			t.Fatalf("%s: expected rejection", name)
 		}
+	}
+}
+
+// OpenClaw accepts the output cap and context window; they render into its model record.
+func TestOpenClawGenerationLimits(t *testing.T) {
+	text := strings.Replace(validConfig, `"api_key_env":"DEEPSEEK_API_KEY"}`, `"api_key_env":"DEEPSEEK_API_KEY","context_length":262144,"max_tokens":32768}`, 1)
+	cfg, err := Decode(strings.NewReader(text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model := cfg.CoreModel(); model.ContextLength != 262144 || model.MaxTokens != 32768 {
+		t.Fatalf("model = %#v", model)
 	}
 }
 

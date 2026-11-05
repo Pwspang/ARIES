@@ -146,11 +146,16 @@ type providerConfig struct {
 	Models  []modelRecord `json:"models"`
 }
 
+// ContextWindow and MaxTokens are omitted unless the profile sets
+// model.context_length / model.max_tokens. Omitted, OpenClaw falls back to a
+// 200K window and an 8192-token output cap per request.
 type modelRecord struct {
-	ID        string       `json:"id"`
-	Name      string       `json:"name"`
-	Reasoning *bool        `json:"reasoning,omitempty"`
-	Compat    *modelCompat `json:"compat,omitempty"`
+	ID            string       `json:"id"`
+	Name          string       `json:"name"`
+	Reasoning     *bool        `json:"reasoning,omitempty"`
+	ContextWindow int          `json:"contextWindow,omitempty"`
+	MaxTokens     int          `json:"maxTokens,omitempty"`
+	Compat        *modelCompat `json:"compat,omitempty"`
 }
 
 // Explicit effort is serialized through native extra_body. This prevents the
@@ -247,7 +252,10 @@ func renderConfig(model core.ModelConfig, endpoint core.ToolEndpoint, mode strin
 					BaseURL: model.BaseURL,
 					APIKey:  "${" + model.APIKeyEnv + "}",
 					API:     "openai-completions",
-					Models:  []modelRecord{{ID: model.Model, Name: model.Model}},
+					Models: []modelRecord{{
+						ID: model.Model, Name: model.Model,
+						ContextWindow: model.ContextLength, MaxTokens: model.MaxTokens,
+					}},
 				},
 			},
 		},
@@ -392,7 +400,13 @@ func denyToolList(subagentsEnabled bool) []string {
 }
 
 func validateModel(model core.ModelConfig) error {
-	return harness.ValidateModel("OpenClaw", model)
+	if err := harness.ValidateModel("OpenClaw", model); err != nil {
+		return err
+	}
+	if model.Temperature != nil {
+		return errors.New("OpenClaw does not accept model.temperature")
+	}
+	return modelconfig.ValidateGeneration(model)
 }
 
 func validateEndpoint(endpoint core.ToolEndpoint) error {

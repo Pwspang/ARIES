@@ -38,6 +38,9 @@ func TestRenderConfigLocksProviderSharedSSHAndPlaceholder(t *testing.T) {
 	if provider.Models[0].Reasoning != nil || provider.Models[0].Compat != nil || configuration.Agents.Defaults.Models != nil {
 		t.Fatal("omitted reasoning changed native defaults")
 	}
+	if bytes.Contains(content, []byte("contextWindow")) || bytes.Contains(content, []byte("maxTokens")) {
+		t.Fatal("omitted generation limits changed native defaults")
+	}
 	sandbox := configuration.Agents.Defaults.Sandbox
 	if len(sandbox.Docker.Env) != 1 || sandbox.Docker.Env["HOME"] != "/tmp" {
 		t.Fatalf("native sandbox environment = %#v", sandbox.Docker.Env)
@@ -56,6 +59,43 @@ func TestRenderConfigLocksProviderSharedSSHAndPlaceholder(t *testing.T) {
 	}
 	if got := strings.Join(configuration.Tools.Deny, ","); got != "read,write,edit,apply_patch,sessions_spawn,sessions_yield" {
 		t.Fatalf("tool deny list = %q", got)
+	}
+}
+
+// model.context_length and model.max_tokens become the native model record's
+// contextWindow and maxTokens; without them OpenClaw caps output at 8192.
+func TestRenderConfigCarriesGenerationLimits(t *testing.T) {
+	model := testModel()
+	model.ContextLength, model.MaxTokens = 262144, 32768
+	content, err := renderConfig(model, testEndpoint(), ModeAgent, "http://search.example:8123", false, false, false, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw struct {
+		Models struct {
+			Providers map[string]struct {
+				Models []map[string]any `json:"models"`
+			} `json:"providers"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(content, &raw); err != nil {
+		t.Fatal(err)
+	}
+	record := raw.Models.Providers["aries"].Models[0]
+	if record["contextWindow"] != float64(262144) || record["maxTokens"] != float64(32768) {
+		t.Fatalf("model record = %#v", record)
+	}
+	invalid := []func(*core.ModelConfig){
+		func(m *core.ModelConfig) { m.MaxTokens = m.ContextLength },
+		func(m *core.ModelConfig) { m.MaxTokens = -1 },
+		func(m *core.ModelConfig) { temperature := 1.0; m.Temperature = &temperature },
+	}
+	for index, mutate := range invalid {
+		candidate := model
+		mutate(&candidate)
+		if _, err := renderConfig(candidate, testEndpoint(), ModeAgent, "http://search.example:8123", false, false, false, 0); err == nil {
+			t.Fatalf("case %d: expected rejection", index)
+		}
 	}
 }
 

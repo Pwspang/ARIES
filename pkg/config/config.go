@@ -777,8 +777,11 @@ func (c *Config) validate() error {
 	if err := c.Harness.validate(); err != nil {
 		return err
 	}
-	if c.Harness.Type != "hermes" && (c.Model.ContextLength != 0 || c.Model.MaxTokens != 0 || c.Model.Temperature != nil) {
-		return errors.New("model.context_length, model.max_tokens, and model.temperature require Hermes")
+	if c.Harness.Type != "hermes" && c.Harness.Type != "openclaw" && (c.Model.ContextLength != 0 || c.Model.MaxTokens != 0) {
+		return errors.New("model.context_length and model.max_tokens require Hermes or OpenClaw")
+	}
+	if c.Harness.Type != "hermes" && c.Model.Temperature != nil {
+		return errors.New("model.temperature requires Hermes")
 	}
 	if err := c.Model.validateGeneration(); err != nil {
 		return err

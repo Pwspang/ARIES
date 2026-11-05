@@ -416,6 +416,17 @@ that API only with `none`; reasoning with tools requires Responses API support.
 See the [OpenAI model documentation](https://developers.openai.com/api/docs/models/gpt-6-luna)
 and [DeepSeek thinking guide](https://api-docs.deepseek.com/guides/thinking_mode/).
 
+### Output cap and context window
+
+`model.max_tokens` caps each model response and `model.context_length` sets the
+window the harness plans around. Both work with Hermes and OpenClaw; `max_tokens`
+must be smaller than `context_length` when both are set. OpenClaw receives them
+as `maxTokens` and `contextWindow` on its `models.providers` model record. Without
+them OpenClaw assumes a 200K window and caps every response at **8192 tokens**. A
+thinking model can spend that cap on one reasoning turn: the turn stops with
+`length`, and the session can end without an answer. Set `max_tokens` (for
+example 32768) for thinking models. `model.temperature` stays Hermes-only.
+
 ### External DeepSeek
 
 The checked-in DeepSeek profile uses:
@@ -719,7 +730,9 @@ start/end times. An image without the plugin leaves no spans file.
 
 ### Hermes context window, compaction, and request extra body
 
-Three optional profile blocks reach the rendered Hermes `config.yaml`. Each is
+Three optional profile blocks reach the rendered Hermes `config.yaml`. Apart from
+`model.context_length` and `model.max_tokens`, which OpenClaw also accepts (see
+[Output cap and context window](#output-cap-and-context-window)), each is
 Hermes-only and is rejected under another harness. A profile without them
 renders the same file as before.
 

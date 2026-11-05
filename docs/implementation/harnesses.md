@@ -37,6 +37,12 @@ no client identity or password. OpenClaw emits `StrictHostKeyChecking no`,
 known-hosts file is staged. Model and Gateway credentials retain their separate
 native roles.
 
+The rendered `openclaw.json` declares the model as one `models.providers` record.
+`model.max_tokens` and `model.context_length` become that record's `maxTokens`
+and `contextWindow` only when set. Omitted, OpenClaw's own defaults apply: a 200K
+window and an 8192-token output cap per response. `model.temperature` is
+rejected for OpenClaw.
+
 ## Hermes
 
 Hermes is the second supported harness. It runs the ARIES Hermes image, built
