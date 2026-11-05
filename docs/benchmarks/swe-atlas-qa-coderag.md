@@ -18,7 +18,7 @@ means the agent learns about the tool only from its MCP description.
 offline   coderag.sh extract ─► .cache/coderag/repos/<slug>          (/app copied out of the pinned image)
           coderag.sh build   ─► Milvus  hybrid_code_chunks_swe_atlas_<slug>_<md5("/app")[:8]>
 serve     coderag-serve-<slug>: supergateway (SSE) ─ claude-context-mcp (stdio), Milvus user coderag_serve (read-only)
-run       ARIES OpenClaw harness ─► http://<host>:81NN/sse ─► tool coderag__search_code
+run       ARIES OpenClaw harness ─► http://<host>:82NN/sse ─► tool coderag__search_code
 measure   retrieval_share.py runs/<run-id> …                        (harness telemetry, not bridge logs)
 ```
 
@@ -57,7 +57,7 @@ Build and serve must use the same embedding provider and model, because each
 query is embedded when it is made. The servers are reached the same way as
 [external SGLang](../configuration.md#external-sglang): the address must be
 reachable from both the ARIES host and the harness containers.
-`localhost` won't work. The servers bind `0.0.0.0:8101-8111`, while Milvus binds
+`localhost` won't work. The servers bind `0.0.0.0:8201-8211` (8101+ collided with a model endpoint on 8102), while Milvus binds
 only to host loopback.
 
 ## Steps

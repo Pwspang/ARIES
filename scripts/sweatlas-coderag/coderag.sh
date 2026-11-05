@@ -31,7 +31,7 @@ IMAGE=aries-coderag:0.1.15
 MILVUS_IMAGE=milvusdb/milvus:v2.6.4
 NET=coderag
 MILVUS=coderag-milvus
-PORT_BASE=8101
+PORT_BASE=8201
 
 repos_json() {
   [ -f "$STATE/repos.json" ] || { echo "$STATE/repos.json missing: run coderag.sh repos" >&2; exit 1; }

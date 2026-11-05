@@ -70,3 +70,6 @@ kubeconfig
 /docker/
 /Dockerfile
 /.dockerignore
+
+# Local CodeRAG embedding endpoint settings (may hold a key); the copy used lives in .cache/coderag/.
+/scripts/sweatlas-coderag/embedding.env
