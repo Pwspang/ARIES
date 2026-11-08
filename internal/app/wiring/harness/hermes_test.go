@@ -58,3 +58,14 @@ func TestPrepareHermesImageRequiresGRPCIOBeforeBuild(t *testing.T) {
 		t.Fatalf("prepare error = %v, builder called = %t", err, called)
 	}
 }
+
+// harness.hermes.max_turns reaches the Hermes manager; an absent block or
+// zero leaves the manager's default in place.
+func TestHermesMaxTurnsFromProfile(t *testing.T) {
+	if got := hermesMaxTurns(nil); got != 0 {
+		t.Fatalf("nil block = %d", got)
+	}
+	if got := hermesMaxTurns(&config.HarnessHermesConfig{MaxTurns: 180}); got != 180 {
+		t.Fatalf("max_turns = %d, want 180", got)
+	}
+}

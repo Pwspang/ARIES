@@ -33,6 +33,7 @@ func NewHermes(cfg config.Config, outputRoot string, lookup func(string) ([]byte
 		Common:     commonOptions(cfg),
 		Compaction: hermesCompaction(cfg.Harness.Compaction),
 		ExtraBody:  hermesExtraBody(cfg.Harness.Hermes),
+		MaxTurns:   hermesMaxTurns(cfg.Harness.Hermes),
 	}
 
 	if cfg.Harness.Mode == hermesharness.ModeVoiceTranscribe {
@@ -85,6 +86,15 @@ func hermesExtraBody(block *config.HarnessHermesConfig) []byte {
 		return nil
 	}
 	return []byte(block.ExtraBody)
+}
+
+// hermesMaxTurns returns the profile's turn cap; zero lets the Hermes
+// manager apply its default.
+func hermesMaxTurns(block *config.HarnessHermesConfig) int {
+	if block == nil {
+		return 0
+	}
+	return block.MaxTurns
 }
 
 func hermesCompaction(block *config.HarnessCompactionConfig) *hermesharness.CompactionSettings {

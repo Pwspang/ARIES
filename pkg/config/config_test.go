@@ -983,6 +983,31 @@ func TestHermesOnlyBlocksAndGenerationSettings(t *testing.T) {
 	}
 }
 
+// harness.hermes.max_turns stands alone (no extra_body, any backend) and must be positive.
+func TestHermesMaxTurnsValidation(t *testing.T) {
+	hermes := strings.Replace(validConfig, `"harness":{"type":"openclaw"},"sandbox":{"type":"docker"},"bridge":{"type":"openclaw-ssh"}`,
+		`"harness":{"type":"hermes","hermes":{"max_turns":180}},"sandbox":{"type":"docker"},"bridge":{"type":"hermes-ssh"}`, 1)
+	cfg, err := Decode(strings.NewReader(hermes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Harness.Hermes.MaxTurns != 180 || len(cfg.Harness.Hermes.ExtraBody) != 0 {
+		t.Fatalf("hermes block = %#v", cfg.Harness.Hermes)
+	}
+	withEffort := strings.Replace(hermes, `"api_key_env":"DEEPSEEK_API_KEY"}`, `"api_key_env":"DEEPSEEK_API_KEY","reasoning_effort":"low"}`, 1)
+	if _, err := Decode(strings.NewReader(withEffort)); err != nil {
+		t.Fatalf("max_turns with reasoning_effort: %v", err)
+	}
+	for name, text := range map[string]string{
+		"negative":       strings.Replace(hermes, `"max_turns":180`, `"max_turns":-1`, 1),
+		"under openclaw": strings.Replace(validConfig, `"harness":{"type":"openclaw"}`, `"harness":{"type":"openclaw","hermes":{"max_turns":180}}`, 1),
+	} {
+		if _, err := Decode(strings.NewReader(text)); err == nil {
+			t.Fatalf("%s: expected rejection", name)
+		}
+	}
+}
+
 // OpenClaw accepts the output cap and context window; they render into its model record.
 func TestOpenClawGenerationLimits(t *testing.T) {
 	text := strings.Replace(validConfig, `"api_key_env":"DEEPSEEK_API_KEY"}`, `"api_key_env":"DEEPSEEK_API_KEY","context_length":262144,"max_tokens":32768}`, 1)

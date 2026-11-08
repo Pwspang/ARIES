@@ -300,6 +300,9 @@ type HarnessHermesConfig struct {
 	// raw bytes: ARIES validates its shape, its ${NAME} references, and the
 	// absence of credential-bearing fields, but never interprets its keys.
 	ExtraBody json.RawMessage `json:"extra_body,omitempty"`
+	// MaxTurns caps the agent turns of one Hermes session (agent.max_turns in
+	// config.yaml). Zero keeps the ARIES default of 90.
+	MaxTurns int `json:"max_turns,omitempty"`
 }
 
 // HarnessCompactionConfig controls Hermes's context compaction. Hermes
@@ -789,7 +792,7 @@ func (c *Config) validate() error {
 	if _, err := model.ReasoningBody(c.CoreModel()); err != nil {
 		return err
 	}
-	if c.Model.ReasoningEffort != "" && c.Harness.Hermes != nil {
+	if c.Model.ReasoningEffort != "" && c.Harness.Hermes != nil && len(c.Harness.Hermes.ExtraBody) > 0 {
 		var object map[string]json.RawMessage
 		if err := json.Unmarshal(c.Harness.Hermes.ExtraBody, &object); err != nil {
 			return fmt.Errorf("harness.hermes.extra_body: %w", err)
@@ -806,14 +809,14 @@ func (c *Config) validate() error {
 	// Hermes merges a custom_providers extra_body only for its "custom"
 	// provider, which is how the OpenAI-compatible backends render; under
 	// DeepSeek the block would be silently ignored.
-	if c.Harness.Hermes != nil && c.Runtime.Backend != "sglang" && c.Runtime.Backend != "openai" {
+	if c.Harness.Hermes != nil && len(c.Harness.Hermes.ExtraBody) > 0 && c.Runtime.Backend != "sglang" && c.Runtime.Backend != "openai" {
 		return errors.New("harness.hermes.extra_body requires runtime.backend sglang or openai")
 	}
 	if c.Model.Temperature != nil {
 		if c.Runtime.Backend != "sglang" && c.Runtime.Backend != "openai" {
 			return errors.New("model.temperature requires runtime.backend sglang or openai for Hermes")
 		}
-		if c.Harness.Hermes != nil {
+		if c.Harness.Hermes != nil && len(c.Harness.Hermes.ExtraBody) > 0 {
 			var object map[string]json.RawMessage
 			if err := json.Unmarshal(c.Harness.Hermes.ExtraBody, &object); err != nil {
 				return fmt.Errorf("harness.hermes.extra_body: %w", err)
@@ -1029,8 +1032,14 @@ func (h *HarnessConfig) validateHermesBlocks() error {
 		if h.Type != "hermes" {
 			return errors.New("harness.hermes requires Hermes")
 		}
+		if len(h.Hermes.ExtraBody) == 0 && h.Hermes.MaxTurns == 0 {
+			return errors.New("harness.hermes must set extra_body or max_turns")
+		}
+		if h.Hermes.MaxTurns < 0 {
+			return errors.New("harness.hermes.max_turns must be positive")
+		}
 		if len(h.Hermes.ExtraBody) == 0 {
-			return errors.New("harness.hermes must set extra_body")
+			return nil
 		}
 		var object map[string]any
 		if err := json.Unmarshal(h.Hermes.ExtraBody, &object); err != nil || len(object) == 0 {

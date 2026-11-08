@@ -140,7 +140,8 @@ strings until native expansion.
 
 Fourth, three optional profile blocks render into `config.yaml` only when set:
 `model.context_length` / `max_tokens` / `temperature`, `harness.compaction`,
-and `harness.hermes.extra_body`. Compaction is a general harness capability and
+and `harness.hermes.extra_body`. `harness.hermes.max_turns` replaces the
+default `agent.max_turns` of 90. Compaction is a general harness capability and
 stays on the shared `harness` block; `extra_body` is a Hermes escape hatch, so
 it lives under the type-specific `harness.hermes` block. It is a non-empty JSON
 object written as the `extra_body` of one `custom_providers` entry, which

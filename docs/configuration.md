@@ -753,6 +753,12 @@ renders the same file as before.
   provider, so the block requires the `sglang` or `openai` backend. It sits
   under `harness.hermes` because it is a Hermes escape hatch with no meaning
   for another harness, whereas compaction is a general harness setting.
+- `harness.hermes.max_turns` caps the agent turns of one session
+  (`agent.max_turns`). Without it ARIES renders 90. When Hermes reaches the
+  cap it ends the session with its last message, so a task that has not yet
+  written its answer scores 0. OpenClaw has no turn cap; only the task's
+  wall-clock timeout bounds it. A `harness.hermes` block may set `max_turns`,
+  `extra_body`, or both; `max_turns` alone works with any backend.
 
 Hermes expands `${NAME}` references in its configuration from the container
 environment. ARIES exports `ARIES_RUN_ID` and `ARIES_TASK_ID` into the Hermes
@@ -802,8 +808,9 @@ The supported Hermes image is pinned to `v2026.8.31`. Its native Gateway and
 absolute compaction threshold are validated together; older image pins are not
 covered by this execution path. The rendered `config.yaml` under
 `<run>/<task>/harness/` shows the selected settings.
-The Gateway reads `agent.max_turns`; `agent_timeout_seconds` in the overrides
-file also bounds the wall-clock wait for the run.
+The Gateway reads `agent.max_turns` (90 unless `harness.hermes.max_turns` is
+set). The task's own agent timeout, or `agent_timeout_seconds` in the overrides
+file when the task sets none, bounds the wall-clock wait for the run.
 
 ### Realtime OpenClaw mode
 
