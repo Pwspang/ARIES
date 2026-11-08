@@ -1,14 +1,24 @@
 #!/usr/bin/env python3
-"""Share of CodeRAG (claude-context MCP) calls among all agent tool calls.
+"""Share of CodeRAG MCP calls among all agent tool calls.
 
-Reads OpenClaw session exports under each task's harness[-turn-NN]/telemetry/
+Covers both served backends: claude-context (coderag: search_code) and the
+SWE-QA-Agent baseline (sweqa: get_repo_structure, search_content, read_file).
+
+Reads the harness session exports under each task's harness[-turn-NN]/telemetry/
 (the only place MCP calls are recorded; they bypass the SSH ToolBridge) and
-joins evaluation results from run-result.json.
+joins evaluation results from run-result.json. Both formats are read:
+- OpenClaw: one message per line, tool calls as `toolCall` content parts;
+- Hermes (sessions.jsonl): one session per line with a `messages` list, tool
+  calls in OpenAI form. Hermes reaches MCP tools through a `tool_call` wrapper
+  ({"name": "mcp__sweqa__read_file", "arguments": ...}); the wrapped name is
+  counted. Its schema lookups (`tool_describe`) count as calls too.
 
 Usage: retrieval_share.py [--json] [--repos repos.json] RUN_DIR [RUN_DIR...]
 
-retrieval = search_code calls / all tool calls. OpenClaw names MCP tools
-<server>__<tool>, e.g. coderag__search_code.
+retrieval = retrieval-tool calls (search_code, or the three SWE-QA tools) /
+all tool calls. MCP tools carry a server prefix: OpenClaw <server>__<tool>
+(coderag__search_code, sweqa__read_file), Hermes mcp__<server>__<tool>. The
+SWE-QA tools count only with a prefix, because Hermes has a built-in read_file.
 """
 import argparse
 import collections
@@ -17,18 +27,45 @@ import os
 import pathlib
 import sys
 
-CODERAG_TOOLS = {"search_code", "index_codebase", "get_indexing_status", "clear_index"}
-RETRIEVAL_TOOLS = {"search_code"}
+SWEQA_TOOLS = {"get_repo_structure", "search_content", "read_file"}
+CODERAG_TOOLS = {"search_code", "index_codebase", "get_indexing_status", "clear_index"} | SWEQA_TOOLS
+RETRIEVAL_TOOLS = {"search_code"} | SWEQA_TOOLS
 
 
 def coderag_tool(name: str) -> str | None:
-    """Base claude-context tool name, accepting an MCP server prefix (e.g. coderag__search_code)."""
+    """Base CodeRAG tool name, accepting an MCP server prefix (e.g. coderag__search_code)."""
     for sep in ("__", ".", ":", "/", "-"):
         if sep in name:
             tail = name.rsplit(sep, 1)[-1]
             if tail in CODERAG_TOOLS and name != tail:
                 return tail
-    return name if name in CODERAG_TOOLS else None
+    # Unprefixed names: claude-context only (Hermes's own read_file is not sweqa's).
+    return name if name in CODERAG_TOOLS - SWEQA_TOOLS else None
+
+
+def hermes_calls(session):
+    """Tool names from one Hermes session, unwrapping the tool_call gateway."""
+    for message in session.get("messages") or []:
+        if message.get("role") != "assistant":
+            continue
+        calls = message.get("tool_calls") or []
+        if isinstance(calls, str):
+            try:
+                calls = json.loads(calls)
+            except json.JSONDecodeError:
+                continue
+        for call in calls:
+            function = call.get("function") or {}
+            name = function.get("name") or "?"
+            if name == "tool_call":
+                arguments = function.get("arguments")
+                if isinstance(arguments, str):
+                    try:
+                        arguments = json.loads(arguments)
+                    except json.JSONDecodeError:
+                        arguments = {}
+                name = (arguments or {}).get("name") or name
+            yield name
 
 
 def session_files(task_dir: pathlib.Path):
@@ -48,6 +85,9 @@ def count_task(task_dir: pathlib.Path):
             try:
                 entry = json.loads(line)
             except json.JSONDecodeError:
+                continue
+            if isinstance(entry.get("messages"), list):  # Hermes session export
+                calls.update(hermes_calls(entry))
                 continue
             message = entry.get("message") or {}
             content = message.get("content")

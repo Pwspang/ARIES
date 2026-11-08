@@ -8,9 +8,12 @@
 #   coderag.sh build [slug...]        offline index build; accepted builds write $STATE/build/manifest-<slug>.json
 #   coderag.sh serve [slug...]        start read-only SSE MCP servers (one per repo)
 #   coderag.sh check [slug...]        tools, search_code, clear_index refused, rows unchanged (from another network)
-#   coderag.sh profiles BASE.json     per-repo coderag + baseline ARIES profiles into $STATE/profiles
-#                                     (coderag profiles also set benchmark.instruction_append)
-#   coderag.sh ports                  slug -> host port -> MCP URL
+#   coderag.sh serve-sweqa [slug...]  start the SWE-QA-Agent baseline servers (get_repo_structure,
+#                                     search_content, read_file) over the same index
+#   coderag.sh check-sweqa [slug...]  all three tools answer and read_file refuses paths outside /app
+#   coderag.sh profiles BASE.json     per-repo coderag, sweqa and baseline ARIES profiles into $STATE/profiles
+#                                     (coderag and sweqa profiles also set benchmark.instruction_append)
+#   coderag.sh ports                  slug -> host ports -> MCP URLs (coderag, sweqa)
 #   coderag.sh down                   stop MCP servers and Milvus (index kept in $STATE/milvus/data)
 #
 # Environment:
@@ -21,6 +24,8 @@
 #   CODERAG_TOOLS          space-separated tool allow-list for the served endpoint (default: all four tools)
 #   CODERAG_INSTRUCTION_APPEND  benchmark.instruction_append for the coderag profiles
 #                          (default: require the tool for retrieval; set empty to omit)
+#   SWEQA_INSTRUCTION_APPEND    benchmark.instruction_append for the sweqa profiles
+#                          (default: require the three tools for all retrieval; set empty to omit)
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$here/../.." && pwd)"
@@ -31,19 +36,24 @@ HOST_ADDR="${CODERAG_HOST_ADDR:-$(hostname -I | awk '{print $1}')}"
 TOOLS="${CODERAG_TOOLS:-}"
 DEFAULT_INSTRUCTION_APPEND='A semantic code search tool, search_code from the coderag MCP server, indexes the repository at /app. You MUST use it (path "/app" plus a natural-language query) to locate code instead of grep, find or ls. Use shell commands only to read specific lines from files the tool returned, or to run code.'
 INSTRUCTION_APPEND="${CODERAG_INSTRUCTION_APPEND-$DEFAULT_INSTRUCTION_APPEND}"
+DEFAULT_SWEQA_INSTRUCTION_APPEND='Three code-retrieval tools from the sweqa MCP server cover the repository at /app: get_repo_structure (directory tree), search_content (semantic code search returning snippets with file paths and line ranges) and read_file (file contents with line numbers, optionally a line range). You MUST use these tools for all code retrieval (exploring the layout, locating code and reading files) instead of shell commands such as ls, find, grep, rg, cat, sed or head. Use the shell only to run or build code.'
+SWEQA_INSTRUCTION_APPEND="${SWEQA_INSTRUCTION_APPEND-$DEFAULT_SWEQA_INSTRUCTION_APPEND}"
 
 IMAGE=aries-coderag:0.1.15
 MILVUS_IMAGE=milvusdb/milvus:v2.6.4
 NET=coderag
 MILVUS=coderag-milvus
 PORT_BASE=8201
+SWEQA_PORT_BASE=8221
 
 repos_json() {
   [ -f "$STATE/repos.json" ] || { echo "$STATE/repos.json missing: run coderag.sh repos" >&2; exit 1; }
   echo "$STATE/repos.json"
 }
 slugs_all() { python3 -I -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1]))))' "$(repos_json)"; }
-port_of() { echo $((PORT_BASE + $(slugs_all | grep -nx "$1" | cut -d: -f1) - 1)); }
+index_of() { slugs_all | grep -nx "$1" | cut -d: -f1; }
+port_of() { echo $((PORT_BASE + $(index_of "$1") - 1)); }
+sweqa_port_of() { echo $((SWEQA_PORT_BASE + $(index_of "$1") - 1)); }
 pick() { if [ $# -eq 0 ]; then slugs_all; else printf '%s\n' "$@"; fi; }
 image_of() { python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]]["image"])' "$(repos_json)" "$1"; }
 
@@ -181,6 +191,34 @@ serve() {
   done
 }
 
+# SWE-QA-Agent baseline (image/serve-sweqa.mjs): three read-only tools over the same
+# collection, served with the read-only Milvus user.
+serve_sweqa() {
+  need_embedding
+  for slug in $(pick "$@"); do
+    [ -f "$STATE/build/manifest-$slug.json" ] || { echo "no accepted build for $slug" >&2; exit 1; }
+    port="$(sweqa_port_of "$slug")"; name="coderag-sweqa-$slug"
+    docker rm -f "$name" >/dev/null 2>&1 || true
+    docker run -d --name "$name" --network "$NET" --restart unless-stopped --env-file "$EMBED_ENV" \
+      -e MILVUS_ADDRESS="$MILVUS:19530" -e MILVUS_TOKEN="coderag_serve:$CODERAG_SERVE_PASSWORD" \
+      -e CODE_CHUNKS_COLLECTION_NAME_OVERRIDE="swe_atlas_$slug" \
+      -v "$STATE/repos/$slug:/app:ro" -p "0.0.0.0:$port:8000" \
+      "$IMAGE" supergateway --stdio "node /opt/coderag/serve-sweqa.mjs" --port 8000 --healthEndpoint /healthz >/dev/null
+    echo "$slug -> http://$HOST_ADDR:$port/sse"
+  done
+}
+
+check_sweqa() {
+  for slug in $(pick "$@"); do
+    port="$(sweqa_port_of "$slug")"
+    echo "== check-sweqa $slug via http://$HOST_ADDR:$port/sse"
+    for _ in $(seq 1 30); do curl -fsS "http://$HOST_ADDR:$port/healthz" >/dev/null 2>&1 && break; sleep 1; done
+    docker run --rm "$IMAGE" node mcp-check.mjs "http://$HOST_ADDR:$port/sse" "${CODERAG_CHECK_QUERY:-main entry point}" \
+      || { echo "   FAILED" >&2; exit 1; }
+    echo "   ok"
+  done
+}
+
 rows() {  # slug -> current Milvus row count, queried as root
   docker run --rm --network "$NET" -e MILVUS_ADDRESS="$MILVUS:19530" -e TOKEN="root:$MILVUS_ROOT_PASSWORD" \
     -e COLLECTION="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["collection"])' "$STATE/build/manifest-$1.json")" \
@@ -209,15 +247,18 @@ check() {
 profiles() {
   base="${1:?usage: coderag.sh profiles BASE_PROFILE.json}"
   mkdir -p "$STATE/profiles"
-  python3 -I - "$base" "$HOST_ADDR" "$PORT_BASE" "$(repos_json)" "$STATE/profiles" "$INSTRUCTION_APPEND" <<'EOF'
+  python3 -I - "$base" "$HOST_ADDR" "$PORT_BASE" "$(repos_json)" "$STATE/profiles" "$INSTRUCTION_APPEND" \
+    "$SWEQA_PORT_BASE" "$SWEQA_INSTRUCTION_APPEND" <<'EOF'
 import json, pathlib, sys
 base_path, host, port_base = pathlib.Path(sys.argv[1]).resolve(), sys.argv[2], int(sys.argv[3])
 repos = json.loads(pathlib.Path(sys.argv[4]).read_text())
 out = pathlib.Path(sys.argv[5])
-instruction_append = sys.argv[6].strip()
+# variant -> (MCP server name, port base, instruction_append); baseline has none.
+tools = {"coderag": ("coderag", port_base, sys.argv[6].strip()),
+         "sweqa": ("sweqa", int(sys.argv[7]), sys.argv[8].strip())}
 base = json.loads(base_path.read_text())
 for i, (slug, entry) in enumerate(repos.items()):
-    for variant in ("coderag", "baseline"):
+    for variant in ("coderag", "sweqa", "baseline"):
         p = json.loads(json.dumps(base))
         p["name"] = f"{base['name']}-{variant}-{slug.replace('_', '-')}"
         # ARIES resolves these against the profile's directory; keep them pointing where the
@@ -229,10 +270,11 @@ for i, (slug, entry) in enumerate(repos.items()):
         if runtime_file and not pathlib.Path(runtime_file).is_absolute():
             p["runtime"]["config"]["file"] = str((base_path.parent / runtime_file).resolve())
         p["benchmark"]["tasks"] = entry["tasks"]
-        servers = [s for s in p["harness"].get("mcp_servers", []) if s.get("name") != "coderag"]
+        servers = [s for s in p["harness"].get("mcp_servers", []) if s.get("name") not in ("coderag", "sweqa")]
         p["benchmark"].pop("instruction_append", None)
-        if variant == "coderag":
-            servers.append({"name": "coderag", "url": f"http://{host}:{port_base + i}/sse",
+        if variant in tools:
+            server, base_port, instruction_append = tools[variant]
+            servers.append({"name": server, "url": f"http://{host}:{base_port + i}/sse",
                             "transport": "sse", "timeout_seconds": 60})
             if instruction_append:
                 p["benchmark"]["instruction_append"] = instruction_append
@@ -246,10 +288,14 @@ for i, (slug, entry) in enumerate(repos.items()):
 EOF
 }
 
-ports() { for slug in $(slugs_all); do echo "$slug $(port_of "$slug") http://$HOST_ADDR:$(port_of "$slug")/sse"; done; }
+ports() {
+  for slug in $(slugs_all); do
+    echo "$slug coderag http://$HOST_ADDR:$(port_of "$slug")/sse sweqa http://$HOST_ADDR:$(sweqa_port_of "$slug")/sse"
+  done
+}
 
 down() {
-  for slug in $(slugs_all); do docker rm -f "coderag-serve-$slug" >/dev/null 2>&1 || true; done
+  for slug in $(slugs_all); do docker rm -f "coderag-serve-$slug" "coderag-sweqa-$slug" >/dev/null 2>&1 || true; done
   docker stop "$MILVUS" >/dev/null 2>&1 || true
 }
 
@@ -261,8 +307,10 @@ case "$cmd" in
   build) secrets; build "$@" ;;
   serve) secrets; serve "$@" ;;
   check) secrets; check "$@" ;;
+  serve-sweqa) secrets; serve_sweqa "$@" ;;
+  check-sweqa) check_sweqa "$@" ;;
   profiles) profiles "$@" ;;
   ports) ports ;;
   down) down ;;
-  *) sed -n '2,23p' "$0"; exit 2 ;;
+  *) sed -n '2,29p' "$0"; exit 2 ;;
 esac

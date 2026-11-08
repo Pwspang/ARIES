@@ -27,13 +27,61 @@ Set `CODERAG_INSTRUCTION_APPEND` to change this text, or to an empty value to
 omit it. Baseline profiles never set it. The judge never sees the appended
 text.
 
+## SWE-QA-Agent baseline (`sweqa`)
+
+The `sweqa` server is the code-retrieval baseline for comparisons. It gives the
+agent the action space of SWE-QA-Agent, the agent of the SWE-QA benchmark for
+repository-level code QA (Peng et al., [arXiv 2509.14635v1](https://arxiv.org/abs/2509.14635);
+ACL 2026 Findings): three read-only retrieval tools and nothing else.
+
+| Tool | Paper action | Behavior |
+| --- | --- | --- |
+| `get_repo_structure(path?, max_depth?)` | GetRepoStructure (`tree`) | Directory tree of `/app`, 3 levels by default; deeper directories show an entry count. Hides dot-entries like `tree`, and skips `node_modules`, `__pycache__`, `site-packages` and `bower_components`. At most 1,500 entries. |
+| `search_content(query, limit?)` | SearchContent (RAG) | Hybrid dense + BM25 search over the same offline collection as `search_code`; 10 snippets by default, at most 30, each with its file path and line range. |
+| `read_file(path, start_line?, end_line?)` | ReadFile | File contents with line numbers; at most 2,000 lines or 200,000 characters per call. Refuses paths outside `/app`, including through symlinks. |
+
+The authors did not release SWE-QA-Agent, so the tools follow the paper's
+descriptions. Report these deviations with results:
+
+- SearchContent in the paper uses voyage-code-3. Here it uses the existing
+  index: Qwen3-Embedding-4B, claude-context's AST chunks and hybrid BM25.
+  Qwen3-Embedding-4B has the best MRR on Agent Retrieval Bench
+  ([arXiv 2607.24882](https://arxiv.org/abs/2607.24882)).
+- The structure listing is depth-limited so that large repositories fit in the
+  context.
+- claude-context's AST chunks can report a start line a few lines late. The
+  server re-anchors each hit on the file, so line ranges from `search_content`
+  can be passed to `read_file` directly. `search_code` returns the unadjusted
+  numbers.
+
+The server is [`image/serve-sweqa.mjs`](../../scripts/sweatlas-coderag/image/serve-sweqa.mjs).
+It runs from the same image, connects to Milvus as the read-only
+`coderag_serve` user, and binds `0.0.0.0:8221-8231`. `coderag.sh serve-sweqa`
+starts it for every repository, and `coderag.sh check-sweqa` checks all three
+tools and the path guard. The `sweqa` profiles append this instruction by
+default; set `SWEQA_INSTRUCTION_APPEND` to change it or to an empty value to
+omit it:
+
+> Three code-retrieval tools from the sweqa MCP server cover the repository at
+> /app: get_repo_structure (directory tree), search_content (semantic code
+> search returning snippets with file paths and line ranges) and read_file
+> (file contents with line numbers, optionally a line range). You MUST use
+> these tools for all code retrieval (exploring the layout, locating code and
+> reading files) instead of shell commands such as ls, find, grep, rg, cat,
+> sed or head. Use the shell only to run or build code.
+
+Unlike the `coderag` instruction, this one also moves file reads into the
+tools, so the share of calls through the backend can be compared with the
+retrieval share of a run without tools.
+
 ## Design
 
 ```
 offline   coderag.sh extract ─► .cache/coderag/repos/<slug>          (/app copied out of the pinned image)
           coderag.sh build   ─► Milvus  hybrid_code_chunks_swe_atlas_<slug>_<md5("/app")[:8]>
 serve     coderag-serve-<slug>: supergateway (SSE) ─ claude-context-mcp (stdio), Milvus user coderag_serve (read-only)
-run       ARIES OpenClaw harness ─► http://<host>:82NN/sse ─► tool coderag__search_code
+          coderag-sweqa-<slug>: supergateway (SSE) ─ serve-sweqa.mjs (stdio), same collection and user
+run       ARIES OpenClaw harness ─► http://<host>:82NN/sse ─► coderag__search_code or sweqa__{get_repo_structure,search_content,read_file}
 measure   retrieval_share.py runs/<run-id> …                        (harness telemetry, not bridge logs)
 ```
 
@@ -79,8 +127,9 @@ Build and serve must use the same embedding provider and model, because each
 query is embedded when it is made. The servers are reached the same way as
 [external SGLang](../configuration.md#external-sglang): the address must be
 reachable from both the ARIES host and the harness containers.
-`localhost` won't work. The servers bind `0.0.0.0:8201-8211` (8101+ collided with a model endpoint on 8102), while Milvus binds
-only to host loopback.
+`localhost` won't work. The claude-context servers bind `0.0.0.0:8201-8211`
+(8101+ collided with a model endpoint on 8102) and the `sweqa` servers
+`0.0.0.0:8221-8231`, while Milvus binds only to host loopback.
 
 ## Steps
 
@@ -103,13 +152,15 @@ manifests, and generated profiles.
 5. Run `scripts/sweatlas-coderag/coderag.sh build`. It writes
    `.cache/coderag/build/manifest-<slug>.json` for each accepted build.
 6. Run `scripts/sweatlas-coderag/coderag.sh serve`, then
-   `scripts/sweatlas-coderag/coderag.sh check`. The check runs from a
+   `scripts/sweatlas-coderag/coderag.sh check`. For the baseline, also run
+   `coderag.sh serve-sweqa` and `coderag.sh check-sweqa`. The check runs from a
    container on Docker's default bridge network, the same path a harness
    container takes. It lists the tools, runs `search_code` on `/app`, confirms
    that `clear_index` is refused, and confirms the row count did not change.
 7. Run `scripts/sweatlas-coderag/coderag.sh profiles <base-profile>.json`. This
-   writes a `coderag` profile (MCP server plus the appended instruction) and a
-   `baseline` profile (neither) for each repository into
+   writes a `coderag` profile and a `sweqa` profile (each with its MCP server
+   and appended instruction) and a `baseline` profile (neither) for each
+   repository into
    `.cache/coderag/profiles/`. Use your own SWE-Atlas QA profile as the base,
    with its model and judge. Then run `./bin/aries setup` and `./bin/aries` on
    each profile.
@@ -122,15 +173,18 @@ sees, so report it with the results.
 
 ## Metric
 
-`retrieval_share.py` reads the OpenClaw session exports under each task's
-`harness/telemetry/`. It also reads the older `harness-turn-NN/telemetry/`
-layout. In those exports, every `toolCall` part carries the tool's name, and
-OpenClaw names MCP tools `<server>__<tool>`. The script has to read the
+`retrieval_share.py` reads the OpenClaw and Hermes session exports under each
+task's `harness/telemetry/`. Hermes reaches MCP tools through a `tool_call`
+wrapper; the script counts the wrapped tool name (`mcp__sweqa__read_file`). The
+`sweqa` tools count only with their server prefix, because Hermes also has a
+built-in `read_file`. It also reads OpenClaw's older `harness-turn-NN/telemetry/`
+layout. In OpenClaw's exports, every `toolCall` part carries the tool's name,
+and OpenClaw names MCP tools `<server>__<tool>`. The script has to read the
 harness telemetry because MCP calls never pass through the ToolBridge, so
 `bridge/tool-calls.jsonl` never shows them.
 
-The **retrieval share** is the number of `search_code` calls divided by the
-number of all tool calls. The script reports it per task, then per
+The **retrieval share** is the number of retrieval-tool calls (`search_code`,
+or the three `sweqa` tools) divided by the number of all tool calls. The script reports it per task, then per
 repository and overall. Each aggregate gives a micro average
 (Σ retrieval / Σ calls) and a macro average (the mean of the per-task shares),
 next to the evaluation score. The script counts other claude-context calls
